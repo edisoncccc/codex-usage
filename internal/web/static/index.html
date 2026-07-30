@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="当前电脑的 Codex Token 本地统计">
+  <title>Codex Meter</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div>
+          <div class="eyebrow">LOCAL TOKEN OBSERVATORY</div>
+          <h1>Codex Meter</h1>
+        </div>
+      </div>
+      <div class="machine-pill" id="machinePill" aria-live="polite">
+        <span class="status-dot neutral" id="otelDot"></span>
+        <span id="machineLabel">正在读取本机身份…</span>
+      </div>
+      <div class="actions">
+        <button class="button subtle" id="themeButton" title="切换明暗主题" aria-label="切换明暗主题">◐</button>
+        <button class="button subtle" id="exportButton">导出</button>
+        <button class="button primary" id="scanButton"><span class="scan-icon">↻</span> 立即扫描</button>
+      </div>
+    </header>
+
+    <section class="coverage-banner hidden" id="coverageBanner">
+      <div class="coverage-icon">!</div>
+      <div>
+        <strong>统计存在可见缺口</strong>
+        <p id="coverageText"></p>
+      </div>
+      <button class="link-button" id="warningButton">查看详情</button>
+    </section>
+
+    <section class="status-strip" aria-label="采集状态">
+      <div><span class="label">机器 ID</span><code id="machineId">—</code></div>
+      <div><span class="label">最后扫描</span><span id="lastScan">—</span></div>
+      <div><span class="label">实时 OTel</span><span id="otelStatus">—</span></div>
+      <div><span class="label">历史未归属</span><strong id="unattributed">—</strong></div>
+    </section>
+
+    <section class="filter-bar" aria-label="统计筛选">
+      <label>模型<select id="filterModel"><option value="">全部模型</option></select></label>
+      <label>来源<select id="filterSource"><option value="">全部来源</option></select></label>
+      <label>Agent<select id="filterAgent">
+        <option value="">全部 Agent</option><option value="main">主任务</option>
+        <option value="subagent">Subagent</option><option value="guardian">Guardian</option>
+        <option value="memory">Memory</option>
+      </select></label>
+      <label>项目<select id="filterProject"><option value="">全部项目</option></select></label>
+      <label>置信度<select id="filterConfidence">
+        <option value="">全部置信度</option><option value="exact">精确</option>
+        <option value="gap_fallback">缺口补位</option><option value="aggregate_only">仅累计</option>
+      </select></label>
+      <button class="button reset" id="resetFilters">清除筛选</button>
+    </section>
+
+    <section class="metric-grid" aria-label="Token 概览">
+      <article class="metric-card accent-violet" data-period="today">
+        <div class="metric-heading"><span>今天</span><span class="tiny">本地时间</span></div>
+        <div class="metric-value skeleton" id="totalToday">—</div>
+        <div class="metric-detail" id="detailToday"></div>
+      </article>
+      <article class="metric-card accent-blue" data-period="7d">
+        <div class="metric-heading"><span>近 7 日</span><span class="tiny">滚动窗口</span></div>
+        <div class="metric-value skeleton" id="total7d">—</div>
+        <div class="metric-detail" id="detail7d"></div>
+      </article>
+      <article class="metric-card accent-mint" data-period="30d">
+        <div class="metric-heading"><span>近 30 日</span><span class="tiny">滚动窗口</span></div>
+        <div class="metric-value skeleton" id="total30d">—</div>
+        <div class="metric-detail" id="detail30d"></div>
+      </article>
+      <article class="metric-card accent-amber" data-period="all">
+        <div class="metric-heading"><span>本机累计</span><span class="tiny">不含账号其他电脑</span></div>
+        <div class="metric-value skeleton" id="totalAll">—</div>
+        <div class="metric-detail" id="detailAll"></div>
+      </article>
+    </section>
+
+    <section class="panel trend-panel">
+      <div class="panel-head">
+        <div>
+          <div class="eyebrow">TEMPORAL VIEW</div>
+          <h2>Token 趋势</h2>
+        </div>
+        <div class="segmented" role="group" aria-label="趋势范围">
+          <button data-range="7d" class="active">7 日</button>
+          <button data-range="30d">30 日</button>
+          <button data-range="all">全部</button>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="legend-total"></i>Total</span>
+        <span><i class="legend-input"></i>Input</span>
+        <span><i class="legend-output"></i>Output</span>
+        <span class="legend-note">Cached ⊂ Input · Reasoning ⊂ Output</span>
+      </div>
+      <div class="chart-wrap">
+        <svg id="trendChart" role="img" aria-label="Token 使用趋势"></svg>
+        <div class="chart-empty hidden" id="chartEmpty">这个范围还没有可按时间归属的数据</div>
+        <div class="chart-tooltip hidden" id="chartTooltip"></div>
+      </div>
+    </section>
+
+    <section class="split-grid">
+      <article class="panel">
+        <div class="panel-head compact"><div><div class="eyebrow">MODEL MIX</div><h2>按模型</h2></div></div>
+        <div class="bar-list" id="modelBreakdown"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head compact"><div><div class="eyebrow">WORK ORIGIN</div><h2>按调用来源</h2></div></div>
+        <div class="donut-layout">
+          <div class="donut" id="agentDonut"><div><strong>—</strong><span>Total</span></div></div>
+          <div class="donut-legend" id="agentBreakdown"></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="triple-grid">
+      <article class="panel">
+        <div class="panel-head compact"><div><div class="eyebrow">CLIENT SURFACE</div><h2>Codex 来源</h2></div></div>
+        <div class="bar-list compact-bars" id="sourceBreakdown"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head compact"><div><div class="eyebrow">PROJECT ATTRIBUTION</div><h2>按项目</h2></div></div>
+        <div class="bar-list compact-bars" id="projectBreakdown"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head compact"><div><div class="eyebrow">THREAD ATTRIBUTION</div><h2>按 Thread</h2></div></div>
+        <div class="bar-list compact-bars" id="threadBreakdown"></div>
+      </article>
+    </section>
+
+    <section class="panel sessions-panel">
+      <div class="panel-head">
+        <div><div class="eyebrow">LOCAL DETAIL</div><h2>Session 明细</h2></div>
+        <span class="privacy-chip">仅存本机路径与标题 · 不存 prompt / 回复 / 凭据</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Thread</th><th>项目路径</th><th>模型 / 来源</th><th>Agent</th><th>Token</th><th>置信度</th><th>最后活动</th></tr></thead>
+          <tbody id="sessionRows"><tr><td colspan="7" class="loading-cell">正在加载本机 session…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel hidden" id="warningsPanel">
+      <div class="panel-head"><div><div class="eyebrow">AUDIT TRAIL</div><h2>异常与覆盖缺口</h2></div><button class="button subtle" id="closeWarnings">收起</button></div>
+      <div class="warning-list" id="warningList"></div>
+    </section>
+
+    <footer>
+      <p><strong>边界说明：</strong>Total 按 Codex 原始值展示，不代表费用、独立生成文字量或 ChatGPT rate-limit 配额。</p>
+      <p>OTel 覆盖期内机器总量以 OTel 为准；项目、thread 与 session 是 JSONL 归属视图，不能再与机器总量相加。</p>
+      <p>所有资源均嵌入本机二进制；服务只监听 <code>127.0.0.1</code>，不会上传统计数据。</p>
+      <span id="versionLabel"></span>
+    </footer>
+  </main>
+
+  <dialog id="exportDialog">
+    <form method="dialog">
+      <div class="dialog-head"><h2>导出当前筛选</h2><button value="cancel" aria-label="关闭">×</button></div>
+      <p>导出逐事件数据，包含本机项目路径与 thread 标题，不包含任何对话内容。</p>
+      <div class="dialog-actions">
+        <a class="button primary" id="exportCsv" download>下载 CSV</a>
+        <a class="button subtle" id="exportJson" download>下载 JSON</a>
+      </div>
+    </form>
+  </dialog>
+  <div class="toast hidden" id="toast" role="status"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

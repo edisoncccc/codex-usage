@@ -1,0 +1,11 @@
+{
+  "name": "codex-meter-dashboard-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test tests/dashboard.spec.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}
