@@ -61,7 +61,7 @@ const server = http.createServer(async (request, response) => {
     return json(response, { dimension: "model", items });
   }
   if (url.pathname === "/api/v1/sessions") return json(response, { items: [
-    { session_id: "019fb24a-f4dd-7673-9b7d-225d26f2b141", title: "实现逐电脑 Token 统计与可视化", project_path: "C:\\dev\\codex-meter", model: "gpt-5.4", source: "codex_desktop", agent_type: "main", usage: { ...usage, total: 2_920_000 }, confidence: "exact", last_usage: now.toISOString() },
+    { session_id: "019fb24a-f4dd-7673-9b7d-225d26f2b141", title: "实现逐电脑 Token 统计与可视化", project_path: "C:\\dev\\codex-usage", model: "gpt-5.4", source: "codex_desktop", agent_type: "main", usage: { ...usage, total: 2_920_000 }, confidence: "exact", last_usage: now.toISOString() },
     { session_id: "019fa142-1051-72bd-aa0f-975efd2bf6c2", title: "Linux 渲染任务诊断", project_path: "/srv/inference/render", model: "gpt-5.5-codex", source: "codex_cli_rs", agent_type: "subagent", usage: { ...usage, total: 1_180_000 }, confidence: "gap_fallback", last_usage: new Date(now.getTime() - 3600000).toISOString() },
     { session_id: "019f9821-d272-7812-814d-94cc02dc39a1", title: "本地数据管线检查", project_path: "C:\\dev\\private-data", model: "gpt-5.4", source: "codex_desktop", agent_type: "guardian", usage: { ...usage, total: 760_000 }, confidence: "exact", last_usage: new Date(now.getTime() - 7200000).toISOString() }
   ] });

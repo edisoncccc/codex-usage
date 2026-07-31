@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/local-first/codex-meter/internal/model"
+	"github.com/zJay26/codex-usage/internal/model"
 )
 
 func TestStateFallbackDoesNotGrowAcrossOTelCoverage(t *testing.T) {

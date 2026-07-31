@@ -15,11 +15,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/local-first/codex-meter/internal/meter"
-	"github.com/local-first/codex-meter/internal/model"
-	"github.com/local-first/codex-meter/internal/otel"
-	"github.com/local-first/codex-meter/internal/store"
-	meterweb "github.com/local-first/codex-meter/internal/web"
+	"github.com/zJay26/codex-usage/internal/meter"
+	"github.com/zJay26/codex-usage/internal/model"
+	"github.com/zJay26/codex-usage/internal/otel"
+	"github.com/zJay26/codex-usage/internal/store"
+	meterweb "github.com/zJay26/codex-usage/internal/web"
 )
 
 type Server struct {
@@ -287,7 +287,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	switch format {
 	case "csv":
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="codex-meter-`+stamp+`.csv"`)
+		w.Header().Set("Content-Disposition", `attachment; filename="codex-usage-`+stamp+`.csv"`)
 		w.Write([]byte{0xEF, 0xBB, 0xBF})
 		writer := csv.NewWriter(w)
 		_ = writer.Write([]string{
@@ -315,7 +315,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		}
 	case "json":
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="codex-meter-`+stamp+`.json"`)
+		w.Header().Set("Content-Disposition", `attachment; filename="codex-usage-`+stamp+`.json"`)
 		w.Write([]byte("[\n"))
 		first := true
 		encoder := json.NewEncoder(w)

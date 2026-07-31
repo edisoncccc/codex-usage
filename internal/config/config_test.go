@@ -47,7 +47,7 @@ func TestInstallOTelPreservesCommentsAndExistingSection(t *testing.T) {
 		t.Fatalf("uninstall changed=%v err=%v", changed, err)
 	}
 	restored, _ := os.ReadFile(path)
-	if strings.Contains(string(restored), "codex-meter managed") ||
+	if strings.Contains(string(restored), "codex-usage managed") ||
 		!strings.Contains(string(restored), "# 保留这一行") {
 		t.Fatalf("managed stanza removal damaged config:\n%s", restored)
 	}
@@ -135,7 +135,7 @@ func TestResolvePathsRejectsNonDedicatedOverride(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CODEX_METER_HOME", dir)
+	t.Setenv("CODEX_USAGE_HOME", dir)
 	if _, err := ResolvePaths(); err == nil {
 		t.Fatal("expected non-dedicated state directory rejection")
 	}
@@ -143,7 +143,7 @@ func TestResolvePathsRejectsNonDedicatedOverride(t *testing.T) {
 
 func TestResolvePathsAcceptsEmptyOverride(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("CODEX_METER_HOME", dir)
+	t.Setenv("CODEX_USAGE_HOME", dir)
 	paths, err := ResolvePaths()
 	if err != nil {
 		t.Fatal(err)

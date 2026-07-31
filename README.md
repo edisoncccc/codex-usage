@@ -1,4 +1,4 @@
-# Codex Meter
+# Codex Usage
 
 中文文档：[`README.zh-CN.md`](README.zh-CN.md)
 

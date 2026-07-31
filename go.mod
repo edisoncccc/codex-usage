@@ -1,4 +1,4 @@
-module github.com/local-first/codex-meter
+module github.com/zJay26/codex-usage
 
 go 1.26
 

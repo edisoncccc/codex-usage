@@ -18,8 +18,8 @@ import (
 
 const (
 	DefaultPort  = 43189
-	managedBegin = "# BEGIN codex-meter managed"
-	managedEnd   = "# END codex-meter managed"
+	managedBegin = "# BEGIN codex-usage managed"
+	managedEnd   = "# END codex-usage managed"
 )
 
 type Config struct {
@@ -54,7 +54,7 @@ func Default() Config {
 }
 
 func ResolvePaths() (Paths, error) {
-	if override := strings.TrimSpace(os.Getenv("CODEX_METER_HOME")); override != "" {
+	if override := strings.TrimSpace(os.Getenv("CODEX_USAGE_HOME")); override != "" {
 		abs, err := filepath.Abs(override)
 		if err != nil {
 			return Paths{}, err
@@ -62,7 +62,7 @@ func ResolvePaths() (Paths, error) {
 		if err := validateDedicatedStateDir(abs); err != nil {
 			return Paths{}, err
 		}
-		name := "codex-meter"
+		name := "codex-usage"
 		if runtime.GOOS == "windows" {
 			name += ".exe"
 		}
@@ -86,20 +86,20 @@ func ResolvePaths() (Paths, error) {
 		if base == "" {
 			base = filepath.Join(home, "AppData", "Local")
 		}
-		stateDir = filepath.Join(base, "codex-meter")
-		installDir = filepath.Join(base, "Programs", "codex-meter")
+		stateDir = filepath.Join(base, "codex-usage")
+		installDir = filepath.Join(base, "Programs", "codex-usage")
 	} else {
 		data := os.Getenv("XDG_DATA_HOME")
 		if data == "" {
 			data = filepath.Join(home, ".local", "share")
 		}
-		stateDir = filepath.Join(data, "codex-meter")
+		stateDir = filepath.Join(data, "codex-usage")
 		installDir = filepath.Join(home, ".local", "bin")
 	}
 	if err := validateDedicatedStateDir(stateDir); err != nil {
 		return Paths{}, err
 	}
-	name := "codex-meter"
+	name := "codex-usage"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
@@ -127,10 +127,10 @@ func validateDedicatedStateDir(path string) error {
 		return filepath.Clean(a) == filepath.Clean(b)
 	}
 	if equalPath(clean, root) {
-		return fmt.Errorf("CODEX_METER_HOME 不能是文件系统根目录")
+		return fmt.Errorf("CODEX_USAGE_HOME 不能是文件系统根目录")
 	}
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && equalPath(clean, home) {
-		return fmt.Errorf("CODEX_METER_HOME 不能是用户主目录")
+		return fmt.Errorf("CODEX_USAGE_HOME 不能是用户主目录")
 	}
 	entries, readErr := os.ReadDir(clean)
 	if errors.Is(readErr, os.ErrNotExist) {
@@ -142,19 +142,19 @@ func validateDedicatedStateDir(path string) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	marker, markerErr := os.ReadFile(filepath.Join(clean, ".codex-meter-state"))
-	if markerErr == nil && strings.TrimSpace(string(marker)) == "codex-meter-state-v1" {
+	marker, markerErr := os.ReadFile(filepath.Join(clean, ".codex-usage-state"))
+	if markerErr == nil && strings.TrimSpace(string(marker)) == "codex-usage-state-v1" {
 		return nil
 	}
 	managed := map[string]bool{
 		"backups": true, "bin": true, "config.json": true, "daemon.log": true,
 		"meter.sqlite": true, "meter.sqlite-shm": true, "meter.sqlite-wal": true,
-		"meter.sqlite-journal": true, "codex-meter.pid": true,
-		"codex-meter-start.vbs": true, ".codex-meter-state": true,
+		"meter.sqlite-journal": true, "codex-usage.pid": true,
+		"codex-usage-start.vbs": true, ".codex-usage-state": true,
 	}
 	for _, entry := range entries {
-		if !managed[entry.Name()] && !strings.HasPrefix(entry.Name(), ".codex-meter-") {
-			return fmt.Errorf("%s 不是专用 Codex Meter 状态目录（发现 %q）；请选择新的空目录", clean, entry.Name())
+		if !managed[entry.Name()] && !strings.HasPrefix(entry.Name(), ".codex-usage-") {
+			return fmt.Errorf("%s 不是专用 Codex Usage 状态目录（发现 %q）；请选择新的空目录", clean, entry.Name())
 		}
 	}
 	return nil
@@ -215,8 +215,8 @@ func EnsureStateMarker(paths Paths) error {
 	if err := EnsurePrivateDir(paths.StateDir); err != nil {
 		return err
 	}
-	return atomicWrite(filepath.Join(paths.StateDir, ".codex-meter-state"),
-		[]byte("codex-meter-state-v1\n"), 0o600)
+	return atomicWrite(filepath.Join(paths.StateDir, ".codex-usage-state"),
+		[]byte("codex-usage-state-v1\n"), 0o600)
 }
 
 func AddHome(paths Paths, raw string) (string, error) {
@@ -274,7 +274,7 @@ func InstallOTel(home, endpoint, backupDir string) (PatchResult, error) {
 		return PatchResult{}, err
 	}
 	if bytes.Contains(original, []byte(managedBegin)) {
-		return PatchResult{Message: "已由 codex-meter 管理"}, nil
+		return PatchResult{Message: "已由 codex-usage 管理"}, nil
 	}
 	if len(original) > 0 {
 		var parsed map[string]any
@@ -330,7 +330,7 @@ func UninstallOTel(home string) (bool, error) {
 	}
 	endRel := bytes.Index(data[start:], []byte(managedEnd))
 	if endRel < 0 {
-		return false, fmt.Errorf("发现不完整的 codex-meter managed stanza，拒绝自动修改")
+		return false, fmt.Errorf("发现不完整的 codex-usage managed stanza，拒绝自动修改")
 	}
 	end := start + endRel + len(managedEnd)
 	if end < len(data) && data[end] == '\r' {
@@ -471,7 +471,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".codex-meter-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".codex-usage-*")
 	if err != nil {
 		return err
 	}
@@ -494,7 +494,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	}
 	if runtime.GOOS == "windows" {
 		if _, err := os.Stat(path); err == nil {
-			swap := path + ".codex-meter-swap"
+			swap := path + ".codex-usage-swap"
 			_ = os.Remove(swap)
 			if err := os.Rename(path, swap); err != nil {
 				return err

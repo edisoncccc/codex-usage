@@ -1,6 +1,6 @@
-# Codex Meter
+# Codex Usage
 
-`codex-meter` 是一个本地优先、逐电脑统计 Codex 模型 Token 的工具。它是一个 Go 单文件程序，内置：
+`codex-usage` 是一个本地优先、逐电脑统计 Codex 模型 Token 的工具。它是一个 Go 单文件程序，内置：
 
 - 历史 session 增量扫描器
 - SQLite 数据库（pure Go、`CGO_ENABLED=0`）
@@ -11,7 +11,7 @@
 
 它统计的是“运行 Codex 客户端与采集器的当前主机所产生的模型 Token”，不读取 Codex 账号 ID，也不调用账号级 `/usage`。因此一台 Windows 电脑和一台 Linux 服务器使用同一 Codex 账号时，会分别生成各自的 `machine_id`、数据库和 Dashboard。
 
-> “电脑”指运行 Codex 客户端和 `codex-meter` 的主机，而不是 shell/tool 实际执行所在的远程环境。v1 不估算 API 费用或 ChatGPT rate-limit 配额。
+> “电脑”指运行 Codex 客户端和 `codex-usage` 的主机，而不是 shell/tool 实际执行所在的远程环境。v1 不估算 API 费用或 ChatGPT rate-limit 配额。
 
 ## 快速开始
 
@@ -19,20 +19,20 @@
 
 | 系统 | amd64 | arm64 |
 |---|---|---|
-| Windows | `codex-meter-windows-amd64.exe` | `codex-meter-windows-arm64.exe` |
-| Linux | `codex-meter-linux-amd64` | `codex-meter-linux-arm64` |
+| Windows | `codex-usage-windows-amd64.exe` | `codex-usage-windows-arm64.exe` |
+| Linux | `codex-usage-linux-amd64` | `codex-usage-linux-arm64` |
 
 安装不要求管理员权限：
 
 ```powershell
 # Windows PowerShell
-.\codex-meter-windows-amd64.exe install
+.\codex-usage-windows-amd64.exe install
 ```
 
 ```bash
 # Linux
-chmod +x codex-meter-linux-amd64
-./codex-meter-linux-amd64 install
+chmod +x codex-usage-linux-amd64
+./codex-usage-linux-amd64 install
 ```
 
 安装会：
@@ -48,8 +48,8 @@ chmod +x codex-meter-linux-amd64
 打开 Dashboard：
 
 ```text
-codex-meter
-codex-meter open
+codex-usage
+codex-usage open
 ```
 
 Linux 无图形环境会输出本机 URL 和 SSH 隧道命令，例如：
@@ -63,15 +63,15 @@ ssh -N -L 43189:127.0.0.1:43189 user@server
 ## 常用命令
 
 ```text
-codex-meter summary --since 7d
-codex-meter summary --since 30d --json
-codex-meter summary --since all --csv
-codex-meter scan
-codex-meter scan --rebuild
-codex-meter doctor
-codex-meter config add-home /another/codex-home
-codex-meter uninstall
-codex-meter uninstall --purge
+codex-usage summary --since 7d
+codex-usage summary --since 30d --json
+codex-usage summary --since all --csv
+codex-usage scan
+codex-usage scan --rebuild
+codex-usage doctor
+codex-usage config add-home /another/codex-home
+codex-usage uninstall
+codex-usage uninstall --purge
 ```
 
 - `scan` 是增量扫描；partial line 会留到下次追加完成后再处理。
@@ -86,13 +86,13 @@ codex-meter uninstall --purge
 | 项目 | Windows | Linux |
 |---|---|---|
 | Codex Home | `%USERPROFILE%\.codex` | `~/.codex` |
-| Codex Meter 状态 | `%LOCALAPPDATA%\codex-meter` | `${XDG_DATA_HOME:-~/.local/share}/codex-meter` |
-| 安装程序 | `%LOCALAPPDATA%\Programs\codex-meter\codex-meter.exe` | `~/.local/bin/codex-meter` |
-| SQLite | `...\codex-meter\meter.sqlite` | `.../codex-meter/meter.sqlite` |
+| Codex Usage 状态 | `%LOCALAPPDATA%\codex-usage` | `${XDG_DATA_HOME:-~/.local/share}/codex-usage` |
+| 安装程序 | `%LOCALAPPDATA%\Programs\codex-usage\codex-usage.exe` | `~/.local/bin/codex-usage` |
+| SQLite | `...\codex-usage\meter.sqlite` | `.../codex-usage/meter.sqlite` |
 
-设置 `CODEX_HOME` 时优先使用该目录。额外目录通过 `config add-home` 添加。用于测试或便携运行时，可以设置 `CODEX_METER_HOME` 覆盖工具自己的状态目录。
+设置 `CODEX_HOME` 时优先使用该目录。额外目录通过 `config add-home` 添加。用于测试或便携运行时，可以设置 `CODEX_USAGE_HOME` 覆盖工具自己的状态目录。
 
-不要在多台电脑间同步同一个 `CODEX_METER_HOME`。如果主动同步同一个 Codex Home，安装前已有 session 不携带可靠的原始机器身份，`doctor` 会给出警告并按 session 去重，但无法把旧历史准确拆回各电脑。
+不要在多台电脑间同步同一个 `CODEX_USAGE_HOME`。如果主动同步同一个 Codex Home，安装前已有 session 不携带可靠的原始机器身份，`doctor` 会给出警告并按 session 去重，但无法把旧历史准确拆回各电脑。
 
 ## 核算规则
 
@@ -148,9 +148,9 @@ v1 接收 OTLP/HTTP JSON。工具管理的 Codex 配置类似：
 
 ```toml
 [otel]
-# BEGIN codex-meter managed
+# BEGIN codex-usage managed
 metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:43189/v1/metrics", protocol = "json" } }
-# END codex-meter managed
+# END codex-usage managed
 ```
 
 如果已经配置 `otel.metrics_exporter`，安装器绝不覆盖，只保留历史扫描并报告实时采集冲突。
@@ -203,7 +203,7 @@ GET  /healthz
 
 ```bash
 go test ./...
-CGO_ENABLED=0 go build -trimpath -o codex-meter ./cmd/codex-meter
+CGO_ENABLED=0 go build -trimpath -o codex-usage ./cmd/codex-usage
 ```
 
 构建四个平台并生成 `SHA256SUMS`：
@@ -219,10 +219,10 @@ CGO_ENABLED=0 go build -trimpath -o codex-meter ./cmd/codex-meter
 构建脚本执行单元/API 测试，并生成：
 
 ```text
-dist/codex-meter-windows-amd64.exe
-dist/codex-meter-windows-arm64.exe
-dist/codex-meter-linux-amd64
-dist/codex-meter-linux-arm64
+dist/codex-usage-windows-amd64.exe
+dist/codex-usage-windows-arm64.exe
+dist/codex-usage-linux-amd64
+dist/codex-usage-linux-arm64
 dist/SHA256SUMS
 ```
 
@@ -231,13 +231,13 @@ dist/SHA256SUMS
 ```bash
 npm install
 npx playwright install chromium
-CODEX_METER_BIN=./codex-meter npm test
+CODEX_USAGE_BIN=./codex-usage npm test
 ```
 
 流式内存验收（会实际生成大型 fixture，默认 10 GiB）：
 
 ```bash
-./scripts/memory-acceptance.sh ./codex-meter 10
+./scripts/memory-acceptance.sh ./codex-usage 10
 ```
 
 ## 已知边界

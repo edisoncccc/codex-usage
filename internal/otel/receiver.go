@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/local-first/codex-meter/internal/model"
-	"github.com/local-first/codex-meter/internal/store"
+	"github.com/zJay26/codex-usage/internal/model"
+	"github.com/zJay26/codex-usage/internal/store"
 )
 
 const maxOTLPBody = 16 << 20
@@ -172,7 +172,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	contentType := strings.ToLower(req.Header.Get("Content-Type"))
 	if strings.Contains(contentType, "protobuf") || strings.Contains(contentType, "octet-stream") {
-		http.Error(w, `codex-meter v1 接收 OTLP/HTTP JSON；请将 protocol 设为 "json"`, http.StatusUnsupportedMediaType)
+		http.Error(w, `codex-usage v1 接收 OTLP/HTTP JSON；请将 protocol 设为 "json"`, http.StatusUnsupportedMediaType)
 		return
 	}
 	body := http.MaxBytesReader(w, req.Body, maxOTLPBody)
@@ -213,7 +213,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"partialSuccess": map[string]any{},
-		"codexMeter":     result,
+		"codexUsage":     result,
 	})
 }
 

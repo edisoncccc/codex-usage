@@ -19,7 +19,7 @@ func WritePID(stateDir string) (func(), error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(stateDir, "codex-meter.pid")
+	path := filepath.Join(stateDir, "codex-usage.pid")
 	if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
 		return nil, err
 	}
@@ -27,7 +27,7 @@ func WritePID(stateDir string) (func(), error) {
 }
 
 func ReadPID(stateDir string) (int, error) {
-	data, err := os.ReadFile(filepath.Join(stateDir, "codex-meter.pid"))
+	data, err := os.ReadFile(filepath.Join(stateDir, "codex-usage.pid"))
 	if err != nil {
 		return 0, err
 	}
@@ -51,11 +51,11 @@ func ValidatePurgeStateDir(stateDir string) error {
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && samePlatformPath(clean, filepath.Clean(home)) {
 		return fmt.Errorf("拒绝 purge：状态目录不能是用户主目录")
 	}
-	data, err := os.ReadFile(filepath.Join(absolute, ".codex-meter-state"))
+	data, err := os.ReadFile(filepath.Join(absolute, ".codex-usage-state"))
 	if err != nil {
-		return fmt.Errorf("拒绝 purge：%s 缺少 codex-meter 状态标记", absolute)
+		return fmt.Errorf("拒绝 purge：%s 缺少 codex-usage 状态标记", absolute)
 	}
-	if strings.TrimSpace(string(data)) != "codex-meter-state-v1" {
+	if strings.TrimSpace(string(data)) != "codex-usage-state-v1" {
 		return fmt.Errorf("拒绝 purge：%s 状态标记无效", absolute)
 	}
 	return nil

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/local-first/codex-meter/internal/model"
-	"github.com/local-first/codex-meter/internal/store"
+	"github.com/zJay26/codex-usage/internal/model"
+	"github.com/zJay26/codex-usage/internal/store"
 )
 
 func TestOTelCumulativeDeltaResetAndRetry(t *testing.T) {

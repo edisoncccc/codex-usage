@@ -318,14 +318,14 @@ function setupEvents() {
   $("#themeButton").addEventListener("click", () => {
     const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
     document.documentElement.dataset.theme = next;
-    localStorage.setItem("codex-meter-theme", next);
+    localStorage.setItem("codex-usage-theme", next);
     requestAnimationFrame(() => renderChart(state.chartPoints));
   });
   window.addEventListener("resize", () => renderChart(state.chartPoints));
 }
 
 async function boot() {
-  const savedTheme = localStorage.getItem("codex-meter-theme");
+  const savedTheme = localStorage.getItem("codex-usage-theme");
   if (savedTheme) document.documentElement.dataset.theme = savedTheme;
   setupEvents();
   await loadStatus().catch((error) => toast(error.message, true));

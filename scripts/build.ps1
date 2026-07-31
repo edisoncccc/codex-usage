@@ -32,10 +32,10 @@ try {
         $env:CGO_ENABLED = "0"
         $env:GOOS = $Target.OS
         $env:GOARCH = $Target.Arch
-        $Name = "codex-meter-$($Target.OS)-$($Target.Arch)$($Target.Suffix)"
+        $Name = "codex-usage-$($Target.OS)-$($Target.Arch)$($Target.Suffix)"
         $Output = Join-Path $Dist $Name
-        $Ldflags = "-s -w -X github.com/local-first/codex-meter/internal/app.Version=$Version -X github.com/local-first/codex-meter/internal/app.Commit=$Commit -X github.com/local-first/codex-meter/internal/app.BuildDate=$BuildDate"
-        & $Go build -trimpath -buildvcs=false -ldflags $Ldflags -o $Output ./cmd/codex-meter
+        $Ldflags = "-s -w -X github.com/zJay26/codex-usage/internal/app.Version=$Version -X github.com/zJay26/codex-usage/internal/app.Commit=$Commit -X github.com/zJay26/codex-usage/internal/app.BuildDate=$BuildDate"
+        & $Go build -trimpath -buildvcs=false -ldflags $Ldflags -o $Output ./cmd/codex-usage
         if ($LASTEXITCODE -ne 0) { throw "build failed for $($Target.OS)/$($Target.Arch)" }
     }
 } finally {
@@ -46,7 +46,7 @@ try {
 }
 
 $ChecksumLines = Get-ChildItem -LiteralPath $Dist -File |
-    Where-Object { $_.Name -like "codex-meter-*" } |
+    Where-Object { $_.Name -like "codex-usage-*" } |
     Sort-Object Name |
     ForEach-Object {
         $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()

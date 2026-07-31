@@ -1,4 +1,4 @@
-# Codex Meter v0.1.0 验收记录
+# Codex Usage v0.1.0 验收记录
 
 执行日期：2026-07-30
 执行主机：Windows amd64

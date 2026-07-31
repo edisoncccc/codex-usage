@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-binary="${1:-$project_root/codex-meter}"
+binary="${1:-$project_root/codex-usage}"
 gib="${2:-10}"
 fixture_root="$(mktemp -d)"
 trap 'rm -rf -- "$fixture_root"' EXIT
@@ -10,7 +10,7 @@ trap 'rm -rf -- "$fixture_root"' EXIT
 cd "$project_root"
 go run ./cmd/fixturegen -root "$fixture_root" -gib "$gib"
 export CODEX_HOME="$fixture_root/.codex"
-export CODEX_METER_HOME="$fixture_root/meter-state"
+export CODEX_USAGE_HOME="$fixture_root/meter-state"
 
 if command -v /usr/bin/time >/dev/null 2>&1; then
   /usr/bin/time -v "$binary" scan --rebuild --json 2>"$fixture_root/time.txt"

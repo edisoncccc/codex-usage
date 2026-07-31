@@ -9,9 +9,9 @@ let stateDir;
 let baseURL;
 
 test.beforeAll(async () => {
-  const binary = process.env.CODEX_METER_BIN;
-  if (!binary) throw new Error("CODEX_METER_BIN must point to a built codex-meter binary");
-  stateDir = await mkdtemp(path.join(tmpdir(), "codex-meter-e2e-"));
+  const binary = process.env.CODEX_USAGE_BIN;
+  if (!binary) throw new Error("CODEX_USAGE_BIN must point to a built codex-usage binary");
+  stateDir = await mkdtemp(path.join(tmpdir(), "codex-usage-e2e-"));
   const port = 45000 + (process.pid % 1000);
   await writeFile(path.join(stateDir, "config.json"), JSON.stringify({
     listen_address: "127.0.0.1",
@@ -22,7 +22,7 @@ test.beforeAll(async () => {
   processHandle = spawn(path.resolve(binary), ["serve"], {
     env: {
       ...process.env,
-      CODEX_METER_HOME: stateDir,
+      CODEX_USAGE_HOME: stateDir,
       CODEX_HOME: path.join(stateDir, "empty-codex-home")
     },
     stdio: "ignore",
@@ -36,7 +36,7 @@ test.beforeAll(async () => {
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("codex-meter test server did not become ready");
+  throw new Error("codex-usage test server did not become ready");
 });
 
 test.afterAll(async () => {
@@ -50,7 +50,7 @@ test("dashboard renders offline status, cards, filters and session table", async
     if (message.type() === "error") consoleErrors.push(message.text());
   });
   await page.goto(baseURL, { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: "Codex Meter" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Codex Usage" })).toBeVisible();
   await expect(page.getByText("本机累计")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Token 趋势" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Codex 来源" })).toBeVisible();

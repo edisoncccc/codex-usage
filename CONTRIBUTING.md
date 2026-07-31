@@ -1,6 +1,6 @@
 # Contributing
 
-感谢你改进 Codex Meter。
+感谢你改进 Codex Usage。
 
 ## 开发环境
 

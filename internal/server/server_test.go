@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/local-first/codex-meter/internal/meter"
-	"github.com/local-first/codex-meter/internal/model"
-	"github.com/local-first/codex-meter/internal/otel"
-	"github.com/local-first/codex-meter/internal/store"
+	"github.com/zJay26/codex-usage/internal/meter"
+	"github.com/zJay26/codex-usage/internal/model"
+	"github.com/zJay26/codex-usage/internal/otel"
+	"github.com/zJay26/codex-usage/internal/store"
 )
 
 func TestDashboardAPIAndExport(t *testing.T) {
@@ -51,7 +51,7 @@ func TestDashboardAPIAndExport(t *testing.T) {
 	body, _ := io.ReadAll(response.Body)
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK ||
-		!strings.Contains(string(body), "Codex Meter") ||
+		!strings.Contains(string(body), "Codex Usage") ||
 		response.Header.Get("Content-Security-Policy") == "" {
 		t.Fatalf("dashboard response invalid: status=%d headers=%v body=%s", response.StatusCode, response.Header, body)
 	}

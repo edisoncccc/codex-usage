@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/local-first/codex-meter/internal/app"
+	"github.com/zJay26/codex-usage/internal/app"
 )
 
 func main() {

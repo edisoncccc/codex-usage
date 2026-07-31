@@ -1,6 +1,6 @@
 # Third-party notices
 
-`codex-meter` directly depends on:
+`codex-usage` directly depends on:
 
 - `modernc.org/sqlite` — BSD-3-Clause
 - `github.com/pelletier/go-toml/v2` — MIT

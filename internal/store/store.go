@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/local-first/codex-meter/internal/model"
+	"github.com/zJay26/codex-usage/internal/model"
 	_ "modernc.org/sqlite"
 )
 
@@ -254,7 +254,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			if versionErr == nil {
 				version, parseErr := strconv.Atoi(rawVersion)
 				if parseErr != nil {
-					return fmt.Errorf("无效 Codex Meter schema_version %q", rawVersion)
+					return fmt.Errorf("无效 Codex Usage schema_version %q", rawVersion)
 				}
 				if version > schemaVersion {
 					return fmt.Errorf("数据库 schema v%d 来自更高版本；当前程序仅支持到 v%d",

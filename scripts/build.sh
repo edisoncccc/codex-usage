@@ -17,15 +17,15 @@ for target in windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
   arch="${target#*/}"
   suffix=""
   if [[ "$os" == windows ]]; then suffix=".exe"; fi
-  output="$dist/codex-meter-$os-$arch$suffix"
+  output="$dist/codex-usage-$os-$arch$suffix"
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" "$go_bin" build \
     -trimpath -buildvcs=false \
-    -ldflags "-s -w -X github.com/local-first/codex-meter/internal/app.Version=$version -X github.com/local-first/codex-meter/internal/app.Commit=$commit -X github.com/local-first/codex-meter/internal/app.BuildDate=$build_date" \
-    -o "$output" ./cmd/codex-meter
+    -ldflags "-s -w -X github.com/zJay26/codex-usage/internal/app.Version=$version -X github.com/zJay26/codex-usage/internal/app.Commit=$commit -X github.com/zJay26/codex-usage/internal/app.BuildDate=$build_date" \
+    -o "$output" ./cmd/codex-usage
 done
 
 (
   cd "$dist"
-  sha256sum codex-meter-* > SHA256SUMS
+  sha256sum codex-usage-* > SHA256SUMS
 )
 printf 'Built artifacts in %s\n' "$dist"

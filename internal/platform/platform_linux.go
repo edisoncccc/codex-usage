@@ -27,14 +27,14 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 	if err := os.MkdirAll(unitDir, 0o700); err != nil {
 		return ServiceResult{}, err
 	}
-	unitPath := filepath.Join(unitDir, "codex-meter.service")
+	unitPath := filepath.Join(unitDir, "codex-usage.service")
 	unit := `[Unit]
-Description=Codex Meter local token collector
+Description=Codex Usage local token collector
 After=default.target
 
 [Service]
 Type=simple
-Environment=` + systemdQuote("CODEX_METER_HOME="+stateDir) + `
+Environment=` + systemdQuote("CODEX_USAGE_HOME="+stateDir) + `
 ExecStart=` + systemdQuote(executable) + ` daemon
 Restart=on-failure
 RestartSec=5
@@ -64,10 +64,10 @@ WantedBy=default.target
 		}
 		return ServiceResult{
 			Installed: true, Started: true, Detail: unitPath,
-			Warning: "systemd --user 当前不可用；本次已后台启动，但登录自启需在 user bus 可用后执行 systemctl --user enable --now codex-meter",
+			Warning: "systemd --user 当前不可用；本次已后台启动，但登录自启需在 user bus 可用后执行 systemctl --user enable --now codex-usage",
 		}, nil
 	}
-	output, err := exec.Command("systemctl", "--user", "enable", "--now", "codex-meter.service").CombinedOutput()
+	output, err := exec.Command("systemctl", "--user", "enable", "--now", "codex-usage.service").CombinedOutput()
 	if err != nil {
 		if startErr := StartDetached(executable, "daemon"); startErr != nil {
 			return ServiceResult{}, fmt.Errorf("systemctl --user enable --now: %w: %s；后台启动也失败: %v",
@@ -94,20 +94,20 @@ func SetPrivateUmask() { syscall.Umask(0o077) }
 
 func UninstallService(stateDir string) error {
 	if _, err := exec.LookPath("systemctl"); err == nil {
-		_, _ = exec.Command("systemctl", "--user", "disable", "--now", "codex-meter.service").CombinedOutput()
+		_, _ = exec.Command("systemctl", "--user", "disable", "--now", "codex-usage.service").CombinedOutput()
 	}
 	home, _ := os.UserHomeDir()
 	configHome := os.Getenv("XDG_CONFIG_HOME")
 	if configHome == "" {
 		configHome = filepath.Join(home, ".config")
 	}
-	_ = os.Remove(filepath.Join(configHome, "systemd", "user", "codex-meter.service"))
+	_ = os.Remove(filepath.Join(configHome, "systemd", "user", "codex-usage.service"))
 	if _, err := exec.LookPath("systemctl"); err == nil {
 		_, _ = exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput()
 	}
 	if pid, err := ReadPID(stateDir); err == nil && pid != os.Getpid() {
 		executable, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-		if filepath.Base(executable) == "codex-meter" {
+		if filepath.Base(executable) == "codex-usage" {
 			process, findErr := os.FindProcess(pid)
 			if findErr != nil {
 				return findErr
@@ -115,7 +115,7 @@ func UninstallService(stateDir string) error {
 			_ = process.Signal(syscall.SIGTERM)
 		}
 	}
-	_ = os.Remove(filepath.Join(stateDir, "codex-meter.pid"))
+	_ = os.Remove(filepath.Join(stateDir, "codex-usage.pid"))
 	return nil
 }
 
@@ -150,8 +150,8 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	if err != nil {
 		return err
 	}
-	if filepath.Base(exeAbs) != "codex-meter" {
-		return fmt.Errorf("拒绝清理非 codex-meter 可执行文件")
+	if filepath.Base(exeAbs) != "codex-usage" {
+		return fmt.Errorf("拒绝清理非 codex-usage 可执行文件")
 	}
 	if purge {
 		if err := ValidatePurgeStateDir(stateAbs); err != nil {

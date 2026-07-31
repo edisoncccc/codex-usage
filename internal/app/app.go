@@ -22,13 +22,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/local-first/codex-meter/internal/config"
-	"github.com/local-first/codex-meter/internal/meter"
-	"github.com/local-first/codex-meter/internal/model"
-	"github.com/local-first/codex-meter/internal/otel"
-	"github.com/local-first/codex-meter/internal/platform"
-	meterServer "github.com/local-first/codex-meter/internal/server"
-	"github.com/local-first/codex-meter/internal/store"
+	"github.com/zJay26/codex-usage/internal/config"
+	"github.com/zJay26/codex-usage/internal/meter"
+	"github.com/zJay26/codex-usage/internal/model"
+	"github.com/zJay26/codex-usage/internal/otel"
+	"github.com/zJay26/codex-usage/internal/platform"
+	meterServer "github.com/zJay26/codex-usage/internal/server"
+	"github.com/zJay26/codex-usage/internal/store"
 )
 
 var (
@@ -56,7 +56,7 @@ func (c CLI) Run(args []string) int {
 			c.usage()
 			return 0
 		case "-v", "--version":
-			fmt.Fprintf(c.Stdout, "codex-meter %s (%s, %s) %s/%s\n", Version, Commit, BuildDate, runtime.GOOS, runtime.GOARCH)
+			fmt.Fprintf(c.Stdout, "codex-usage %s (%s, %s) %s/%s\n", Version, Commit, BuildDate, runtime.GOOS, runtime.GOARCH)
 			return 0
 		}
 	}
@@ -86,7 +86,7 @@ func (c CLI) Run(args []string) int {
 	case "config":
 		err = c.config(args)
 	case "version", "--version", "-v":
-		fmt.Fprintf(c.Stdout, "codex-meter %s (%s, %s) %s/%s\n", Version, Commit, BuildDate, runtime.GOOS, runtime.GOARCH)
+		fmt.Fprintf(c.Stdout, "codex-usage %s (%s, %s) %s/%s\n", Version, Commit, BuildDate, runtime.GOOS, runtime.GOARCH)
 		return 0
 	case "help", "--help", "-h":
 		c.usage()
@@ -104,19 +104,19 @@ func (c CLI) Run(args []string) int {
 }
 
 func (c CLI) usage() {
-	fmt.Fprintln(c.Stdout, `Codex Meter — 当前电脑的 Codex Token 本地统计
+	fmt.Fprintln(c.Stdout, `Codex Usage — 当前电脑的 Codex Token 本地统计
 
 用法:
-  codex-meter                         打开本机 Dashboard
-  codex-meter open                    打开本机 Dashboard
-  codex-meter install                 用户级安装、初始化、配置 OTel 并启动
-  codex-meter summary --since 7d      命令行摘要（支持 --json / --csv）
-  codex-meter scan [--rebuild]        增量扫描本机 Codex session
-  codex-meter doctor                  检查路径、配置、覆盖缺口与服务状态
-  codex-meter config add-home PATH    添加一个额外 CODEX_HOME
-  codex-meter uninstall [--purge]     卸载；默认保留统计库
-  codex-meter serve                   前台运行本地服务
-  codex-meter version                 显示版本
+  codex-usage                         打开本机 Dashboard
+  codex-usage open                    打开本机 Dashboard
+  codex-usage install                 用户级安装、初始化、配置 OTel 并启动
+  codex-usage summary --since 7d      命令行摘要（支持 --json / --csv）
+  codex-usage scan [--rebuild]        增量扫描本机 Codex session
+  codex-usage doctor                  检查路径、配置、覆盖缺口与服务状态
+  codex-usage config add-home PATH    添加一个额外 CODEX_HOME
+  codex-usage uninstall [--purge]     卸载；默认保留统计库
+  codex-usage serve                   前台运行本地服务
+  codex-usage version                 显示版本
 
 边界:
   “电脑”是运行 Codex 客户端和采集器的主机；不是 shell/tool 实际执行的远程环境。
@@ -227,7 +227,7 @@ func (c CLI) serve(args []string, daemon bool) error {
 	}()
 	go periodicScan(ctx, state, time.Duration(state.cfg.ScanIntervalSeconds)*time.Second)
 	if !daemon {
-		fmt.Fprintf(c.Stdout, "Codex Meter 正在 %s 运行；按 Ctrl+C 停止。\n", state.server.URL())
+		fmt.Fprintf(c.Stdout, "Codex Usage 正在 %s 运行；按 Ctrl+C 停止。\n", state.server.URL())
 	}
 	return state.server.Run(ctx)
 }
@@ -291,7 +291,7 @@ func (c CLI) open(args []string) error {
 			time.Sleep(180 * time.Millisecond)
 		}
 		if !healthOK(rawURL) {
-			return fmt.Errorf("本地服务未在 12 秒内就绪；请运行 codex-meter doctor")
+			return fmt.Errorf("本地服务未在 12 秒内就绪；请运行 codex-usage doctor")
 		}
 	}
 	if platform.HasGUI() {
@@ -413,7 +413,7 @@ func (c CLI) summary(args []string) error {
 		writer.Flush()
 		return writer.Error()
 	}
-	fmt.Fprintf(c.Stdout, "Codex Meter · 当前电脑 · %s\n", *since)
+	fmt.Fprintf(c.Stdout, "Codex Usage · 当前电脑 · %s\n", *since)
 	fmt.Fprintf(c.Stdout, "Total             %s\n", comma(value.GrandTotal))
 	fmt.Fprintf(c.Stdout, "Input             %s\n", comma(value.Usage.Input))
 	fmt.Fprintf(c.Stdout, "  Cached Input    %s  (Input 的子集)\n", comma(value.Usage.CachedInput))
@@ -429,7 +429,7 @@ func (c CLI) summary(args []string) error {
 
 func (c CLI) config(args []string) error {
 	if len(args) < 1 {
-		return errors.New("用法: codex-meter config add-home PATH")
+		return errors.New("用法: codex-usage config add-home PATH")
 	}
 	paths, err := config.ResolvePaths()
 	if err != nil {
@@ -438,14 +438,14 @@ func (c CLI) config(args []string) error {
 	switch args[0] {
 	case "add-home":
 		if len(args) != 2 {
-			return errors.New("用法: codex-meter config add-home PATH")
+			return errors.New("用法: codex-usage config add-home PATH")
 		}
 		added, err := config.AddHome(paths, args[1])
 		if err != nil {
 			return err
 		}
 		fmt.Fprintln(c.Stdout, "已添加额外 Codex Home:", added)
-		fmt.Fprintln(c.Stdout, "运行 codex-meter scan 开始统计。")
+		fmt.Fprintln(c.Stdout, "运行 codex-usage scan 开始统计。")
 		return nil
 	default:
 		return fmt.Errorf("未知 config 子命令 %q", args[0])
@@ -607,7 +607,7 @@ func (c CLI) uninstall(args []string) error {
 		fmt.Fprintln(c.Stdout, "已卸载服务、工具和统计数据（不可从工具内恢复）。")
 	} else {
 		fmt.Fprintln(c.Stdout, "已卸载服务和工具；统计库保留在:", paths.Database)
-		fmt.Fprintln(c.Stdout, "如需删除数据，请显式运行 codex-meter uninstall --purge。")
+		fmt.Fprintln(c.Stdout, "如需删除数据，请显式运行 codex-usage uninstall --purge。")
 	}
 	return nil
 }
@@ -663,11 +663,11 @@ func (c CLI) doctor(args []string) error {
 			if currentHostname, hostErr := os.Hostname(); hostErr == nil &&
 				currentHostname != "" && !strings.EqualFold(currentHostname, status.Machine.Hostname) {
 				add("warn", "machine_identity",
-					fmt.Sprintf("数据库最初属于主机 %s，当前主机为 %s；可能复制/同步了 CODEX_METER_HOME，逐电脑边界不再可靠", status.Machine.Hostname, currentHostname))
+					fmt.Sprintf("数据库最初属于主机 %s，当前主机为 %s；可能复制/同步了 CODEX_USAGE_HOME，逐电脑边界不再可靠", status.Machine.Hostname, currentHostname))
 			}
 			if status.Machine.OS != runtime.GOOS || status.Machine.Arch != runtime.GOARCH {
 				add("warn", "machine_identity",
-					fmt.Sprintf("数据库记录平台为 %s/%s，当前为 %s/%s；请勿跨电脑同步 CODEX_METER_HOME",
+					fmt.Sprintf("数据库记录平台为 %s/%s，当前为 %s/%s；请勿跨电脑同步 CODEX_USAGE_HOME",
 						status.Machine.OS, status.Machine.Arch, runtime.GOOS, runtime.GOARCH))
 			}
 			add("ok", "database", fmt.Sprintf("%s；events=%d sessions=%d", paths.Database, status.EventCount, status.SessionCount))
@@ -710,11 +710,11 @@ func (c CLI) doctor(args []string) error {
 			sessionHomes[session.SessionID] = home
 		}
 		configData, _ := os.ReadFile(config.CodexConfigPath(home))
-		hasManaged := bytes.Contains(configData, []byte("# BEGIN codex-meter managed"))
+		hasManaged := bytes.Contains(configData, []byte("# BEGIN codex-usage managed"))
 		hasExporter := bytes.Contains(configData, []byte("metrics_exporter"))
 		switch {
 		case hasManaged:
-			add("ok", "codex_config", home+" 已包含 codex-meter managed exporter")
+			add("ok", "codex_config", home+" 已包含 codex-usage managed exporter")
 		case hasExporter:
 			add("warn", "codex_config", home+" 已有第三方 metrics_exporter；工具不会覆盖，实时采集冲突")
 		default:
@@ -772,7 +772,7 @@ func copyExecutable(source, destination string) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(destination), ".codex-meter-*")
+	temp, err := os.CreateTemp(filepath.Dir(destination), ".codex-usage-*")
 	if err != nil {
 		return err
 	}

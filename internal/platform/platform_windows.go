@@ -25,18 +25,18 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return ServiceResult{}, err
 	}
-	launcher := filepath.Join(stateDir, "codex-meter-start.vbs")
+	launcher := filepath.Join(stateDir, "codex-usage-start.vbs")
 	vbsPath := strings.ReplaceAll(executable, `"`, `""`)
 	vbsState := strings.ReplaceAll(stateDir, `"`, `""`)
 	vbs := `Set shell = CreateObject("WScript.Shell")` + "\r\n" +
-		`shell.Environment("Process")("CODEX_METER_HOME") = "` + vbsState + `"` + "\r\n" +
+		`shell.Environment("Process")("CODEX_USAGE_HOME") = "` + vbsState + `"` + "\r\n" +
 		`shell.Run Chr(34) & "` + vbsPath + `" & Chr(34) & " daemon", 0, False` + "\r\n"
 	if err := os.WriteFile(launcher, []byte(vbs), 0o600); err != nil {
 		return ServiceResult{}, err
 	}
 	command := `wscript.exe //B //Nologo "` + launcher + `"`
 	args := []string{"add", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
-		"/v", "CodexMeter", "/t", "REG_SZ", "/d", command, "/f"}
+		"/v", "CodexUsage", "/t", "REG_SZ", "/d", command, "/f"}
 	output, err := exec.Command("reg.exe", args...).CombinedOutput()
 	if err != nil {
 		return ServiceResult{}, fmt.Errorf("注册当前用户登录启动项: %w: %s", err, strings.TrimSpace(string(output)))
@@ -75,15 +75,15 @@ func SetPrivateUmask() {}
 
 func UninstallService(stateDir string) error {
 	_, _ = exec.Command("reg.exe", "delete",
-		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "CodexMeter", "/f").CombinedOutput()
+		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "CodexUsage", "/f").CombinedOutput()
 	if pid, err := ReadPID(stateDir); err == nil && pid != os.Getpid() {
 		listing, _ := exec.Command("tasklist.exe", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH").Output()
-		if strings.Contains(strings.ToLower(string(listing)), `"codex-meter.exe"`) {
+		if strings.Contains(strings.ToLower(string(listing)), `"codex-usage.exe"`) {
 			_, _ = exec.Command("taskkill.exe", "/PID", fmt.Sprint(pid), "/T", "/F").CombinedOutput()
 		}
 	}
-	_ = os.Remove(filepath.Join(stateDir, "codex-meter.pid"))
-	_ = os.Remove(filepath.Join(stateDir, "codex-meter-start.vbs"))
+	_ = os.Remove(filepath.Join(stateDir, "codex-usage.pid"))
+	_ = os.Remove(filepath.Join(stateDir, "codex-usage-start.vbs"))
 	return nil
 }
 
@@ -119,7 +119,7 @@ func OpenURL(rawURL string) error {
 func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	// A running Windows executable cannot delete itself. A narrowly scoped
 	// helper script waits for this process to exit, removes only the resolved
-	// install file, optionally removes the codex-meter state directory, then
+	// install file, optionally removes the codex-usage state directory, then
 	// deletes itself.
 	exeAbs, err := filepath.Abs(executable)
 	if err != nil {
@@ -129,9 +129,9 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	if err != nil {
 		return err
 	}
-	if !strings.EqualFold(filepath.Base(exeAbs), "codex-meter.exe") ||
+	if !strings.EqualFold(filepath.Base(exeAbs), "codex-usage.exe") ||
 		exeAbs == filepath.VolumeName(exeAbs)+string(os.PathSeparator) {
-		return fmt.Errorf("拒绝清理非 codex-meter 可执行文件")
+		return fmt.Errorf("拒绝清理非 codex-usage 可执行文件")
 	}
 	if purge {
 		if err := ValidatePurgeStateDir(stateAbs); err != nil {
@@ -143,13 +143,13 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	}
 	exeBatch := strings.ReplaceAll(exeAbs, "%", "%%")
 	stateBatch := strings.ReplaceAll(stateAbs, "%", "%%")
-	helper := filepath.Join(os.TempDir(), fmt.Sprintf("codex-meter-uninstall-%d.cmd", time.Now().UnixNano()))
+	helper := filepath.Join(os.TempDir(), fmt.Sprintf("codex-usage-uninstall-%d.cmd", time.Now().UnixNano()))
 	lines := []string{
 		"@echo off",
 		"ping 127.0.0.1 -n 3 > nul",
 		`del /f /q "` + exeBatch + `"`,
 	}
-	if strings.EqualFold(filepath.Base(filepath.Dir(exeAbs)), "codex-meter") {
+	if strings.EqualFold(filepath.Base(filepath.Dir(exeAbs)), "codex-usage") {
 		parentBatch := strings.ReplaceAll(filepath.Dir(exeAbs), "%", "%%")
 		lines = append(lines, `rmdir "`+parentBatch+`" 2>nul`)
 	}
