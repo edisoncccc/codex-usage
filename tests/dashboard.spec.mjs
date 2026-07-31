@@ -1,8 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 
 let processHandle;
 let stateDir;
@@ -40,8 +42,19 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  if (processHandle) processHandle.kill();
-  if (stateDir) await rm(stateDir, { recursive: true, force: true });
+  if (processHandle && processHandle.exitCode === null && processHandle.signalCode === null) {
+    const exited = once(processHandle, "exit");
+    processHandle.kill();
+    await Promise.race([
+      exited,
+      delay(5_000).then(() => {
+        throw new Error("codex-usage test server did not exit in time");
+      })
+    ]);
+  }
+  if (stateDir) {
+    await rm(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 });
 
 test("dashboard renders offline status, cards, filters and session table", async ({ page }) => {
