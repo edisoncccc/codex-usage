@@ -1,7 +1,20 @@
-# Codex Usage v0.2.0 验收记录
+# Codex Usage 验收记录
 
 执行日期：2026-08-01
 执行主机：Windows amd64
+
+## v1.0.0 本地候选版本
+
+- `go test -mod=readonly ./...`：通过。
+- `go vet -mod=readonly ./...`：通过。
+- Playwright：9/9 通过；保留原 5 项场景，并新增 catalog key 一致性、语言优先级与持久化、英文核心界面、ARIA/日期/数字、Pages 子路径、synthetic API 全接管、无 Cookie/外部请求、定价/扫描/导出及移动端场景。
+- CLI：`--lang`、`CODEX_USAGE_LANG`、Windows UI locale / Linux locale 优先级有单元测试；非法显式语言退出码为 2；JSON/CSV schema 不变。Windows amd64 的英文 `summary` 与 `doctor` 完成隔离状态目录实跑。
+- Demo：构建过程复用 `internal/web/static` 正式前端，只注入 `scripts/demo-api.js`；API、定价覆写、扫描和导出使用会话内合成数据，刷新复位。
+- 素材：1280×640 Social Preview、960×540 / 14 秒 GIF、1280×720 / 20–30 秒中英 MP4 均从 synthetic Demo 自动生成；二进制文本扫描未发现真实用户路径、UUID 或本机用户名形态。
+- 构建：`CGO_ENABLED=0` 成功生成 Windows/Linux amd64/arm64 四个二进制，`SHA256SUMS` 恰含四项。Windows amd64 与 WSL Linux amd64 均实跑并报告 `1.0.0`；其余架构完成交叉构建元数据检查。
+- 发布前仍需完成 GitHub 侧门槛：推送/合并、`v1.0.0` Release、Pages 在线验证、About/Homepage/Topics/Social Preview、Discussions 与个人主页设置。门槛未完成前不启动外部推广。
+
+## v0.2.0 基线记录
 
 ## 自动化检查
 

@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and feature ideas / 问答与功能建议
+    url: https://github.com/zJay26/codex-usage/discussions
+    about: Use Discussions for usage questions, setup help, and scope proposals.

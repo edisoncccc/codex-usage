@@ -10,6 +10,7 @@ let processHandle;
 let stateDir;
 let codexHomeDir;
 let baseURL;
+let dashboardURL;
 
 test.beforeAll(async () => {
   const binary = process.env.CODEX_USAGE_BIN;
@@ -37,6 +38,7 @@ test.beforeAll(async () => {
     scan_interval_seconds: 60
   }));
   baseURL = `http://127.0.0.1:${port}`;
+  dashboardURL = `${baseURL}/?lang=zh-CN`;
   processHandle = spawn(path.resolve(binary), ["serve"], {
     env: {
       ...process.env,
@@ -81,7 +83,7 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   page.on("request", (request) => {
     if (new URL(request.url()).origin !== baseURL) externalRequests.push(request.url());
   });
-  await page.goto(baseURL, { waitUntil: "networkidle" });
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
 
   await expect(page.getByRole("heading", { name: "本机用量概览" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "概览" })).toHaveAttribute("aria-selected", "true");
@@ -103,7 +105,7 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
 });
 
 test("navigation, month drill-down, filter chips, pricing, and scan feedback work", async ({ page }) => {
-  await page.goto(baseURL, { waitUntil: "networkidle" });
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
 
   const dailyTab = page.getByRole("tab", { name: "每日" });
   await dailyTab.focus();
@@ -157,7 +159,7 @@ test("revisiting a range or view reuses the current data revision", async ({ pag
       dataRequests.push(`${url.pathname}?${url.searchParams.toString()}`);
     }
   });
-  await page.goto(baseURL, { waitUntil: "networkidle" });
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
 
   await page.locator('[data-overview-range="all"]').click();
   await expect(page.locator("#overviewCost")).not.toHaveClass(/loading/);
@@ -187,7 +189,7 @@ test("revisiting a range or view reuses the current data revision", async ({ pag
 
 test("mobile, tablet, themes, and reduced motion avoid page overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(baseURL, { waitUntil: "networkidle" });
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
   await page.getByRole("tab", { name: "明细" }).click();
   await expect(page.getByRole("heading", { name: "Session 明细" })).toBeVisible();
   expect(await page.locator(".session-row").count()).toBeGreaterThan(0);
@@ -216,4 +218,34 @@ test("mutation endpoints block foreign origins", async ({ request }) => {
     });
     expect(response.status()).toBe(403);
   }
+});
+
+test("localization catalogs, precedence, persistence, dates, numbers, and ARIA stay aligned", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("codex-usage-locale", "zh-CN"));
+  await page.goto(`${baseURL}/?lang=en`, { waitUntil: "networkidle" });
+
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.getByRole("heading", { name: "Per-machine usage overview" })).toBeVisible();
+  await expect(page.locator("#machinePill")).toHaveAttribute("aria-label", /Current machine:/);
+  await expect(page.locator("#overviewSubtitle")).toHaveText("Past 7 local calendar days");
+  await expect(page.locator("#overviewTotal")).toContainText(/\d/);
+  const catalogs = await page.evaluate(() => {
+    const values = window.CodexUsageI18n.catalogs;
+    const zh = Object.keys(values["zh-CN"]).sort();
+    const en = Object.keys(values.en).sort();
+    return { equal: JSON.stringify(zh) === JSON.stringify(en), count: zh.length };
+  });
+  expect(catalogs.equal).toBe(true);
+  expect(catalogs.count).toBeGreaterThan(150);
+  for (const leaked of ["本机用量概览", "当前筛选", "定价设置", "数据来源与归属"]) {
+    await expect(page.getByText(leaked, { exact: true })).toHaveCount(0);
+  }
+
+  await page.getByRole("tab", { name: "Daily" }).click();
+  await expect(page.locator("#monthLabel")).toContainText(/[A-Za-z]/);
+  await page.locator("#localeButton").click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+  await expect(page.getByRole("heading", { name: "每日用量" })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("codex-usage-locale"))).toBe("zh-CN");
+  expect(new URL(page.url()).searchParams.get("lang")).toBe("zh-CN");
 });

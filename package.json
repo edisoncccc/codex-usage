@@ -3,7 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "playwright test tests/dashboard.spec.mjs"
+    "build:demo": "node scripts/build-demo.mjs dist/pages",
+    "pretest": "npm run build:demo",
+    "test": "playwright test tests/dashboard.spec.mjs tests/demo.spec.mjs",
+    "pretest:demo": "npm run build:demo",
+    "test:demo": "playwright test tests/demo.spec.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0"

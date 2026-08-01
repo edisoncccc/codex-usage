@@ -2,9 +2,11 @@
 
 # codex-usage
 
-**把分散在本机的 Codex Token 记录，变成清楚、可信、可筛选的逐电脑用量。**
+**同一个 Codex 账号跑在多台电脑：哪台机器用掉了 Token？**
 
-[English](README.en.md) | 简体中文
+*Which machine used your Codex tokens?*
+
+[在线体验](https://zjay26.github.io/codex-usage/?lang=zh-CN) · [Windows x64 下载](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe) · [Linux x64 下载](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64) · [English](README.en.md) / 简体中文
 
 [![CI](https://github.com/zJay26/codex-usage/actions/workflows/ci.yml/badge.svg)](https://github.com/zJay26/codex-usage/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/zJay26/codex-usage?display_name=tag)](https://github.com/zJay26/codex-usage/releases/latest)
@@ -13,85 +15,75 @@
 
 </div>
 
-![Codex Usage Dashboard](docs/images/dashboard.png)
+![Codex Usage 12 秒演示：逐电脑 Token、日期下钻、筛选与等价成本](docs/media/codex-usage-demo.gif)
 
-<details><summary>查看 390 × 844 移动端布局</summary>
+> 演示与在线 Demo 全部使用合成数据；不读取你的文件、不设 Cookie、无埋点或外部请求。
 
-![Codex Usage 移动端 Dashboard](docs/images/dashboard-mobile.png)
+## 30 秒理解
 
-</details>
+在每台 Windows、WSL 或 Linux 主机分别运行一个单文件程序。它扫描该机的历史 Codex JSONL，并通过 loopback OTel 接收之后的新用量；两种来源按覆盖时间合并和去重，结果只写入该机的 SQLite。Dashboard 因而回答的是**这台电脑用了多少**，不是整个账号用了多少。
 
-## 它解决什么问题
+核心差异只有六点：逐电脑口径、历史 JSONL + 实时 OTel、防重复计算、单文件部署、本地优先，以及**从不读取 `auth.json`**。
 
-Codex 自带的账号级用量无法回答一个很实际的问题：**这些 Token 到底是哪台电脑用掉的？**
+## 它统计什么 / 不统计什么
 
-当同一个账号同时用于 Windows 工作站、Linux 服务器或 WSL 时，账号总量会混在一起。`codex-usage` 在每台机器上独立工作，为你提供：
+| 统计 | 不统计 |
+|---|---|
+| 当前电脑的 Token、模型、来源、项目、Thread、Agent 和本地自然日 | 账号在其他电脑上的用量 |
+| 历史 session JSONL 与未来 `turn.token_usage` OTel 指标 | 账号配额、订阅余额或真实账单 |
+| Standard API 文本 Token 的等价成本与定价覆盖率 | prompt、回复、reasoning、工具输出或 `auth.json` |
+| 去重记录、覆盖缺口和无法按日期归属的历史差额 | 云同步、远程遥测或第三方分析 |
 
-- 当前电脑今天、近 7 日、近 30 日和累计用了多少 Token
-- 每个本地自然日的用量月历、零用量日期和单日模型构成
-- 哪个模型、项目、Thread 或 Agent 用得最多
-- 按当前 Standard API 文本价格估算等价成本，并明确显示定价覆盖率
-- 历史 session 与未来实时用量的统一视图
-- 数据缺口和估算边界的明确提示，而不是给出一个看似精确的假数字
+> “电脑”指运行 Codex 客户端和采集器的主机，不是 shell 或 tool 实际执行的远程环境。费用是等价估算，不是 OpenAI 真实账单。
 
-所有数据都留在本机。程序不读取账号凭据，不保存 prompt、回复、reasoning 或工具输出，也不会把统计结果上传到外部服务。
+## 直接安装
+
+Windows amd64 / x64（无需管理员权限）：
+
+```powershell
+Invoke-WebRequest https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe -OutFile codex-usage.exe
+.\codex-usage.exe install
+```
+
+Linux amd64 / x64：
+
+```bash
+curl -fL https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64 -o codex-usage
+chmod +x codex-usage
+./codex-usage install
+```
+
+需要 arm64？从 [最新 Release](https://github.com/zJay26/codex-usage/releases/latest) 下载 `windows-arm64.exe` 或 `linux-arm64`。下载后可先用同页的 `SHA256SUMS` 校验。英文安装输出使用：
+
+```text
+codex-usage --lang en install
+```
+
+安装器会创建本机数据库、扫描历史 session、安全添加 loopback OTel endpoint，并启动用户级后台服务；不会覆盖已有第三方 metrics exporter。安装后在方便时重启 Codex，让新进程加载实时采集配置。随后运行 `codex-usage` 即可打开 Dashboard。
+
+Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自己的电脑执行命令后访问 `http://127.0.0.1:43189`。
 
 ## 功能亮点
 
 | 功能 | 你得到什么 |
 |---|---|
 | 逐电脑统计 | 每台机器生成独立 `machine_id` 和 SQLite 数据库，不把账号其他电脑混进来 |
-| 历史补录 | 自动扫描本机 Codex session，安装后就能看到已有用量 |
-| 实时采集 | 通过 Codex 官方 OTel 指标接收新用量，默认 60 秒刷新 |
+| 历史 + 实时 | 首次扫描已有 JSONL，之后接收官方 OTel 指标 |
+| 防重 | OTel、JSONL 与状态库按明确覆盖规则合并，不直接相加 |
+| 每日下钻 | 连续自然日脉冲带、月历、零用量日与单日模型构成 |
 | 清晰归属 | 按模型、来源、项目、Thread、主任务/Subagent/Guardian/Memory 筛选 |
-| 每日下钻 | 连续自然日脉冲带、月历视图、零用量日与单日模型构成 |
-| 等价成本 | 查询时按内置 Standard API 价格估算，未知 Token 单独计入未覆盖部分 |
-| 可见缺口 | JSONL 损坏、累计回退、历史未归属等情况会明确显示 |
-| 本地优先 | Dashboard 只监听 `127.0.0.1`，前端资源全部嵌入二进制 |
-| 单文件部署 | Windows/Linux、amd64/arm64，无 CGO，不需要额外数据库服务 |
-| 导出 | CLI 与 Dashboard 均支持 JSON/CSV 导出 |
+| 等价成本 | 查询时估算并显示 Token 定价覆盖率，未知部分不伪装成零费用 |
+| 本地优先 | 只监听 `127.0.0.1`，资源嵌入二进制，无运行时外部请求 |
+| 单文件部署 | Windows/Linux、amd64/arm64、无 CGO、无需外部数据库服务 |
+| 双语 | Dashboard 与 CLI 支持 `zh-CN` / `en`，URL、按钮、环境变量均可切换 |
 
-## 快速开始
+<details><summary>查看静态桌面和 390 × 844 移动端截图</summary>
 
-从 [最新 Release](https://github.com/zJay26/codex-usage/releases/latest) 下载与你的系统和架构对应的文件：
+![Codex Usage Dashboard](docs/images/dashboard.png)
 
-| 系统 | amd64 / x64 | arm64 |
-|---|---|---|
-| Windows | `codex-usage-windows-amd64.exe` | `codex-usage-windows-arm64.exe` |
-| Linux | `codex-usage-linux-amd64` | `codex-usage-linux-arm64` |
+![Codex Usage 移动端 Dashboard](docs/images/dashboard-mobile.png)
 
-### Windows
-
-```powershell
-.\codex-usage-windows-amd64.exe install
-```
-
-### Linux
-
-```bash
-chmod +x codex-usage-linux-amd64
-./codex-usage-linux-amd64 install
-```
-
-安装不需要管理员权限。它会创建本机数据库、扫描历史 session、安全地添加本机 OTel endpoint，并启动用户级后台服务。安装完成后重启 Codex，让新启动的 Codex 进程加载实时采集配置。
-
-Windows 使用当前用户的 `HKCU` 登录启动项：电脑重启并由同一用户登录后，后台服务会自动恢复，不需要再次手动运行安装程序。Linux 优先安装并启用 `systemd --user` 服务；如果系统没有可用的 user bus，安装器仍会启动当前后台进程并给出告警。无人值守 Linux 主机若希望用户退出登录后服务仍持续运行，需要管理员为该用户启用 linger。
-
-升级旧版本时，安装器会先停止旧后台服务，再迁移原有配置、SQLite 数据库、WAL 数据和 OTel 管理标记。历史统计继续保留；新版本只创建和使用 `usage.sqlite`。
-
-之后直接运行：
-
-```text
-codex-usage
-```
-
-程序会打开本机 Dashboard。Linux 服务器没有桌面环境时，会打印 URL 和 SSH 隧道命令：
-
-```bash
-ssh -N -L 43189:127.0.0.1:43189 user@server
-```
-
-再在本地浏览器访问 `http://127.0.0.1:43189`。
+</details>
 
 ## 它是怎么运行的
 
@@ -196,6 +188,8 @@ codex-usage config add-home PATH    添加额外 CODEX_HOME
 codex-usage uninstall               卸载程序，保留统计库
 codex-usage uninstall --purge       卸载并删除统计数据
 ```
+
+Dashboard 支持 `?lang=en|zh-CN` 和页头语言按钮；URL 参数优先于已保存语言，其次跟随浏览器。CLI 支持全局 `--lang` 和 `CODEX_USAGE_LANG`，例如 `CODEX_USAGE_LANG=en codex-usage doctor`。`--json` 与 `--csv` 字段不随语言改变。
 
 ## 数据存在哪里
 
