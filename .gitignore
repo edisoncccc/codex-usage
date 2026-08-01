@@ -1,4 +1,6 @@
 /dist/
+/codex-usage
+/codex-usage.exe
 /node_modules/
 /test-results/
 /playwright-report/

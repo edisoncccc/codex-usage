@@ -14,19 +14,22 @@ import (
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+	"github.com/zJay26/codex-usage/internal/pricing"
 )
 
 const (
 	DefaultPort  = 43189
+	databaseName = "usage.sqlite"
 	managedBegin = "# BEGIN codex-usage managed"
 	managedEnd   = "# END codex-usage managed"
 )
 
 type Config struct {
-	ListenAddress       string   `json:"listen_address"`
-	Port                int      `json:"port"`
-	ScanIntervalSeconds int      `json:"scan_interval_seconds"`
-	ExtraCodexHomes     []string `json:"extra_codex_homes,omitempty"`
+	ListenAddress       string                      `json:"listen_address"`
+	Port                int                         `json:"port"`
+	ScanIntervalSeconds int                         `json:"scan_interval_seconds"`
+	ExtraCodexHomes     []string                    `json:"extra_codex_homes,omitempty"`
+	PricingOverrides    map[string]pricing.Override `json:"pricing_overrides,omitempty"`
 }
 
 type Paths struct {
@@ -69,7 +72,7 @@ func ResolvePaths() (Paths, error) {
 		return Paths{
 			StateDir:     abs,
 			ConfigPath:   filepath.Join(abs, "config.json"),
-			Database:     filepath.Join(abs, "meter.sqlite"),
+			Database:     filepath.Join(abs, databaseName),
 			BackupDir:    filepath.Join(abs, "backups"),
 			InstallDir:   filepath.Join(abs, "bin"),
 			InstalledEXE: filepath.Join(abs, "bin", name),
@@ -106,7 +109,7 @@ func ResolvePaths() (Paths, error) {
 	return Paths{
 		StateDir:     stateDir,
 		ConfigPath:   filepath.Join(stateDir, "config.json"),
-		Database:     filepath.Join(stateDir, "meter.sqlite"),
+		Database:     filepath.Join(stateDir, databaseName),
 		BackupDir:    filepath.Join(stateDir, "backups"),
 		InstallDir:   installDir,
 		InstalledEXE: filepath.Join(installDir, name),
@@ -148,9 +151,17 @@ func validateDedicatedStateDir(path string) error {
 	}
 	managed := map[string]bool{
 		"backups": true, "bin": true, "config.json": true, "daemon.log": true,
-		"meter.sqlite": true, "meter.sqlite-shm": true, "meter.sqlite-wal": true,
-		"meter.sqlite-journal": true, "codex-usage.pid": true,
+		databaseName: true, databaseName + "-shm": true, databaseName + "-wal": true,
+		databaseName + "-journal": true, "codex-usage.pid": true,
 		"codex-usage-start.vbs": true, ".codex-usage-state": true,
+	}
+	previousName := previousProductName()
+	for _, name := range []string{
+		previousDatabaseName(), previousDatabaseName() + "-shm", previousDatabaseName() + "-wal",
+		previousDatabaseName() + "-journal", previousName + ".pid", previousName + "-start.vbs",
+		"." + previousName + "-state",
+	} {
+		managed[name] = true
 	}
 	for _, entry := range entries {
 		if !managed[entry.Name()] && !strings.HasPrefix(entry.Name(), ".codex-usage-") {
@@ -192,6 +203,10 @@ func Load(paths Paths) (Config, error) {
 		cfg.ScanIntervalSeconds = 60
 	}
 	cfg.ExtraCodexHomes = cleanHomes(cfg.ExtraCodexHomes)
+	cfg.PricingOverrides, err = pricing.NormalizeOverrides(cfg.PricingOverrides)
+	if err != nil {
+		return Config{}, fmt.Errorf("无效 pricing_overrides: %w", err)
+	}
 	return cfg, nil
 }
 
@@ -200,6 +215,11 @@ func Save(paths Paths, cfg Config) error {
 		return err
 	}
 	cfg.ExtraCodexHomes = cleanHomes(cfg.ExtraCodexHomes)
+	var err error
+	cfg.PricingOverrides, err = pricing.NormalizeOverrides(cfg.PricingOverrides)
+	if err != nil {
+		return fmt.Errorf("无效 pricing_overrides: %w", err)
+	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
@@ -276,6 +296,18 @@ func InstallOTel(home, endpoint, backupDir string) (PatchResult, error) {
 	if bytes.Contains(original, []byte(managedBegin)) {
 		return PatchResult{Message: "已由 codex-usage 管理"}, nil
 	}
+	line := fmt.Sprintf(`metrics_exporter = { otlp-http = { endpoint = %q, protocol = "json" } }`, endpoint)
+	if bytes.Contains(original, []byte(previousManagedBegin())) {
+		updated, replaceErr := replaceManagedOTel(original, previousManagedBegin(), previousManagedEnd(), line)
+		if replaceErr != nil {
+			return PatchResult{}, replaceErr
+		}
+		var check map[string]any
+		if err := toml.Unmarshal(updated, &check); err != nil {
+			return PatchResult{}, fmt.Errorf("迁移后的 config.toml 未通过语义校验: %w", err)
+		}
+		return persistOTelUpdate(home, backupDir, path, original, updated, "已迁移本机 OTLP/HTTP JSON exporter")
+	}
 	if len(original) > 0 {
 		var parsed map[string]any
 		if err := toml.Unmarshal(original, &parsed); err != nil {
@@ -289,30 +321,13 @@ func InstallOTel(home, endpoint, backupDir string) (PatchResult, error) {
 		}
 	}
 
-	line := fmt.Sprintf(`metrics_exporter = { otlp-http = { endpoint = %q, protocol = "json" } }`, endpoint)
 	updated := insertManagedOTel(original, line)
 	var check map[string]any
 	if err := toml.Unmarshal(updated, &check); err != nil {
 		return PatchResult{}, fmt.Errorf("生成的 config.toml 未通过语义校验: %w", err)
 	}
 
-	if err := EnsurePrivateDir(home); err != nil {
-		return PatchResult{}, err
-	}
-	if err := EnsurePrivateDir(backupDir); err != nil {
-		return PatchResult{}, err
-	}
-	backup := ""
-	if len(original) > 0 {
-		backup = filepath.Join(backupDir, fmt.Sprintf("config-%s.toml", randomSuffix()))
-		if err := atomicWrite(backup, original, 0o600); err != nil {
-			return PatchResult{}, fmt.Errorf("写入受限备份: %w", err)
-		}
-	}
-	if err := atomicWriteWithRollback(path, original, updated, 0o600); err != nil {
-		return PatchResult{}, err
-	}
-	return PatchResult{Changed: true, Backup: backup, Message: "已安全添加本机 OTLP/HTTP JSON exporter"}, nil
+	return persistOTelUpdate(home, backupDir, path, original, updated, "已安全添加本机 OTLP/HTTP JSON exporter")
 }
 
 func UninstallOTel(home string) (bool, error) {
@@ -324,15 +339,20 @@ func UninstallOTel(home string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	start := bytes.Index(data, []byte(managedBegin))
+	begin, endMarker := managedBegin, managedEnd
+	start := bytes.Index(data, []byte(begin))
 	if start < 0 {
-		return false, nil
+		begin, endMarker = previousManagedBegin(), previousManagedEnd()
+		start = bytes.Index(data, []byte(begin))
+		if start < 0 {
+			return false, nil
+		}
 	}
-	endRel := bytes.Index(data[start:], []byte(managedEnd))
+	endRel := bytes.Index(data[start:], []byte(endMarker))
 	if endRel < 0 {
 		return false, fmt.Errorf("发现不完整的 codex-usage managed stanza，拒绝自动修改")
 	}
-	end := start + endRel + len(managedEnd)
+	end := start + endRel + len(endMarker)
 	if end < len(data) && data[end] == '\r' {
 		end++
 	}
@@ -355,6 +375,47 @@ func UninstallOTel(home string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func replaceManagedOTel(original []byte, begin, end, exporterLine string) ([]byte, error) {
+	start := bytes.Index(original, []byte(begin))
+	if start < 0 {
+		return nil, fmt.Errorf("未找到可迁移的 managed stanza")
+	}
+	endRel := bytes.Index(original[start:], []byte(end))
+	if endRel < 0 {
+		return nil, fmt.Errorf("发现不完整的 managed stanza，拒绝自动修改")
+	}
+	endOffset := start + endRel + len(end)
+	newline := "\n"
+	if bytes.Contains(original, []byte("\r\n")) {
+		newline = "\r\n"
+	}
+	replacement := managedBegin + newline + exporterLine + newline + managedEnd
+	updated := append([]byte{}, original[:start]...)
+	updated = append(updated, []byte(replacement)...)
+	updated = append(updated, original[endOffset:]...)
+	return updated, nil
+}
+
+func persistOTelUpdate(home, backupDir, path string, original, updated []byte, message string) (PatchResult, error) {
+	if err := EnsurePrivateDir(home); err != nil {
+		return PatchResult{}, err
+	}
+	if err := EnsurePrivateDir(backupDir); err != nil {
+		return PatchResult{}, err
+	}
+	backup := ""
+	if len(original) > 0 {
+		backup = filepath.Join(backupDir, fmt.Sprintf("config-%s.toml", randomSuffix()))
+		if err := atomicWrite(backup, original, 0o600); err != nil {
+			return PatchResult{}, fmt.Errorf("写入受限备份: %w", err)
+		}
+	}
+	if err := atomicWriteWithRollback(path, original, updated, 0o600); err != nil {
+		return PatchResult{}, err
+	}
+	return PatchResult{Changed: true, Backup: backup, Message: message}, nil
 }
 
 func RollbackOTel(home, backup string) error {

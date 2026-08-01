@@ -87,6 +87,29 @@ func UninstallService(stateDir string) error {
 	return nil
 }
 
+func StopPreviousService(previous PreviousService) error {
+	if previous.StartupEntry != "" {
+		_, _ = exec.Command("reg.exe", "delete",
+			`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", previous.StartupEntry, "/f").CombinedOutput()
+	}
+	if pid, err := readPIDFile(previous.PIDPath); err == nil && pid != os.Getpid() {
+		listing, _ := exec.Command("tasklist.exe", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH").Output()
+		if strings.Contains(strings.ToLower(string(listing)), strings.ToLower(`"`+filepath.Base(previous.Executable)+`"`)) {
+			_, _ = exec.Command("taskkill.exe", "/PID", fmt.Sprint(pid), "/T", "/F").CombinedOutput()
+		}
+	}
+	for _, path := range []string{previous.PIDPath, previous.LauncherPath} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func RemovePreviousExecutable(previous PreviousService) error {
+	return removePreviousExecutable(previous)
+}
+
 func StartDetached(executable string, args ...string) error {
 	command := exec.Command(executable, args...)
 	command.SysProcAttr = &syscall.SysProcAttr{

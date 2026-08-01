@@ -15,6 +15,16 @@ type ServiceResult struct {
 	Detail    string
 }
 
+type PreviousService struct {
+	StateDir     string
+	Executable   string
+	InstallDir   string
+	PIDPath      string
+	LauncherPath string
+	StartupEntry string
+	ServiceName  string
+}
+
 func WritePID(stateDir string) (func(), error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, err
@@ -27,7 +37,11 @@ func WritePID(stateDir string) (func(), error) {
 }
 
 func ReadPID(stateDir string) (int, error) {
-	data, err := os.ReadFile(filepath.Join(stateDir, "codex-usage.pid"))
+	return readPIDFile(filepath.Join(stateDir, "codex-usage.pid"))
+}
+
+func readPIDFile(path string) (int, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, err
 	}
@@ -36,6 +50,14 @@ func ReadPID(stateDir string) (int, error) {
 		return 0, fmt.Errorf("无效 PID 文件")
 	}
 	return pid, nil
+}
+
+func removePreviousExecutable(previous PreviousService) error {
+	if err := os.Remove(previous.Executable); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	_ = os.Remove(previous.InstallDir)
+	return nil
 }
 
 func ValidatePurgeStateDir(stateDir string) error {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,24 +16,28 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/zJay26/codex-usage/internal/meter"
 	"github.com/zJay26/codex-usage/internal/model"
 	"github.com/zJay26/codex-usage/internal/otel"
+	"github.com/zJay26/codex-usage/internal/pricing"
 	"github.com/zJay26/codex-usage/internal/store"
-	meterweb "github.com/zJay26/codex-usage/internal/web"
+	"github.com/zJay26/codex-usage/internal/usage"
+	usageweb "github.com/zJay26/codex-usage/internal/web"
 )
 
 type Server struct {
-	Store    *store.Store
-	Scanner  *meter.Scanner
-	Receiver *otel.Receiver
-	Homes    func() ([]string, error)
-	Address  string
-	Port     int
-	Version  string
+	Store                *store.Store
+	Scanner              *usage.Scanner
+	Receiver             *otel.Receiver
+	Homes                func() ([]string, error)
+	Address              string
+	Port                 int
+	Version              string
+	LoadPricingOverrides func() (map[string]pricing.Override, error)
+	SavePricingOverrides func(map[string]pricing.Override) error
 
-	scanMu   sync.Mutex
-	scanning atomic.Bool
+	scanMu    sync.Mutex
+	pricingMu sync.Mutex
+	scanning  atomic.Bool
 }
 
 func (s *Server) URL() string {
@@ -55,11 +60,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/breakdown", s.handleBreakdown)
 	mux.HandleFunc("/api/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/api/v1/warnings", s.handleWarnings)
+	mux.HandleFunc("/api/v1/cost-estimate", s.handleCostEstimate)
+	mux.HandleFunc("/api/v1/pricing", s.handlePricing)
+	mux.HandleFunc("/api/v1/pricing/overrides", s.handlePricingOverrides)
 	mux.HandleFunc("/api/v1/rescan", s.handleRescan)
 	mux.HandleFunc("/api/v1/export", s.handleExport)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
-	mux.Handle("/", meterweb.Handler())
+	mux.Handle("/", usageweb.Handler())
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -224,6 +232,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if r.URL.Query().Get("compact") == "1" || strings.EqualFold(r.URL.Query().Get("compact"), "true") {
+		for index := range items {
+			items[index].Title = compactText(items[index].Title, 240)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -238,6 +251,157 @@ func (s *Server) handleWarnings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleCostEstimate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	filter, err := parseFilter(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	bucket := r.URL.Query().Get("bucket")
+	if bucket == "" {
+		bucket = "day"
+	}
+	if bucket != "day" {
+		http.Error(w, "bucket 只能是 day", http.StatusBadRequest)
+		return
+	}
+	overrides, err := s.pricingOverrides()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	builder, err := pricing.NewBuilder(overrides)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.forEachPricingEvent(r.Context(), filter, builder.Add); err != nil {
+		writeError(w, err)
+		return
+	}
+	report, err := pricing.FillDaily(builder.Report(), filter.Since, filter.Until, time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+type pricingCatalogResponse struct {
+	Basis          string                      `json:"basis"`
+	Currency       string                      `json:"currency"`
+	CatalogAsOf    string                      `json:"catalog_as_of"`
+	Catalog        []pricing.CatalogEntry      `json:"catalog"`
+	Overrides      map[string]pricing.Override `json:"overrides"`
+	UnpricedModels []model.BreakdownItem       `json:"unpriced_models"`
+}
+
+func (s *Server) handlePricing(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	overrides, err := s.pricingOverrides()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	response, err := s.pricingResponse(r.Context(), overrides)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handlePricingOverrides(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		methodNotAllowed(w, http.MethodPut)
+		return
+	}
+	if s.SavePricingOverrides == nil {
+		http.Error(w, "当前运行模式不支持保存定价覆写", http.StatusNotImplemented)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var payload struct {
+		Overrides *map[string]pricing.Override `json:"overrides"`
+	}
+	if err := decoder.Decode(&payload); err != nil {
+		http.Error(w, "无效请求体: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		http.Error(w, "无效请求体: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if payload.Overrides == nil {
+		http.Error(w, "请求体必须包含 overrides", http.StatusBadRequest)
+		return
+	}
+	normalized, err := pricing.NormalizeOverrides(*payload.Overrides)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.pricingMu.Lock()
+	err = s.SavePricingOverrides(normalized)
+	s.pricingMu.Unlock()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	response, err := s.pricingResponse(r.Context(), normalized)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) pricingOverrides() (map[string]pricing.Override, error) {
+	if s.LoadPricingOverrides == nil {
+		return nil, nil
+	}
+	s.pricingMu.Lock()
+	defer s.pricingMu.Unlock()
+	overrides, err := s.LoadPricingOverrides()
+	if err != nil {
+		return nil, err
+	}
+	return pricing.NormalizeOverrides(overrides)
+}
+
+func (s *Server) pricingResponse(ctx context.Context, overrides map[string]pricing.Override) (pricingCatalogResponse, error) {
+	items, err := s.Store.Breakdown(ctx, model.Filter{}, "model", 500)
+	if err != nil {
+		return pricingCatalogResponse{}, err
+	}
+	unpriced := make([]model.BreakdownItem, 0)
+	for _, item := range items {
+		_, found, resolveErr := pricing.Resolve(item.Key, overrides)
+		if resolveErr != nil {
+			return pricingCatalogResponse{}, resolveErr
+		}
+		if !found {
+			unpriced = append(unpriced, item)
+		}
+	}
+	if overrides == nil {
+		overrides = map[string]pricing.Override{}
+	}
+	return pricingCatalogResponse{
+		Basis: pricing.Basis, Currency: pricing.Currency, CatalogAsOf: pricing.CatalogAsOf,
+		Catalog: pricing.Catalog(), Overrides: overrides, UnpricedModels: unpriced,
+	}, nil
 }
 
 func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
@@ -357,6 +521,32 @@ func (s *Server) forEachEvent(ctx context.Context, filter model.Filter, fn func(
 		}
 		offset += len(items)
 	}
+}
+
+func (s *Server) forEachPricingEvent(ctx context.Context, filter model.Filter, fn func(model.UsageEvent) error) error {
+	return s.Store.WalkPricingEvents(ctx, filter, fn)
+}
+
+func compactText(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:limit])) + "…"
+}
+
+func ensureJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("只能提交一个 JSON 对象")
+		}
+		return err
+	}
+	return nil
 }
 
 func parseFilter(query url.Values) (model.Filter, error) {

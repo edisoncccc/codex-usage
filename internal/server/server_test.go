@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,15 +11,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zJay26/codex-usage/internal/meter"
 	"github.com/zJay26/codex-usage/internal/model"
 	"github.com/zJay26/codex-usage/internal/otel"
+	"github.com/zJay26/codex-usage/internal/pricing"
 	"github.com/zJay26/codex-usage/internal/store"
+	"github.com/zJay26/codex-usage/internal/usage"
 )
 
 func TestDashboardAPIAndExport(t *testing.T) {
 	root := t.TempDir()
-	st, err := store.Open(filepath.Join(root, "meter.sqlite"))
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,10 +37,26 @@ func TestDashboardAPIAndExport(t *testing.T) {
 	}, "fixture.jsonl"); err != nil {
 		t.Fatal(err)
 	}
-	scanner := &meter.Scanner{Store: st}
+	if _, err := st.InsertEvent(context.Background(), model.UsageEvent{
+		ID: "unpriced-fixture", Timestamp: at.Add(time.Minute), ObservedAt: at.Add(time.Minute), SessionID: "session-2",
+		Model: "codex-auto-review", Source: "codex_desktop", AgentType: "main",
+		Usage:      model.TokenUsage{Input: 10, Output: 10, Total: 20},
+		Provenance: model.ProvenanceSessionJSONL, Confidence: model.ConfidenceExact,
+	}, "unpriced-fixture.jsonl"); err != nil {
+		t.Fatal(err)
+	}
+	scanner := &usage.Scanner{Store: st}
+	savedOverrides := map[string]pricing.Override{}
 	srv := &Server{
 		Store: st, Scanner: scanner, Receiver: otel.NewReceiver(st),
-		Homes:   func() ([]string, error) { return []string{filepath.Join(root, ".codex")}, nil },
+		Homes: func() ([]string, error) { return []string{filepath.Join(root, ".codex")}, nil },
+		LoadPricingOverrides: func() (map[string]pricing.Override, error) {
+			return savedOverrides, nil
+		},
+		SavePricingOverrides: func(value map[string]pricing.Override) error {
+			savedOverrides = value
+			return nil
+		},
 		Address: "127.0.0.1", Port: 43189, Version: "test",
 	}
 	httpServer := httptest.NewServer(srv.Handler())
@@ -65,6 +83,8 @@ func TestDashboardAPIAndExport(t *testing.T) {
 		"/api/v1/timeseries?since=7d&bucket=hour",
 		"/api/v1/breakdown?dimension=model",
 		"/api/v1/sessions?limit=10",
+		"/api/v1/cost-estimate?bucket=day",
+		"/api/v1/pricing",
 		"/api/v1/export?format=json",
 		"/api/v1/export?format=csv",
 	} {
@@ -90,7 +110,50 @@ func TestDashboardAPIAndExport(t *testing.T) {
 		t.Fatalf("unknown API route status=%d", response.StatusCode)
 	}
 
-	request, _ := http.NewRequest(http.MethodPost, httpServer.URL+"/api/v1/rescan", strings.NewReader("{}"))
+	response, err = http.Get(httpServer.URL + "/api/v1/cost-estimate?bucket=day")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var initialCost pricing.Report
+	if err := json.NewDecoder(response.Body).Decode(&initialCost); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if initialCost.Summary.PricedTokens != 100 || initialCost.Summary.UnpricedTokens != 20 || initialCost.Summary.USD != "0.000455000" {
+		t.Fatalf("unexpected initial cost estimate: %#v", initialCost.Summary)
+	}
+
+	request, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/api/v1/pricing/overrides", strings.NewReader(
+		`{"overrides":{"codex-auto-review":{"alias_of":"gpt-5.6-luna"}}}`,
+	))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", httpServer.URL)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || savedOverrides["codex-auto-review"].AliasOf != "gpt-5.6-luna" {
+		t.Fatalf("pricing override was not saved: status=%d body=%s saved=%#v", response.StatusCode, payload, savedOverrides)
+	}
+
+	response, err = http.Get(httpServer.URL + "/api/v1/cost-estimate?bucket=day")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var overriddenCost pricing.Report
+	if err := json.NewDecoder(response.Body).Decode(&overriddenCost); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if overriddenCost.Summary.PricedTokens != 120 || overriddenCost.Summary.UnpricedTokens != 0 || overriddenCost.Summary.CoverageRatio != 1 {
+		t.Fatalf("override was not applied without restart: %#v", overriddenCost.Summary)
+	}
+
+	request, _ = http.NewRequest(http.MethodPost, httpServer.URL+"/api/v1/rescan", strings.NewReader("{}"))
 	request.Header.Set("Origin", "https://evil.example")
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
@@ -99,6 +162,58 @@ func TestDashboardAPIAndExport(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin mutation was not blocked: %d", response.StatusCode)
+	}
+
+	request, _ = http.NewRequest(http.MethodPut, httpServer.URL+"/api/v1/pricing/overrides", strings.NewReader(`{"overrides":{}}`))
+	request.Header.Set("Origin", "https://evil.example")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin pricing update was not blocked: %d", response.StatusCode)
+	}
+}
+
+func TestPricingOverrideValidationAndBodyLimit(t *testing.T) {
+	root := t.TempDir()
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := &Server{
+		Store: st, Receiver: otel.NewReceiver(st),
+		SavePricingOverrides: func(map[string]pricing.Override) error { return nil },
+	}
+	httpServer := httptest.NewServer(srv.Handler())
+	defer httpServer.Close()
+
+	for _, body := range []string{
+		`{"overrides":{"internal":{"input_usd_per_million":"-1","cached_input_usd_per_million":"0.1","cache_write_input_usd_per_million":"1","output_usd_per_million":"1"}}}`,
+		`{"overrides":{"x":{"alias_of":"y"}}}`,
+		`{"wrong":{}}`,
+	} {
+		request, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/api/v1/pricing/overrides", strings.NewReader(body))
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("invalid pricing body was accepted: status=%d body=%s", response.StatusCode, body)
+		}
+	}
+	oversized := `{"overrides":{},"padding":"` + strings.Repeat("x", 70<<10) + `"}`
+	request, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/api/v1/pricing/overrides", strings.NewReader(oversized))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized pricing body status=%d", response.StatusCode)
 	}
 }
 

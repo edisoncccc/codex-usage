@@ -119,6 +119,39 @@ func UninstallService(stateDir string) error {
 	return nil
 }
 
+func StopPreviousService(previous PreviousService) error {
+	if _, err := exec.LookPath("systemctl"); err == nil && previous.ServiceName != "" {
+		_, _ = exec.Command("systemctl", "--user", "disable", "--now", previous.ServiceName).CombinedOutput()
+	}
+	home, _ := os.UserHomeDir()
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		configHome = filepath.Join(home, ".config")
+	}
+	if previous.ServiceName != "" {
+		_ = os.Remove(filepath.Join(configHome, "systemd", "user", previous.ServiceName))
+	}
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		_, _ = exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput()
+	}
+	if pid, err := readPIDFile(previous.PIDPath); err == nil && pid != os.Getpid() {
+		executable, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+		if filepath.Base(executable) == filepath.Base(previous.Executable) {
+			if process, findErr := os.FindProcess(pid); findErr == nil {
+				_ = process.Signal(syscall.SIGTERM)
+			}
+		}
+	}
+	if err := os.Remove(previous.PIDPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func RemovePreviousExecutable(previous PreviousService) error {
+	return removePreviousExecutable(previous)
+}
+
 func StartDetached(executable string, args ...string) error {
 	command := exec.Command(executable, args...)
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

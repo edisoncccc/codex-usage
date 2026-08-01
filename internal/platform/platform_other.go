@@ -14,6 +14,18 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 func LockDown(path string) error             { return os.Chmod(path, 0o700) }
 func SetPrivateUmask()                       {}
 func UninstallService(stateDir string) error { return nil }
+func StopPreviousService(previous PreviousService) error {
+	if pid, err := readPIDFile(previous.PIDPath); err == nil && pid != os.Getpid() {
+		if process, findErr := os.FindProcess(pid); findErr == nil {
+			_ = process.Kill()
+		}
+	}
+	_ = os.Remove(previous.PIDPath)
+	return nil
+}
+func RemovePreviousExecutable(previous PreviousService) error {
+	return removePreviousExecutable(previous)
+}
 func StartDetached(executable string, args ...string) error {
 	return exec.Command(executable, args...).Start()
 }

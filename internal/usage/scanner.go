@@ -1,4 +1,4 @@
-package meter
+package usage
 
 import (
 	"bufio"

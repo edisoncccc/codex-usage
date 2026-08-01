@@ -17,19 +17,21 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zJay26/codex-usage/internal/model"
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 type Store struct {
-	db      *sql.DB
-	path    string
-	machine model.Machine
-	mu      sync.Mutex
+	db       *sql.DB
+	path     string
+	machine  model.Machine
+	mu       sync.Mutex
+	revision atomic.Uint64
 }
 
 type FileCursor struct {
@@ -68,6 +70,7 @@ type Status struct {
 	EventCount       int64         `json:"event_count"`
 	SessionCount     int64         `json:"session_count"`
 	WarningCount     int64         `json:"warning_count"`
+	DataRevision     uint64        `json:"data_revision"`
 	CoverageGaps     []CoverageGap `json:"coverage_gaps,omitempty"`
 	CodexHomes       []HomeStatus  `json:"codex_homes"`
 }
@@ -133,6 +136,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	s.revision.Store(1)
 	_ = os.Chmod(path, 0o600)
 	return s, nil
 }
@@ -213,6 +217,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS warnings (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at INTEGER NOT NULL,
+			first_seen INTEGER NOT NULL DEFAULT 0,
+			occurrences INTEGER NOT NULL DEFAULT 1,
 			kind TEXT NOT NULL,
 			path TEXT NOT NULL DEFAULT '',
 			detail TEXT NOT NULL,
@@ -243,6 +249,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
+	databaseVersion := 0
 	for index, stmt := range stmts {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return err
@@ -260,16 +267,95 @@ func (s *Store) migrate(ctx context.Context) error {
 					return fmt.Errorf("数据库 schema v%d 来自更高版本；当前程序仅支持到 v%d",
 						version, schemaVersion)
 				}
+				databaseVersion = version
 			} else if !errors.Is(versionErr, sql.ErrNoRows) {
 				return versionErr
 			}
 		}
+	}
+	if databaseVersion < 2 {
+		if err := migrateWarningsV2(ctx, tx); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_warnings_kind_path ON warnings(kind,path)`); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('schema_version',?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.Itoa(schemaVersion)); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func migrateWarningsV2(ctx context.Context, tx *sql.Tx) error {
+	columns := map[string]bool{}
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(warnings)`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typ string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !columns["first_seen"] {
+		if _, err := tx.ExecContext(ctx,
+			`ALTER TABLE warnings ADD COLUMN first_seen INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if !columns["occurrences"] {
+		if _, err := tx.ExecContext(ctx,
+			`ALTER TABLE warnings ADD COLUMN occurrences INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE warnings SET first_seen=created_at WHERE first_seen=0`); err != nil {
+		return err
+	}
+	groups, err := tx.QueryContext(ctx, `SELECT kind,path,COUNT(*),MIN(first_seen),MAX(id)
+		FROM warnings GROUP BY kind,path`)
+	if err != nil {
+		return err
+	}
+	type warningGroup struct {
+		kind, path       string
+		count, first, id int64
+	}
+	var items []warningGroup
+	for groups.Next() {
+		var item warningGroup
+		if err := groups.Scan(&item.kind, &item.path, &item.count, &item.first, &item.id); err != nil {
+			groups.Close()
+			return err
+		}
+		items = append(items, item)
+	}
+	if err := groups.Close(); err != nil {
+		return err
+	}
+	for _, item := range items {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE warnings SET first_seen=?,occurrences=? WHERE id=?`, item.first, item.count, item.id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM warnings WHERE kind=? AND path=? AND id<>?`, item.kind, item.path, item.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ensureMachine(ctx context.Context) error {
@@ -369,6 +455,9 @@ func (s *Store) InsertEvent(ctx context.Context, event model.UsageEvent, originP
 		return false, err
 	}
 	n, _ := result.RowsAffected()
+	if n > 0 {
+		s.revision.Add(1)
+	}
 	return n > 0, nil
 }
 
@@ -459,14 +548,22 @@ func (s *Store) ResetHistorical(ctx context.Context) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.revision.Add(1)
+	return nil
 }
 
 func (s *Store) AddWarning(ctx context.Context, kind, path, detail string) error {
 	fp := hashString(kind + "\x00" + path + "\x00" + detail)
-	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO warnings(
-		created_at,kind,path,detail,fingerprint) VALUES(?,?,?,?,?)`,
-		time.Now().Unix(), kind, path, detail, fp)
+	now := time.Now().Unix()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO warnings(
+		created_at,first_seen,occurrences,kind,path,detail,fingerprint) VALUES(?,?,?,?,?,?,?)
+		ON CONFLICT(kind,path) DO UPDATE SET created_at=excluded.created_at,
+		detail=excluded.detail,fingerprint=excluded.fingerprint,
+		occurrences=warnings.occurrences+1`,
+		now, now, 1, kind, path, detail, fp)
 	return err
 }
 
@@ -474,7 +571,7 @@ func (s *Store) Warnings(ctx context.Context, limit int) ([]model.Warning, error
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,created_at,kind,path,detail
+	rows, err := s.db.QueryContext(ctx, `SELECT id,created_at,first_seen,occurrences,kind,path,detail
 		FROM warnings ORDER BY created_at DESC,id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -483,11 +580,13 @@ func (s *Store) Warnings(ctx context.Context, limit int) ([]model.Warning, error
 	var out []model.Warning
 	for rows.Next() {
 		var item model.Warning
-		var created int64
-		if err := rows.Scan(&item.ID, &created, &item.Kind, &item.Path, &item.Detail); err != nil {
+		var created, first int64
+		if err := rows.Scan(&item.ID, &created, &first, &item.Occurrences,
+			&item.Kind, &item.Path, &item.Detail); err != nil {
 			return nil, err
 		}
 		item.CreatedAt = timeFromUnix(created)
+		item.FirstSeen = timeFromUnix(first)
 		out = append(out, item)
 	}
 	return out, rows.Err()
@@ -577,6 +676,7 @@ func (s *Store) ApplyStateFallbacks(ctx context.Context, sessions []model.Sessio
 	}
 	now := time.Now().Unix()
 	var increased int64
+	changed := false
 	for _, session := range sessions {
 		if session.SessionID == "" || session.TokensUsed <= 0 {
 			continue
@@ -599,9 +699,12 @@ func (s *Store) ApplyStateFallbacks(ctx context.Context, sessions []model.Sessio
 				detail := fmt.Sprintf("session %s 的状态库差额从 %d 增至 %d，但该 session 可能与 OTel 覆盖重叠；未将新增差额重复计入",
 					session.SessionID, item.total, originalDifference)
 				fp := hashString(kind + "\x00" + session.RolloutPath + "\x00" + detail)
-				if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO warnings(
-					created_at,kind,path,detail,fingerprint) VALUES(?,?,?,?,?)`,
-					now, kind, session.RolloutPath, detail, fp); err != nil {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO warnings(
+					created_at,first_seen,occurrences,kind,path,detail,fingerprint) VALUES(?,?,?,?,?,?,?)
+					ON CONFLICT(kind,path) DO UPDATE SET created_at=excluded.created_at,
+					detail=excluded.detail,fingerprint=excluded.fingerprint,
+					occurrences=warnings.occurrences+1`,
+					now, now, 1, kind, session.RolloutPath, detail, fp); err != nil {
 					return 0, err
 				}
 			}
@@ -612,9 +715,12 @@ func (s *Store) ApplyStateFallbacks(ctx context.Context, sessions []model.Sessio
 				continue
 			}
 			if found {
-				if _, err := tx.ExecContext(ctx, `DELETE FROM usage_events WHERE id=?`, id); err != nil {
+				result, err := tx.ExecContext(ctx, `DELETE FROM usage_events WHERE id=?`, id)
+				if err != nil {
 					return 0, err
 				}
+				rows, _ := result.RowsAffected()
+				changed = changed || rows > 0
 				delete(existing, session.SessionID)
 			}
 			continue
@@ -625,7 +731,7 @@ func (s *Store) ApplyStateFallbacks(ctx context.Context, sessions []model.Sessio
 		if !found || difference > item.total {
 			increased++
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO usage_events(
+		result, err := tx.ExecContext(ctx, `INSERT INTO usage_events(
 			id,usage_at,observed_at,machine_id,session_id,turn_id,model,source,agent_type,
 			project_path,thread_title,input_tokens,cached_input_tokens,cache_write_input_tokens,
 			output_tokens,reasoning_output_tokens,total_tokens,provenance,confidence,codex_home,origin_path)
@@ -633,7 +739,11 @@ func (s *Store) ApplyStateFallbacks(ctx context.Context, sessions []model.Sessio
 			ON CONFLICT(id) DO UPDATE SET observed_at=excluded.observed_at,
 			total_tokens=excluded.total_tokens,model=excluded.model,source=excluded.source,
 			agent_type=excluded.agent_type,project_path=excluded.project_path,
-			thread_title=excluded.thread_title,codex_home=excluded.codex_home`,
+			thread_title=excluded.thread_title,codex_home=excluded.codex_home
+			WHERE usage_events.total_tokens<>excluded.total_tokens OR usage_events.model<>excluded.model OR
+			usage_events.source<>excluded.source OR usage_events.agent_type<>excluded.agent_type OR
+			usage_events.project_path<>excluded.project_path OR usage_events.thread_title<>excluded.thread_title OR
+			usage_events.codex_home<>excluded.codex_home`,
 			id, 0, now, s.machine.ID, session.SessionID, "",
 			session.Model, session.Source, defaultAgent(session.AgentType), session.ProjectPath,
 			session.Title, 0, 0, 0, 0, 0, difference, model.ProvenanceState,
@@ -641,10 +751,15 @@ func (s *Store) ApplyStateFallbacks(ctx context.Context, sessions []model.Sessio
 		if err != nil {
 			return 0, err
 		}
+		rowsAffected, _ := result.RowsAffected()
+		changed = changed || rowsAffected > 0
 		existing[session.SessionID] = stateFallbackRow{total: difference, home: session.CodexHome}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
+	}
+	if changed {
+		s.revision.Add(1)
 	}
 	return increased, nil
 }
@@ -684,7 +799,8 @@ func (s *Store) Summary(ctx context.Context, filter model.Filter) (model.Summary
 		out.GrandTotal += out.Unattributed.Total
 	}
 	var warnings int64
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM warnings`).Scan(&warnings)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM warnings
+		WHERE kind<>'state_fallback_suppressed_otel'`).Scan(&warnings)
 	out.CoverageIncomplete = warnings > 0 || out.Unattributed.Total > 0
 	return out, nil
 }
@@ -837,6 +953,53 @@ func (s *Store) Sessions(ctx context.Context, filter model.Filter, limit, offset
 }
 
 func (s *Store) Events(ctx context.Context, query EventQuery) ([]model.UsageEvent, error) {
+	return s.queryEvents(ctx, query, false)
+}
+
+// PricingEvents applies the same canonical source and attribution rules as the
+// aggregate APIs, while still exposing normalized events to the estimator.
+func (s *Store) PricingEvents(ctx context.Context, query EventQuery) ([]model.UsageEvent, error) {
+	return s.queryEvents(ctx, query, true)
+}
+
+// WalkPricingEvents streams the canonical pricing view through one SQL query.
+// Cost estimation does not require event ordering, so this avoids repeatedly
+// sorting and rescanning the same canonical view for OFFSET pages.
+func (s *Store) WalkPricingEvents(ctx context.Context, filter model.Filter, fn func(model.UsageEvent) error) error {
+	where, args := canonicalWithFallbackWhere(filter, "e")
+	if requiresAttribution(filter) {
+		where, args = attributionWhere(filter, "e", true)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,usage_at,observed_at,machine_id,
+		session_id,turn_id,model,source,agent_type,project_path,thread_title,
+		input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,
+		reasoning_output_tokens,total_tokens,provenance,confidence,codex_home
+		FROM usage_events e WHERE `+where, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item model.UsageEvent
+		var usageAt, observedAt int64
+		if err := rows.Scan(&item.ID, &usageAt, &observedAt, &item.MachineID,
+			&item.SessionID, &item.TurnID, &item.Model, &item.Source, &item.AgentType,
+			&item.ProjectPath, &item.ThreadTitle, &item.Usage.Input,
+			&item.Usage.CachedInput, &item.Usage.CacheWriteInput, &item.Usage.Output,
+			&item.Usage.ReasoningOutput, &item.Usage.Total, &item.Provenance,
+			&item.Confidence, &item.CodexHome); err != nil {
+			return err
+		}
+		item.Timestamp = timeFromUnix(usageAt)
+		item.ObservedAt = timeFromUnix(observedAt)
+		if err := fn(item); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Store) queryEvents(ctx context.Context, query EventQuery, pricingView bool) ([]model.UsageEvent, error) {
 	if query.Limit <= 0 || query.Limit > 10000 {
 		query.Limit = 1000
 	}
@@ -844,6 +1007,9 @@ func (s *Store) Events(ctx context.Context, query EventQuery) ([]model.UsageEven
 		query.Offset = 0
 	}
 	where, args := canonicalWithFallbackWhere(query.Filter, "e")
+	if pricingView && requiresAttribution(query.Filter) {
+		where, args = attributionWhere(query.Filter, "e", true)
+	}
 	args = append(args, query.Limit, query.Offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT id,usage_at,observed_at,machine_id,
 		session_id,turn_id,model,source,agent_type,project_path,thread_title,
@@ -874,14 +1040,15 @@ func (s *Store) Events(ctx context.Context, query EventQuery) ([]model.UsageEven
 }
 
 func (s *Store) Status(ctx context.Context) (Status, error) {
-	out := Status{Machine: s.machine, DatabasePath: s.path}
+	out := Status{Machine: s.machine, DatabasePath: s.path, DataRevision: s.revision.Load()}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_events`).Scan(&out.EventCount); err != nil {
 		return out, err
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&out.SessionCount); err != nil {
 		return out, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM warnings`).Scan(&out.WarningCount); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM warnings
+		WHERE kind<>'state_fallback_suppressed_otel'`).Scan(&out.WarningCount); err != nil {
 		return out, err
 	}
 	var scan, otel int64

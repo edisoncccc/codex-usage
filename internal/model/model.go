@@ -133,11 +133,13 @@ type Machine struct {
 }
 
 type Warning struct {
-	ID        int64     `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	Kind      string    `json:"kind"`
-	Path      string    `json:"path,omitempty"`
-	Detail    string    `json:"detail"`
+	ID          int64     `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	FirstSeen   time.Time `json:"first_seen"`
+	Occurrences int64     `json:"occurrences"`
+	Kind        string    `json:"kind"`
+	Path        string    `json:"path,omitempty"`
+	Detail      string    `json:"detail"`
 }
 
 type Filter struct {

@@ -16,7 +16,7 @@ import (
 )
 
 func TestOTelCumulativeDeltaResetAndRetry(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "meter.sqlite"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestOTelCumulativeDeltaResetAndRetry(t *testing.T) {
 }
 
 func TestOTelDeltaTemporalityCountsSeparateBatches(t *testing.T) {
-	st, _ := store.Open(filepath.Join(t.TempDir(), "meter.sqlite"))
+	st, _ := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	defer st.Close()
 	receiver := NewReceiver(st)
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
@@ -93,7 +93,7 @@ func TestOTelDeltaTemporalityCountsSeparateBatches(t *testing.T) {
 }
 
 func TestOTelCoverageReplacesConcurrentSessionJSONL(t *testing.T) {
-	st, _ := store.Open(filepath.Join(t.TempDir(), "meter.sqlite"))
+	st, _ := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	defer st.Close()
 	at := time.Now().UTC().Truncate(time.Second)
 	_, err := st.InsertEvent(context.Background(), model.UsageEvent{
@@ -121,7 +121,7 @@ func TestOTelCoverageReplacesConcurrentSessionJSONL(t *testing.T) {
 }
 
 func TestOTLPHTTPJSONAcceptsProtoStringNumbers(t *testing.T) {
-	st, _ := store.Open(filepath.Join(t.TempDir(), "meter.sqlite"))
+	st, _ := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	defer st.Close()
 	receiver := NewReceiver(st)
 	body := `{"resourceMetrics":[{"resource":{"attributes":[{"key":"model","value":{"stringValue":"gpt-5.4"}}]},"scopeMetrics":[{"metrics":[{"name":"turn.token_usage","histogram":{"aggregationTemporality":2,"dataPoints":[{"attributes":[{"key":"token_type","value":{"stringValue":"total"}}],"startTimeUnixNano":"1785398400000000000","timeUnixNano":"1785398460000000000","count":"1","sum":123}]}}]}]}]}`
@@ -139,7 +139,7 @@ func TestOTLPHTTPJSONAcceptsProtoStringNumbers(t *testing.T) {
 }
 
 func TestOTelSubsetOnlyBatchDoesNotHideSessionHistory(t *testing.T) {
-	st, _ := store.Open(filepath.Join(t.TempDir(), "meter.sqlite"))
+	st, _ := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	defer st.Close()
 	at := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	if _, err := st.InsertEvent(context.Background(), model.UsageEvent{
@@ -169,7 +169,7 @@ func TestOTelSubsetOnlyBatchDoesNotHideSessionHistory(t *testing.T) {
 }
 
 func TestReceiverOfflineRecoveryDoesNotRecountSessionGap(t *testing.T) {
-	st, _ := store.Open(filepath.Join(t.TempDir(), "meter.sqlite"))
+	st, _ := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	defer st.Close()
 	start := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
 	firstReceiver := NewReceiver(st)

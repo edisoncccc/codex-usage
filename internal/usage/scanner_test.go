@@ -1,4 +1,4 @@
-package meter
+package usage
 
 import (
 	"bufio"
@@ -40,7 +40,7 @@ func TestScannerCumulativeDedupeModelSwitchResetAndPartialAppend(t *testing.T) {
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(filepath.Join(root, "meter.sqlite"))
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,6 +103,46 @@ func TestScannerCumulativeDedupeModelSwitchResetAndPartialAppend(t *testing.T) {
 	}
 }
 
+func TestScannerSplitsOneSessionAcrossLocalDaysAtEachTokenEvent(t *testing.T) {
+	previousLocal := time.Local
+	time.Local = time.FixedZone("UTC+8", 8*60*60)
+	t.Cleanup(func() { time.Local = previousLocal })
+
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions", "2026", "07", "15")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join([]string{
+		`{"timestamp":"2026-07-15T15:58:00Z","type":"session_meta","payload":{"id":"cross-midnight","cwd":"/project","originator":"codex_cli_rs"}}`,
+		`{"timestamp":"2026-07-15T15:58:01Z","type":"turn_context","payload":{"turn_id":"turn","cwd":"/project","model":"gpt-5.4"}}`,
+		tokenLine("2026-07-15T15:59:00Z", usage(1600000, 0, 0, 400000, 0, 2000000), usage(1600000, 0, 0, 400000, 0, 2000000)),
+		tokenLine("2026-07-15T16:01:00Z", usage(2400000, 0, 0, 600000, 0, 3000000), usage(800000, 0, 0, 200000, 0, 1000000)),
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "cross-midnight.jsonl"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := (&Scanner{Store: st}).Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	points, err := st.Timeseries(context.Background(), model.Filter{}, "day")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 2 || points[0].Usage.Total != 2000000 || points[1].Usage.Total != 1000000 {
+		t.Fatalf("cross-midnight increments were not split by event timestamp: %+v", points)
+	}
+	if points[0].Time.In(time.Local).Day() != 15 || points[1].Time.In(time.Local).Day() != 16 {
+		t.Fatalf("unexpected local-day buckets: %+v", points)
+	}
+}
+
 func TestScannerStateFallbackAndSchemaChange(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, ".codex")
@@ -137,7 +177,7 @@ func TestScannerStateFallbackAndSchemaChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
-	st, _ := store.Open(filepath.Join(root, "meter.sqlite"))
+	st, _ := store.Open(filepath.Join(root, "usage.sqlite"))
 	defer st.Close()
 	scanner := &Scanner{Store: st}
 	result, err := scanner.Scan(context.Background(), []string{home}, false)
@@ -174,7 +214,7 @@ func TestMultipleHomesDuplicateRolloutCountsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	st, _ := store.Open(filepath.Join(root, "meter.sqlite"))
+	st, _ := store.Open(filepath.Join(root, "usage.sqlite"))
 	defer st.Close()
 	result, err := (&Scanner{Store: st}).Scan(context.Background(), homes, false)
 	if err != nil {
@@ -204,7 +244,7 @@ func TestResumedSessionUsesSessionWideCumulativeBaseline(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "b.jsonl"), []byte(second), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	st, _ := store.Open(filepath.Join(root, "meter.sqlite"))
+	st, _ := store.Open(filepath.Join(root, "usage.sqlite"))
 	defer st.Close()
 	scanner := &Scanner{Store: st}
 	result, err := scanner.Scan(context.Background(), []string{home}, false)
@@ -241,7 +281,7 @@ func TestStateSchemaMismatchFallsBackToSessionDirectories(t *testing.T) {
 	if !discovery.Fallback || discovery.Warning == "" || len(discovery.Paths) != 1 {
 		t.Fatalf("schema mismatch did not fall back: %+v", discovery)
 	}
-	st, _ := store.Open(filepath.Join(root, "meter.sqlite"))
+	st, _ := store.Open(filepath.Join(root, "usage.sqlite"))
 	defer st.Close()
 	if _, err := (&Scanner{Store: st}).Scan(context.Background(), []string{home}, false); err != nil {
 		t.Fatal(err)
@@ -338,7 +378,7 @@ func TestScannerNeverPersistsConversationOrCredentials(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte(`{"token":"`+authSecret+`"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dbPath := filepath.Join(root, "meter.sqlite")
+	dbPath := filepath.Join(root, "usage.sqlite")
 	st, _ := store.Open(dbPath)
 	if _, err := (&Scanner{Store: st}).Scan(context.Background(), []string{home}, false); err != nil {
 		t.Fatal(err)

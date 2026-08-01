@@ -23,16 +23,17 @@ import (
 	"time"
 
 	"github.com/zJay26/codex-usage/internal/config"
-	"github.com/zJay26/codex-usage/internal/meter"
 	"github.com/zJay26/codex-usage/internal/model"
 	"github.com/zJay26/codex-usage/internal/otel"
 	"github.com/zJay26/codex-usage/internal/platform"
-	meterServer "github.com/zJay26/codex-usage/internal/server"
+	"github.com/zJay26/codex-usage/internal/pricing"
+	usageServer "github.com/zJay26/codex-usage/internal/server"
 	"github.com/zJay26/codex-usage/internal/store"
+	"github.com/zJay26/codex-usage/internal/usage"
 )
 
 var (
-	Version   = "0.1.0"
+	Version   = "0.2.0"
 	Commit    = "dev"
 	BuildDate = "unknown"
 )
@@ -120,7 +121,8 @@ func (c CLI) usage() {
 
 边界:
   “电脑”是运行 Codex 客户端和采集器的主机；不是 shell/tool 实际执行的远程环境。
-  不读取 auth.json、prompt、回复、reasoning 或工具输出，也不估算费用/账号配额。`)
+  不读取 auth.json、prompt、回复、reasoning 或工具输出；不读取真实账单或账号配额，
+  仅按本机 Token 与内置 Standard API 价格提供等价成本估算。`)
 }
 
 type runtimeState struct {
@@ -128,9 +130,9 @@ type runtimeState struct {
 	cfg      config.Config
 	homes    []string
 	store    *store.Store
-	scanner  *meter.Scanner
+	scanner  *usage.Scanner
 	receiver *otel.Receiver
-	server   *meterServer.Server
+	server   *usageServer.Server
 }
 
 type patchedHome struct {
@@ -163,9 +165,9 @@ func openState() (*runtimeState, error) {
 		st.Close()
 		return nil, fmt.Errorf("收紧状态目录权限: %w", err)
 	}
-	scanner := &meter.Scanner{Store: st}
+	scanner := &usage.Scanner{Store: st}
 	receiver := otel.NewReceiver(st)
-	srv := &meterServer.Server{
+	srv := &usageServer.Server{
 		Store: st, Scanner: scanner, Receiver: receiver,
 		Homes: func() ([]string, error) {
 			current, loadErr := config.Load(paths)
@@ -173,6 +175,21 @@ func openState() (*runtimeState, error) {
 				return nil, loadErr
 			}
 			return config.CodexHomes(current)
+		},
+		LoadPricingOverrides: func() (map[string]pricing.Override, error) {
+			current, loadErr := config.Load(paths)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			return current.PricingOverrides, nil
+		},
+		SavePricingOverrides: func(overrides map[string]pricing.Override) error {
+			current, loadErr := config.Load(paths)
+			if loadErr != nil {
+				return loadErr
+			}
+			current.PricingOverrides = overrides
+			return config.Save(paths, current)
 		},
 		Address: cfg.ListenAddress, Port: cfg.Port, Version: Version,
 	}
@@ -387,7 +404,7 @@ func (c CLI) summary(args []string) error {
 	defer state.store.Close()
 	filter := model.Filter{}
 	if *since != "all" {
-		filter.Since, err = meterServer.ParseSince(*since)
+		filter.Since, err = usageServer.ParseSince(*since)
 		if err != nil {
 			return err
 		}
@@ -463,6 +480,43 @@ func (c CLI) install(args []string) error {
 	if err != nil {
 		return err
 	}
+	source, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	source, _ = filepath.Abs(source)
+	destination, _ := filepath.Abs(paths.InstalledEXE)
+	if _, statErr := os.Stat(destination); statErr == nil {
+		_ = platform.UninstallService(paths.StateDir)
+	}
+	previous, err := config.ResolvePreviousPaths()
+	if err != nil {
+		return err
+	}
+	previousService := platform.PreviousService{
+		StateDir: previous.StateDir, Executable: previous.InstalledEXE, InstallDir: previous.InstallDir,
+		PIDPath: previous.PIDPath, LauncherPath: previous.LauncherPath,
+		StartupEntry: previous.StartupEntry, ServiceName: previous.ServiceName,
+	}
+	_, previousStateErr := os.Stat(previous.StateDir)
+	_, previousExecutableErr := os.Stat(previous.InstalledEXE)
+	previousInstalled := previousStateErr == nil || previousExecutableErr == nil
+	if err := platform.StopPreviousService(previousService); err != nil {
+		return fmt.Errorf("停止旧版后台服务: %w", err)
+	}
+	migration, err := config.MigratePreviousState(paths, previous)
+	if err != nil {
+		return fmt.Errorf("迁移旧版本机数据: %w", err)
+	}
+	if migration.DatabaseConflict {
+		return errors.New("检测到两个并行统计库；为避免覆盖历史数据，升级已停止，请先备份并处理旧版状态目录")
+	}
+	if migration.Found {
+		fmt.Fprintln(c.Stdout, "已迁移旧版本机配置与统计数据；历史记录会继续保留。")
+		if previousInstalled && !migration.PreviousStateGone {
+			fmt.Fprintln(c.Stderr, "提示：旧版状态目录仍有未识别文件，未自动删除:", previous.StateDir)
+		}
+	}
 	cfg, err := config.Load(paths)
 	if err != nil {
 		return err
@@ -483,15 +537,6 @@ func (c CLI) install(args []string) error {
 	}
 	if err := config.Save(paths, cfg); err != nil {
 		return err
-	}
-	source, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	source, _ = filepath.Abs(source)
-	destination, _ := filepath.Abs(paths.InstalledEXE)
-	if _, statErr := os.Stat(destination); statErr == nil {
-		_ = platform.UninstallService(paths.StateDir)
 	}
 	if !sameFilePath(source, destination) {
 		if err := copyExecutable(source, destination); err != nil {
@@ -560,6 +605,11 @@ func (c CLI) install(args []string) error {
 	}
 	if serviceResult.Warning != "" {
 		fmt.Fprintln(c.Stderr, "警告:", serviceResult.Warning)
+	}
+	if previousInstalled {
+		if cleanupErr := platform.RemovePreviousExecutable(previousService); cleanupErr != nil {
+			fmt.Fprintln(c.Stderr, "警告：旧版可执行文件未能自动清理:", cleanupErr)
+		}
 	}
 	fmt.Fprintf(c.Stdout, "Dashboard: http://127.0.0.1:%d\n", cfg.Port)
 	fmt.Fprintln(c.Stdout, "安装完成。请在方便时自行重启 Codex，使 OTel 配置对新进程生效；不会强制结束当前任务。")
@@ -693,7 +743,7 @@ func (c CLI) doctor(args []string) error {
 			add("warn", "codex_home", fmt.Sprintf("%s 不存在或不可读", home))
 			continue
 		}
-		discovery := meter.DiscoverHome(context.Background(), home)
+		discovery := usage.DiscoverHome(context.Background(), home)
 		if discovery.Warning != "" {
 			add("warn", "state_db", fmt.Sprintf("%s：%s；扫描 %d 个 JSONL", home, discovery.Warning, len(discovery.Paths)))
 		} else if discovery.StateDB != "" && !discovery.Fallback {
