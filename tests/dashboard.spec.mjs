@@ -112,7 +112,7 @@ test("navigation, month drill-down, filter chips, pricing, and scan feedback wor
   const initialMonth = await page.locator("#monthLabel").textContent();
   await page.locator("#previousMonth").click();
   await expect(page.locator("#monthLabel")).not.toHaveText(initialMonth);
-  expect(await page.locator("[data-calendar-date]").count()).toBeGreaterThan(0);
+  await expect(page.locator("[data-calendar-date]").first()).toBeVisible();
 
   await page.getByRole("tab", { name: "明细" }).click();
   await expect(page.getByRole("heading", { name: "明细与归属" })).toBeVisible();
