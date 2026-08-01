@@ -2,6 +2,8 @@
 
 感谢你改进 Codex Usage。
 
+可复现缺陷请使用 Issue 模板；安装、统计口径和功能建议请优先使用 GitHub Discussions。公开内容不要包含 hostname、machine ID、本机路径、Thread 标题、Session ID、精确时间或对话内容。
+
 ## 开发环境
 
 - Go 1.26.x

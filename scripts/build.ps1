@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.2.0"
+    [string]$Version = "1.0.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,12 +28,14 @@ try {
         @{ OS = "linux"; Arch = "amd64"; Suffix = "" },
         @{ OS = "linux"; Arch = "arm64"; Suffix = "" }
     )
+    $Artifacts = @()
     foreach ($Target in $Targets) {
         $env:CGO_ENABLED = "0"
         $env:GOOS = $Target.OS
         $env:GOARCH = $Target.Arch
         $Name = "codex-usage-$($Target.OS)-$($Target.Arch)$($Target.Suffix)"
         $Output = Join-Path $Dist $Name
+        $Artifacts += $Output
         $Ldflags = "-s -w -X github.com/zJay26/codex-usage/internal/app.Version=$Version -X github.com/zJay26/codex-usage/internal/app.Commit=$Commit -X github.com/zJay26/codex-usage/internal/app.BuildDate=$BuildDate"
         & $Go build -trimpath -buildvcs=false -ldflags $Ldflags -o $Output ./cmd/codex-usage
         if ($LASTEXITCODE -ne 0) { throw "build failed for $($Target.OS)/$($Target.Arch)" }
@@ -45,12 +47,11 @@ try {
     Pop-Location
 }
 
-$ChecksumLines = Get-ChildItem -LiteralPath $Dist -File |
-    Where-Object { $_.Name -like "codex-usage-*" } |
-    Sort-Object Name |
+$ChecksumLines = $Artifacts |
+    Sort-Object |
     ForEach-Object {
-        $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
-        "$Hash  $($_.Name)"
+        $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash.ToLowerInvariant()
+        "$Hash  $(Split-Path -Leaf $_)"
     }
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllLines((Join-Path $Dist "SHA256SUMS"), [string[]]$ChecksumLines, $Utf8NoBom)

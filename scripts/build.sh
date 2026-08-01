@@ -3,7 +3,7 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dist="$project_root/dist"
-version="${VERSION:-0.2.0}"
+version="${VERSION:-1.0.0}"
 build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 commit="$(git -C "$project_root" rev-parse --short HEAD 2>/dev/null || printf source)"
 go_bin="${GO:-go}"
@@ -26,6 +26,10 @@ done
 
 (
   cd "$dist"
-  sha256sum codex-usage-* > SHA256SUMS
+  sha256sum \
+    codex-usage-linux-amd64 \
+    codex-usage-linux-arm64 \
+    codex-usage-windows-amd64.exe \
+    codex-usage-windows-arm64.exe > SHA256SUMS
 )
 printf 'Built artifacts in %s\n' "$dist"

@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zJay26/codex-usage/internal/cliui"
 	"github.com/zJay26/codex-usage/internal/config"
 	"github.com/zJay26/codex-usage/internal/model"
 	"github.com/zJay26/codex-usage/internal/otel"
@@ -33,7 +34,7 @@ import (
 )
 
 var (
-	Version   = "0.2.0"
+	Version   = "1.0.0"
 	Commit    = "dev"
 	BuildDate = "unknown"
 )
@@ -41,6 +42,7 @@ var (
 type CLI struct {
 	Stdout io.Writer
 	Stderr io.Writer
+	locale cliui.Locale
 }
 
 func (c CLI) Run(args []string) int {
@@ -51,6 +53,18 @@ func (c CLI) Run(args []string) int {
 	if c.Stderr == nil {
 		c.Stderr = os.Stderr
 	}
+	explicitLanguage, remaining, languageErr := extractLanguage(args)
+	if languageErr != nil {
+		fmt.Fprintln(c.Stderr, cliui.English.Text("error.prefix"), languageErr)
+		return 2
+	}
+	locale, languageErr := cliui.Detect(explicitLanguage, os.Getenv("CODEX_USAGE_LANG"), platform.UserLocale())
+	if languageErr != nil {
+		fmt.Fprintln(c.Stderr, cliui.English.Text("error.prefix"), languageErr)
+		return 2
+	}
+	c.locale = locale
+	args = remaining
 	if len(args) > 0 {
 		switch args[0] {
 		case "-h", "--help":
@@ -93,36 +107,48 @@ func (c CLI) Run(args []string) int {
 		c.usage()
 		return 0
 	default:
-		fmt.Fprintf(c.Stderr, "未知命令 %q\n\n", command)
+		fmt.Fprintln(c.Stderr, c.tr("error.unknownCommand", command))
+		fmt.Fprintln(c.Stderr)
 		c.usage()
 		return 2
 	}
 	if err != nil {
-		fmt.Fprintln(c.Stderr, "错误:", err)
+		fmt.Fprintln(c.Stderr, c.tr("error.prefix"), err)
 		return 1
 	}
 	return 0
 }
 
 func (c CLI) usage() {
-	fmt.Fprintln(c.Stdout, `Codex Usage — 当前电脑的 Codex Token 本地统计
+	fmt.Fprintln(c.Stdout, c.tr("usage"))
+}
 
-用法:
-  codex-usage                         打开本机 Dashboard
-  codex-usage open                    打开本机 Dashboard
-  codex-usage install                 用户级安装、初始化、配置 OTel 并启动
-  codex-usage summary --since 7d      命令行摘要（支持 --json / --csv）
-  codex-usage scan [--rebuild]        增量扫描本机 Codex session
-  codex-usage doctor                  检查路径、配置、覆盖缺口与服务状态
-  codex-usage config add-home PATH    添加一个额外 CODEX_HOME
-  codex-usage uninstall [--purge]     卸载；默认保留统计库
-  codex-usage serve                   前台运行本地服务
-  codex-usage version                 显示版本
+func (c CLI) tr(key string, args ...any) string {
+	return c.locale.Text(key, args...)
+}
 
-边界:
-  “电脑”是运行 Codex 客户端和采集器的主机；不是 shell/tool 实际执行的远程环境。
-  不读取 auth.json、prompt、回复、reasoning 或工具输出；不读取真实账单或账号配额，
-  仅按本机 Token 与内置 Standard API 价格提供等价成本估算。`)
+func extractLanguage(args []string) (string, []string, error) {
+	remaining := make([]string, 0, len(args))
+	explicit := ""
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		switch {
+		case argument == "--lang":
+			if index+1 >= len(args) {
+				return "", nil, errors.New(cliui.English.Text("error.langMissing"))
+			}
+			explicit = args[index+1]
+			index++
+		case strings.HasPrefix(argument, "--lang="):
+			explicit = strings.TrimPrefix(argument, "--lang=")
+			if explicit == "" {
+				return "", nil, errors.New(cliui.English.Text("error.langMissing"))
+			}
+		default:
+			remaining = append(remaining, argument)
+		}
+	}
+	return explicit, remaining, nil
 }
 
 type runtimeState struct {
@@ -244,7 +270,7 @@ func (c CLI) serve(args []string, daemon bool) error {
 	}()
 	go periodicScan(ctx, state, time.Duration(state.cfg.ScanIntervalSeconds)*time.Second)
 	if !daemon {
-		fmt.Fprintf(c.Stdout, "Codex Usage 正在 %s 运行；按 Ctrl+C 停止。\n", state.server.URL())
+		fmt.Fprintf(c.Stdout, c.tr("serve.running"), state.server.URL())
 	}
 	return state.server.Run(ctx)
 }
@@ -301,19 +327,19 @@ func (c CLI) open(args []string) error {
 			}
 		}
 		if err := platform.StartDetached(executable, "daemon"); err != nil {
-			return fmt.Errorf("启动本地服务: %w", err)
+			return fmt.Errorf(c.tr("open.start"), err)
 		}
 		deadline := time.Now().Add(12 * time.Second)
 		for time.Now().Before(deadline) && !healthOK(rawURL) {
 			time.Sleep(180 * time.Millisecond)
 		}
 		if !healthOK(rawURL) {
-			return fmt.Errorf("本地服务未在 12 秒内就绪；请运行 codex-usage doctor")
+			return errors.New(c.tr("open.notReady"))
 		}
 	}
 	if platform.HasGUI() {
 		if err := platform.OpenURL(rawURL); err == nil {
-			fmt.Fprintln(c.Stdout, "已打开", rawURL)
+			fmt.Fprintln(c.Stdout, c.tr("open.opened"), rawURL)
 			return nil
 		}
 	}
@@ -326,7 +352,7 @@ func (c CLI) open(args []string) error {
 		hostname = "<server>"
 	}
 	fmt.Fprintln(c.Stdout, "Dashboard:", rawURL)
-	fmt.Fprintf(c.Stdout, "无图形环境时，在你的电脑运行：ssh -N -L %d:127.0.0.1:%d %s@%s\n",
+	fmt.Fprintf(c.Stdout, c.tr("open.noGUI"),
 		cfg.Port, cfg.Port, user, hostname)
 	return nil
 }
@@ -359,8 +385,8 @@ func healthOK(baseURL string) bool {
 func (c CLI) scan(args []string) error {
 	flags := flag.NewFlagSet("scan", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
-	rebuild := flags.Bool("rebuild", false, "清空历史扫描结果后重建（保留 OTel）")
-	asJSON := flags.Bool("json", false, "输出 JSON")
+	rebuild := flags.Bool("rebuild", false, c.tr("flag.rebuild"))
+	asJSON := flags.Bool("json", false, c.tr("flag.json"))
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -376,11 +402,11 @@ func (c CLI) scan(args []string) error {
 	if *asJSON {
 		return writePrettyJSON(c.Stdout, result)
 	}
-	fmt.Fprintf(c.Stdout, "扫描完成：%d 个 Home，%d 个文件，新增 %d 个事件，忽略 %d 个重复，%d 条提示，耗时 %.2fs\n",
+	fmt.Fprintf(c.Stdout, c.tr("scan.complete"),
 		result.Homes, result.Files, result.EventsInserted, result.Duplicates,
 		result.Warnings, float64(result.ElapsedMillis)/1000)
 	if result.Unattributed > 0 {
-		fmt.Fprintf(c.Stdout, "有 %d 个 session 的差额仅计入“历史未归属”，未伪造每日分布。\n", result.Unattributed)
+		fmt.Fprintf(c.Stdout, c.tr("scan.unattributed"), result.Unattributed)
 	}
 	return nil
 }
@@ -388,14 +414,14 @@ func (c CLI) scan(args []string) error {
 func (c CLI) summary(args []string) error {
 	flags := flag.NewFlagSet("summary", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
-	since := flags.String("since", "7d", "范围：7d、30d、today、all 或 RFC3339")
-	asJSON := flags.Bool("json", false, "输出 JSON")
-	asCSV := flags.Bool("csv", false, "输出 CSV")
+	since := flags.String("since", "7d", c.tr("flag.since"))
+	asJSON := flags.Bool("json", false, c.tr("flag.json"))
+	asCSV := flags.Bool("csv", false, c.tr("flag.csv"))
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *asJSON && *asCSV {
-		return errors.New("--json 与 --csv 不能同时使用")
+		return errors.New(c.tr("summary.conflict"))
 	}
 	state, err := openState()
 	if err != nil {
@@ -430,16 +456,16 @@ func (c CLI) summary(args []string) error {
 		writer.Flush()
 		return writer.Error()
 	}
-	fmt.Fprintf(c.Stdout, "Codex Usage · 当前电脑 · %s\n", *since)
+	fmt.Fprintf(c.Stdout, c.tr("summary.title"), *since)
 	fmt.Fprintf(c.Stdout, "Total             %s\n", comma(value.GrandTotal))
 	fmt.Fprintf(c.Stdout, "Input             %s\n", comma(value.Usage.Input))
-	fmt.Fprintf(c.Stdout, "  Cached Input    %s  (Input 的子集)\n", comma(value.Usage.CachedInput))
+	fmt.Fprintf(c.Stdout, c.tr("summary.cached"), comma(value.Usage.CachedInput))
 	fmt.Fprintf(c.Stdout, "  Cache Write     %s\n", comma(value.Usage.CacheWriteInput))
 	fmt.Fprintf(c.Stdout, "Output            %s\n", comma(value.Usage.Output))
-	fmt.Fprintf(c.Stdout, "  Reasoning       %s  (Output 的子集)\n", comma(value.Usage.ReasoningOutput))
+	fmt.Fprintf(c.Stdout, c.tr("summary.reasoning"), comma(value.Usage.ReasoningOutput))
 	fmt.Fprintf(c.Stdout, "Events / Sessions %d / %d\n", value.EventCount, value.SessionCount)
 	if value.Unattributed.Total > 0 {
-		fmt.Fprintf(c.Stdout, "历史未归属        %s  (只属于累计，不属于所选日期)\n", comma(value.Unattributed.Total))
+		fmt.Fprintf(c.Stdout, c.tr("summary.unattributed"), comma(value.Unattributed.Total))
 	}
 	return nil
 }
@@ -472,7 +498,7 @@ func (c CLI) config(args []string) error {
 func (c CLI) install(args []string) error {
 	flags := flag.NewFlagSet("install", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
-	skipScan := flags.Bool("skip-scan", false, "跳过首次历史扫描")
+	skipScan := flags.Bool("skip-scan", false, c.tr("flag.skipScan"))
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -502,19 +528,19 @@ func (c CLI) install(args []string) error {
 	_, previousExecutableErr := os.Stat(previous.InstalledEXE)
 	previousInstalled := previousStateErr == nil || previousExecutableErr == nil
 	if err := platform.StopPreviousService(previousService); err != nil {
-		return fmt.Errorf("停止旧版后台服务: %w", err)
+		return fmt.Errorf(c.tr("install.stopOld"), err)
 	}
 	migration, err := config.MigratePreviousState(paths, previous)
 	if err != nil {
-		return fmt.Errorf("迁移旧版本机数据: %w", err)
+		return fmt.Errorf(c.tr("install.migrateOld"), err)
 	}
 	if migration.DatabaseConflict {
-		return errors.New("检测到两个并行统计库；为避免覆盖历史数据，升级已停止，请先备份并处理旧版状态目录")
+		return errors.New(c.tr("install.dbConflict"))
 	}
 	if migration.Found {
-		fmt.Fprintln(c.Stdout, "已迁移旧版本机配置与统计数据；历史记录会继续保留。")
+		fmt.Fprintln(c.Stdout, c.tr("install.migrated"))
 		if previousInstalled && !migration.PreviousStateGone {
-			fmt.Fprintln(c.Stderr, "提示：旧版状态目录仍有未识别文件，未自动删除:", previous.StateDir)
+			fmt.Fprintln(c.Stderr, c.tr("install.oldState"), previous.StateDir)
 		}
 	}
 	cfg, err := config.Load(paths)
@@ -530,7 +556,7 @@ func (c CLI) install(args []string) error {
 		return err
 	}
 	if err := platform.LockDown(paths.StateDir); err != nil {
-		fmt.Fprintln(c.Stderr, "警告：无法进一步收紧状态目录权限:", err)
+		fmt.Fprintln(c.Stderr, c.tr("install.permissions"), err)
 	}
 	if err := config.EnsurePrivateDir(paths.InstallDir); err != nil {
 		return err
@@ -543,19 +569,19 @@ func (c CLI) install(args []string) error {
 			return err
 		}
 	}
-	fmt.Fprintln(c.Stdout, "已安装:", destination)
+	fmt.Fprintln(c.Stdout, c.tr("install.installed"), destination)
 
 	state, err := openState()
 	if err != nil {
 		return err
 	}
 	if !*skipScan {
-		fmt.Fprintln(c.Stdout, "正在执行首次本地历史扫描（只解析 metadata 与 token_count）…")
+		fmt.Fprintln(c.Stdout, c.tr("install.scanning"))
 		result, scanErr := state.scanner.Scan(context.Background(), state.homes, false)
 		if scanErr != nil {
-			fmt.Fprintln(c.Stderr, "警告：首次扫描未完成:", scanErr)
+			fmt.Fprintln(c.Stderr, c.tr("install.scanWarning"), scanErr)
 		} else {
-			fmt.Fprintf(c.Stdout, "首次扫描：%d 文件，新增 %d 事件，%d 条提示。\n",
+			fmt.Fprintf(c.Stdout, c.tr("install.scanDone"),
 				result.Files, result.EventsInserted, result.Warnings)
 		}
 	}
@@ -573,15 +599,15 @@ func (c CLI) install(args []string) error {
 			rollbackPatches(patched)
 			return fmt.Errorf("%s: %w", home, patchErr)
 		}
-		fmt.Fprintf(c.Stdout, "Codex Home %s：%s\n", home, result.Message)
+		fmt.Fprintf(c.Stdout, c.tr("install.home"), home, result.Message)
 		if result.Conflict {
-			fmt.Fprintln(c.Stderr, "警告：已有 metrics exporter 未被覆盖；此 Home 仅使用历史扫描。")
+			fmt.Fprintln(c.Stderr, c.tr("install.conflict"))
 		}
 		if result.Changed {
 			patched = append(patched, patchedHome{home: home, result: result})
 			if validateErr := validateCodexConfig(home); validateErr != nil {
 				rollbackPatches(patched)
-				return fmt.Errorf("Codex 严格配置检查失败，已回滚 %s: %w", home, validateErr)
+				return fmt.Errorf(c.tr("install.validate"), home, validateErr)
 			}
 		}
 	}
@@ -598,21 +624,21 @@ func (c CLI) install(args []string) error {
 	if !healthOK(serviceURL) {
 		_ = platform.UninstallService(paths.StateDir)
 		rollbackPatches(patched)
-		return fmt.Errorf("后台服务未在 12 秒内通过本机 health check；OTel 配置已回滚")
+		return errors.New(c.tr("install.health"))
 	}
 	if serviceResult.Detail != "" {
-		fmt.Fprintln(c.Stdout, "后台服务:", serviceResult.Detail)
+		fmt.Fprintln(c.Stdout, c.tr("install.service"), serviceResult.Detail)
 	}
 	if serviceResult.Warning != "" {
-		fmt.Fprintln(c.Stderr, "警告:", serviceResult.Warning)
+		fmt.Fprintln(c.Stderr, c.tr("install.warning"), serviceResult.Warning)
 	}
 	if previousInstalled {
 		if cleanupErr := platform.RemovePreviousExecutable(previousService); cleanupErr != nil {
-			fmt.Fprintln(c.Stderr, "警告：旧版可执行文件未能自动清理:", cleanupErr)
+			fmt.Fprintln(c.Stderr, c.tr("install.cleanup"), cleanupErr)
 		}
 	}
 	fmt.Fprintf(c.Stdout, "Dashboard: http://127.0.0.1:%d\n", cfg.Port)
-	fmt.Fprintln(c.Stdout, "安装完成。请在方便时自行重启 Codex，使 OTel 配置对新进程生效；不会强制结束当前任务。")
+	fmt.Fprintln(c.Stdout, c.tr("install.done"))
 	return nil
 }
 
@@ -625,7 +651,7 @@ func rollbackPatches(items []patchedHome) {
 func (c CLI) uninstall(args []string) error {
 	flags := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
-	purge := flags.Bool("purge", false, "同时删除统计库和工具配置")
+	purge := flags.Bool("purge", false, c.tr("flag.purge"))
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -665,9 +691,14 @@ func (c CLI) uninstall(args []string) error {
 func (c CLI) doctor(args []string) error {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(c.Stderr)
-	asJSON := flags.Bool("json", false, "输出 JSON")
+	asJSON := flags.Bool("json", false, c.tr("flag.json"))
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if *asJSON {
+		// Structured output stays byte-compatible with the pre-localization
+		// diagnostic vocabulary; --lang only affects human-readable output.
+		c.locale = cliui.Chinese
 	}
 	paths, err := config.ResolvePaths()
 	if err != nil {
@@ -689,9 +720,9 @@ func (c CLI) doctor(args []string) error {
 	var checks []check
 	add := func(level, name, detail string) { checks = append(checks, check{level, name, detail}) }
 	if cfg.ListenAddress == "127.0.0.1" || cfg.ListenAddress == "localhost" {
-		add("ok", "loopback", fmt.Sprintf("%s:%d；不会监听公网", cfg.ListenAddress, cfg.Port))
+		add("ok", "loopback", c.tr("doctor.loopbackOK", cfg.ListenAddress, cfg.Port))
 	} else {
-		add("error", "loopback", "配置了非 loopback 地址")
+		add("error", "loopback", c.tr("doctor.loopbackError"))
 	}
 	st, dbErr := store.Open(paths.Database)
 	if dbErr != nil {
@@ -703,7 +734,7 @@ func (c CLI) doctor(args []string) error {
 		if permissionErr := platform.LockDown(paths.StateDir); permissionErr != nil {
 			add("warn", "permissions", permissionErr.Error())
 		} else {
-			add("ok", "permissions", "状态目录已限制为当前用户访问")
+			add("ok", "permissions", c.tr("doctor.permissions"))
 		}
 		status, statusErr := st.Status(context.Background())
 		if statusErr != nil {
@@ -713,24 +744,24 @@ func (c CLI) doctor(args []string) error {
 			if currentHostname, hostErr := os.Hostname(); hostErr == nil &&
 				currentHostname != "" && !strings.EqualFold(currentHostname, status.Machine.Hostname) {
 				add("warn", "machine_identity",
-					fmt.Sprintf("数据库最初属于主机 %s，当前主机为 %s；可能复制/同步了 CODEX_USAGE_HOME，逐电脑边界不再可靠", status.Machine.Hostname, currentHostname))
+					c.tr("doctor.machineHost", status.Machine.Hostname, currentHostname))
 			}
 			if status.Machine.OS != runtime.GOOS || status.Machine.Arch != runtime.GOARCH {
 				add("warn", "machine_identity",
-					fmt.Sprintf("数据库记录平台为 %s/%s，当前为 %s/%s；请勿跨电脑同步 CODEX_USAGE_HOME",
+					c.tr("doctor.machinePlatform",
 						status.Machine.OS, status.Machine.Arch, runtime.GOOS, runtime.GOARCH))
 			}
-			add("ok", "database", fmt.Sprintf("%s；events=%d sessions=%d", paths.Database, status.EventCount, status.SessionCount))
+			add("ok", "database", c.tr("doctor.database", paths.Database, status.EventCount, status.SessionCount))
 			if status.OTelActive {
-				add("ok", "otel", "最近两分钟收到 turn.token_usage")
+				add("ok", "otel", c.tr("doctor.otelLive"))
 			} else {
-				add("warn", "otel", "当前未实时接收；历史扫描仍可工作")
+				add("warn", "otel", c.tr("doctor.otelIdle"))
 			}
 			if status.WarningCount > 0 {
-				add("warn", "coverage", fmt.Sprintf("%d 条异常/覆盖提示，请在 Dashboard 查看", status.WarningCount))
+				add("warn", "coverage", c.tr("doctor.coverage", status.WarningCount))
 			}
 			if len(status.CoverageGaps) > 0 {
-				add("warn", "coverage", fmt.Sprintf("记录到 %d 段 OTel 服务离线缺口；缺口区间由 session 扫描补位", len(status.CoverageGaps)))
+				add("warn", "coverage", c.tr("doctor.gaps", len(status.CoverageGaps)))
 			}
 		}
 		st.Close()
@@ -740,21 +771,21 @@ func (c CLI) doctor(args []string) error {
 	for _, home := range homes {
 		info, statErr := os.Stat(home)
 		if statErr != nil || !info.IsDir() {
-			add("warn", "codex_home", fmt.Sprintf("%s 不存在或不可读", home))
+			add("warn", "codex_home", c.tr("doctor.homeUnreadable", home))
 			continue
 		}
 		discovery := usage.DiscoverHome(context.Background(), home)
 		if discovery.Warning != "" {
-			add("warn", "state_db", fmt.Sprintf("%s：%s；扫描 %d 个 JSONL", home, discovery.Warning, len(discovery.Paths)))
+			add("warn", "state_db", c.tr("doctor.stateWarning", home, discovery.Warning, len(discovery.Paths)))
 		} else if discovery.StateDB != "" && !discovery.Fallback {
-			add("ok", "state_db", fmt.Sprintf("%s：%d 个 canonical rollout", discovery.StateDB, len(discovery.Paths)))
+			add("ok", "state_db", c.tr("doctor.stateDB", discovery.StateDB, len(discovery.Paths)))
 		} else {
-			add("warn", "state_db", fmt.Sprintf("%s 没有可识别状态库；扫描 %d 个 JSONL", home, len(discovery.Paths)))
+			add("warn", "state_db", c.tr("doctor.stateMissing", home, len(discovery.Paths)))
 		}
 		for _, session := range discovery.Sessions {
 			if previous, ok := sessionHomes[session.SessionID]; ok && !sameFilePath(previous, home) {
 				add("warn", "shared_history",
-					fmt.Sprintf("session %s 同时出现在 %s 与 %s。若多台电脑同步同一 CODEX_HOME，安装前历史无法可靠拆分；统计会按 session 去重。", session.SessionID, previous, home))
+					c.tr("doctor.sharedHistory", session.SessionID, previous, home))
 				break
 			}
 			sessionHomes[session.SessionID] = home
@@ -764,23 +795,23 @@ func (c CLI) doctor(args []string) error {
 		hasExporter := bytes.Contains(configData, []byte("metrics_exporter"))
 		switch {
 		case hasManaged:
-			add("ok", "codex_config", home+" 已包含 codex-usage managed exporter")
+			add("ok", "codex_config", c.tr("doctor.configManaged", home))
 		case hasExporter:
-			add("warn", "codex_config", home+" 已有第三方 metrics_exporter；工具不会覆盖，实时采集冲突")
+			add("warn", "codex_config", c.tr("doctor.configConflict", home))
 		default:
-			add("warn", "codex_config", home+" 尚未配置实时 OTel；运行 install 可安全添加")
+			add("warn", "codex_config", c.tr("doctor.configMissing", home))
 		}
 		if runtime.GOOS == "linux" && strings.Contains(filepath.ToSlash(home), "/mnt/") {
-			add("warn", "shared_home", home+" 位于常见跨系统挂载路径；确认它不是与 Windows 共用的 CODEX_HOME")
+			add("warn", "shared_home", c.tr("doctor.sharedHome", home))
 		}
 	}
 	if healthOK(fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)) {
-		add("ok", "service", "本地 Dashboard 可访问")
+		add("ok", "service", c.tr("doctor.serviceOK"))
 	} else {
-		add("warn", "service", "本地服务未运行")
+		add("warn", "service", c.tr("doctor.serviceDown"))
 	}
-	add("ok", "privacy_schema", "数据库 schema 仅含计数、时间、模型、来源、路径和标题；无 prompt/reply/reasoning/auth 字段")
-	add("ok", "network", "运行时无外部上报客户端；Dashboard 与 OTLP 仅使用 loopback")
+	add("ok", "privacy_schema", c.tr("doctor.privacy"))
+	add("ok", "network", c.tr("doctor.network"))
 
 	if *asJSON {
 		return writePrettyJSON(c.Stdout, map[string]any{"checks": checks, "paths": paths, "homes": homes})

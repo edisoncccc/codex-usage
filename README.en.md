@@ -2,9 +2,11 @@
 
 # codex-usage
 
-**Turn scattered local Codex records into clear, trustworthy per-machine token usage.**
+**Which machine used your Codex tokens?**
 
-English | [简体中文](README.md)
+*同一个 Codex 账号跑在多台电脑：哪台机器用掉了 Token？*
+
+[Live Demo](https://zjay26.github.io/codex-usage/?lang=en) · [Windows x64](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe) · [Linux x64](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64) · English / [简体中文](README.md)
 
 [![CI](https://github.com/zJay26/codex-usage/actions/workflows/ci.yml/badge.svg)](https://github.com/zJay26/codex-usage/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/zJay26/codex-usage?display_name=tag)](https://github.com/zJay26/codex-usage/releases/latest)
@@ -13,73 +15,71 @@ English | [简体中文](README.md)
 
 </div>
 
-![Codex Usage Dashboard](docs/images/dashboard.png)
+![12-second Codex Usage demo: per-machine tokens, date drill-down, filters, and equivalent cost](docs/media/codex-usage-demo.gif)
 
-<details><summary>View the 390 × 844 mobile layout</summary>
+> The animation and Live Demo use synthetic data only. They do not read your files, set cookies, run analytics, or make external requests.
 
-![Codex Usage mobile Dashboard](docs/images/dashboard-mobile.png)
+## Understand it in 30 seconds
 
-</details>
+Run one single-file binary on each Windows, WSL, or Linux host. It scans that machine's historical Codex JSONL and receives future usage over loopback OTel. Coverage-aware merge rules deduplicate the two sources, and the result stays in that machine's SQLite database. The Dashboard therefore answers **how much this computer used**, not how much the whole account used.
 
-## The problem it solves
+The differentiators are deliberately narrow: per-machine scope, historical JSONL + live OTel, deduplication, single-file deployment, local-first operation, and **no access to `auth.json`**.
 
-Account-level usage cannot answer a practical question: **which computer used those tokens?**
+## What it counts / what it does not count
 
-When the same Codex account runs on a Windows workstation, a Linux server, or WSL, the account total mixes everything together. `codex-usage` runs independently on each host and shows:
+| Counts | Does not count or read |
+|---|---|
+| Tokens, models, sources, projects, Threads, Agents, and local calendar days on this machine | Usage from other machines on the account |
+| Historical session JSONL and future `turn.token_usage` OTel metrics | Account quota, subscription balance, or real bills |
+| Standard API text-token equivalent cost and pricing coverage | Prompts, replies, reasoning, tool output, or `auth.json` |
+| Dedup records, coverage gaps, and historical deltas without dates | Cloud sync, remote telemetry, or third-party analytics |
 
-- today's, 7-day, 30-day, and all-time usage for this machine
-- local-calendar daily usage, zero-usage days, and per-day model composition
-- usage by model, project, thread, source, and agent type
-- Standard API-equivalent cost estimates with explicit token pricing coverage
-- historical sessions and future real-time metrics in one view
-- visible warnings when attribution is incomplete instead of false precision
+> “Machine” means the host running the Codex client and collector, not a remote target used by a shell or tool. Cost is an equivalent estimate, never an OpenAI bill.
 
-All data stays local. The tool does not read account credentials, store prompts or responses, or upload usage data.
+## Install directly
+
+Windows amd64 / x64 (no administrator privileges required):
+
+```powershell
+Invoke-WebRequest https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe -OutFile codex-usage.exe
+.\codex-usage.exe --lang en install
+```
+
+Linux amd64 / x64:
+
+```bash
+curl -fL https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64 -o codex-usage
+chmod +x codex-usage
+./codex-usage --lang en install
+```
+
+Need arm64? Download `windows-arm64.exe` or `linux-arm64` from the [latest Release](https://github.com/zJay26/codex-usage/releases/latest). Verify the file against `SHA256SUMS` on the same page.
+
+The installer creates the local database, scans historical sessions, safely adds a loopback OTel endpoint, and starts a user-level background service. It never overwrites a third-party metrics exporter. Restart Codex when convenient so new processes load live collection, then run `codex-usage` to open the Dashboard.
+
+On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it from your own computer, then open `http://127.0.0.1:43189`.
 
 ## Highlights
 
 | Capability | What you get |
 |---|---|
 | Per-machine accounting | A separate `machine_id` and SQLite database on every host |
-| Historical import | Existing local Codex sessions are scanned on first install |
-| Real-time metrics | Official Codex OTel metrics, refreshed every 60 seconds by default |
-| Useful attribution | Filter by model, source, project, thread, main task, subagent, guardian, or memory |
-| Daily drill-down | Continuous daily pulse, calendar view, zero-usage days, and per-day model mix |
-| Equivalent cost | Query-time Standard API estimate; unknown tokens remain visibly unpriced |
-| Honest gaps | Corrupt records, counter resets, and unattributed history stay visible |
-| Local-first | Dashboard binds only to `127.0.0.1`; all frontend assets are embedded |
-| Single binary | Windows and Linux, amd64 and arm64, no CGO or external database server |
-| Export | JSON and CSV from both the CLI and Dashboard |
+| Historical + live | Scan existing JSONL first, then receive official OTel metrics |
+| Deduplication | Merge OTel, JSONL, and state data by explicit coverage rules instead of summing them |
+| Daily drill-down | Continuous daily pulse, calendar, zero-usage days, and per-day model mix |
+| Useful attribution | Filter by model, source, project, Thread, main task, Subagent, Guardian, or Memory |
+| Equivalent cost | Query-time estimate with visible token pricing coverage; unknown usage never looks free |
+| Local-first | Loopback-only at `127.0.0.1`, embedded assets, and no runtime external requests |
+| Single binary | Windows/Linux, amd64/arm64, no CGO or external database service |
+| Bilingual | Dashboard and CLI support `zh-CN` / `en` through URL, button, flag, and environment |
 
-## Quick start
+<details><summary>View static desktop and 390 × 844 mobile screenshots</summary>
 
-Download the correct file from the [latest Release](https://github.com/zJay26/codex-usage/releases/latest):
+![Codex Usage Dashboard](docs/images/dashboard.png)
 
-| Platform | amd64 / x64 | arm64 |
-|---|---|---|
-| Windows | `codex-usage-windows-amd64.exe` | `codex-usage-windows-arm64.exe` |
-| Linux | `codex-usage-linux-amd64` | `codex-usage-linux-arm64` |
+![Codex Usage mobile Dashboard](docs/images/dashboard-mobile.png)
 
-Windows:
-
-```powershell
-.\codex-usage-windows-amd64.exe install
-```
-
-Linux:
-
-```bash
-chmod +x codex-usage-linux-amd64
-./codex-usage-linux-amd64 install
-```
-
-No administrator privileges are required. Installation creates the local database, scans historical sessions, adds a loopback OTel endpoint without overwriting an existing exporter, and starts a user-level background service. Restart Codex afterward so new Codex processes load the real-time metrics configuration.
-
-Windows uses an `HKCU` login startup entry, so the background service returns automatically after a reboot when the same user signs in. Linux prefers an enabled `systemd --user` service. If no user bus is available, the installer still starts the current background process and prints a warning. An unattended Linux host needs linger enabled for the user if the service must continue after every login session ends.
-
-When upgrading an earlier release, the installer stops the previous background service before migrating its configuration, SQLite database, WAL data, and managed OTel block. Historical usage remains available; the new release creates and uses only `usage.sqlite`.
-
-Run `codex-usage` to open the Dashboard. On a headless Linux host, use the printed SSH tunnel command and open `http://127.0.0.1:43189` locally.
+</details>
 
 ## How it works
 
@@ -184,6 +184,8 @@ codex-usage config add-home PATH    Add another CODEX_HOME
 codex-usage uninstall               Remove the app, keep the database
 codex-usage uninstall --purge       Remove the app and local data
 ```
+
+The Dashboard supports `?lang=en|zh-CN` and its header language button. The URL wins over the saved locale, followed by the browser locale. The CLI supports global `--lang` and `CODEX_USAGE_LANG`, for example `CODEX_USAGE_LANG=en codex-usage doctor`. `--json` and `--csv` fields never change with language.
 
 ## Local data paths
 

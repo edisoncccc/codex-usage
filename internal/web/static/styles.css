@@ -128,12 +128,19 @@ button:disabled { cursor: not-allowed; opacity: .52; }
 .status-dot.warn { background: var(--copper); box-shadow: 0 0 0 4px color-mix(in srgb, var(--copper) 14%, transparent); }
 .icon-button, .action-button { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-raised); cursor: pointer; }
 .icon-button { width: 36px; padding: 0; color: var(--text-soft); }
+.locale-button { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .04em; }
 .action-button { padding: 8px 12px; text-decoration: none; font-size: 12px; font-weight: 620; }
 .action-button.quiet { color: var(--text-soft); background: transparent; }
 .action-button.primary { color: var(--on-teal); border-color: var(--teal-strong); background: var(--teal-strong); }
 .count-badge { min-width: 17px; height: 17px; display: inline-grid; place-items: center; padding: 0 4px; border-radius: 6px; color: #fff; background: var(--copper-strong); font-family: var(--mono); font-size: 9px; }
 
 .shell { width: min(1320px, calc(100% - 40px)); margin: 0 auto; padding: 30px 0 48px; }
+.demo-banner { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 14px; margin-bottom: 18px; padding: 13px 16px; border: 1px solid color-mix(in srgb, var(--teal) 42%, var(--line)); border-radius: 13px; background: color-mix(in srgb, var(--teal) 7%, var(--surface)); }
+.demo-banner .eyebrow { margin-bottom: 3px; color: var(--teal-strong); }
+.demo-banner strong { font-size: 12px; }
+.demo-banner p:last-child { margin: 3px 0 0; color: var(--text-soft); font-size: 10px; line-height: 1.5; }
+.demo-beacon { position: relative; width: 30px; height: 30px; border: 1px solid color-mix(in srgb, var(--teal) 55%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--teal) 8%, var(--surface-raised)); box-shadow: inset -5px -5px 0 color-mix(in srgb, var(--copper) 13%, transparent); }
+.demo-beacon::before { content: ""; position: absolute; left: 7px; bottom: 7px; width: 3px; height: 10px; border-radius: 2px; background: var(--teal); box-shadow: 6px -5px 0 var(--teal), 12px 2px 0 var(--copper); }
 .coverage-banner { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 13px; margin-bottom: 18px; padding: 12px 15px; border: 1px solid color-mix(in srgb, var(--coral) 35%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--coral) 7%, var(--surface)); }
 .coverage-banner strong { font-size: 12px; }
 .coverage-banner p { margin: 2px 0 0; color: var(--text-soft); font-size: 11px; }
@@ -239,6 +246,7 @@ h1, h2, h3 { font-family: var(--display); text-wrap: balance; }
 .calendar-day .cost-marker { position: absolute; right: 8px; top: 9px; width: 4px; height: 4px; border-radius: 50%; background: var(--copper); }
 .calendar-legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 14px; color: var(--text-faint); font-size: 9px; }
 .calendar-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.calendar-legend b { font-weight: inherit; }
 .calendar-legend i { width: 18px; height: 4px; border-radius: 2px; background: var(--teal); }
 .calendar-legend i.cost-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--copper); }
 
@@ -351,6 +359,9 @@ select:focus, input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px col
 .warning-row code { color: var(--coral); font-size: 9px; }
 .warning-row.informational code { color: var(--teal-strong); }
 .warning-row p { grid-column: 2; margin: 0; color: var(--text-soft); font-size: 10px; }
+.warning-row details { grid-column: 2; color: var(--text-soft); font-size: 9px; }
+.warning-row details summary { cursor: pointer; color: var(--text-faint); }
+.warning-row details p { grid-column: auto; margin-top: 6px; overflow-wrap: anywhere; font-family: var(--mono); line-height: 1.5; }
 .toast { position: fixed; z-index: 100; right: 22px; bottom: 22px; max-width: min(390px, calc(100% - 28px)); padding: 11px 14px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow-small); font-size: 11px; }
 .toast.error { border-color: color-mix(in srgb, var(--coral) 52%, var(--line)); }
 .spin { display: inline-block; animation: spin 800ms linear infinite; }
@@ -391,6 +402,7 @@ select:focus, input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px col
   .brand-copy small { display: none; }
   .top-actions { gap: 5px; }
   .top-actions .icon-button { display: none; }
+  .top-actions .locale-button { display: inline-flex; }
   .top-actions .action-button { min-width: 36px; padding: 8px 9px; }
   #scanButton span:last-child { display: none; }
   .primary-nav { width: 100%; }

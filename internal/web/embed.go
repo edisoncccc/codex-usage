@@ -19,11 +19,14 @@ func Handler() http.Handler {
 	files := http.FileServer(http.FS(sub))
 	index, _ := fs.ReadFile(sub, "index.html")
 	styles, _ := fs.ReadFile(sub, "styles.css")
+	i18n, _ := fs.ReadFile(sub, "i18n.js")
 	script, _ := fs.ReadFile(sub, "app.js")
 	index = bytes.ReplaceAll(index, []byte(`href="/styles.css"`),
 		[]byte(`href="/styles.css?v=`+assetVersion(styles)+`"`))
 	index = bytes.ReplaceAll(index, []byte(`src="/app.js"`),
 		[]byte(`src="/app.js?v=`+assetVersion(script)+`"`))
+	index = bytes.ReplaceAll(index, []byte(`src="/i18n.js"`),
+		[]byte(`src="/i18n.js?v=`+assetVersion(i18n)+`"`))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		if path == "" {

@@ -9,105 +9,110 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <a class="skip-link" href="#mainContent">跳到主要内容</a>
+  <a class="skip-link" href="#mainContent" data-i18n="skip.main">跳到主要内容</a>
 
   <header class="topbar">
     <div class="topbar-inner">
-      <button class="brand pressable" id="brandButton" type="button" aria-label="返回概览">
+      <button class="brand pressable" id="brandButton" type="button" aria-label="返回概览" data-i18n-aria-label="brand.home">
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
         <span class="brand-copy"><strong>Codex Usage</strong><small>LOCAL USAGE</small></span>
       </button>
 
-      <nav class="primary-nav" role="tablist" aria-label="主要视图">
-        <button id="tab-overview" class="nav-tab pressable active" type="button" role="tab" aria-selected="true" aria-controls="view-overview" tabindex="0" data-view="overview">概览</button>
-        <button id="tab-daily" class="nav-tab pressable" type="button" role="tab" aria-selected="false" aria-controls="view-daily" tabindex="-1" data-view="daily">每日</button>
-        <button id="tab-details" class="nav-tab pressable" type="button" role="tab" aria-selected="false" aria-controls="view-details" tabindex="-1" data-view="details">明细</button>
+      <nav class="primary-nav" role="tablist" aria-label="主要视图" data-i18n-aria-label="nav.label">
+        <button id="tab-overview" class="nav-tab pressable active" type="button" role="tab" aria-selected="true" aria-controls="view-overview" tabindex="0" data-view="overview" data-i18n="nav.overview">概览</button>
+        <button id="tab-daily" class="nav-tab pressable" type="button" role="tab" aria-selected="false" aria-controls="view-daily" tabindex="-1" data-view="daily" data-i18n="nav.daily">每日</button>
+        <button id="tab-details" class="nav-tab pressable" type="button" role="tab" aria-selected="false" aria-controls="view-details" tabindex="-1" data-view="details" data-i18n="nav.details">明细</button>
       </nav>
 
       <div class="top-actions">
         <div class="machine-pill" id="machinePill" aria-live="polite">
           <span class="status-dot neutral" id="otelDot" aria-hidden="true"></span>
-          <span><small>当前电脑</small><strong id="machineLabel">正在读取…</strong></span>
+          <span><small data-i18n="machine.current">当前电脑</small><strong id="machineLabel" data-i18n="common.loading">正在读取…</strong></span>
         </div>
-        <button class="icon-button pressable" id="themeButton" type="button" aria-label="切换明暗主题" title="切换明暗主题"><span aria-hidden="true">◐</span></button>
-        <button class="action-button pressable" id="filterButton" type="button" aria-haspopup="dialog" aria-controls="filterSheet"><span>筛选</span><b class="count-badge hidden" id="filterCount">0</b></button>
-        <button class="action-button quiet pressable" id="exportButton" type="button" aria-haspopup="dialog"><span>导出</span></button>
-        <button class="action-button primary pressable" id="scanButton" type="button"><span class="scan-icon" aria-hidden="true">↻</span><span>扫描</span></button>
+        <button class="icon-button pressable locale-button" id="localeButton" type="button" aria-label="Switch to English" title="Switch to English" data-i18n-aria-label="action.language" data-i18n-title="action.language"><span data-i18n="action.languageShort">EN</span></button>
+        <button class="icon-button pressable" id="themeButton" type="button" aria-label="切换明暗主题" title="切换明暗主题" data-i18n-aria-label="action.theme" data-i18n-title="action.theme"><span aria-hidden="true">◐</span></button>
+        <button class="action-button pressable" id="filterButton" type="button" aria-haspopup="dialog" aria-controls="filterSheet"><span data-i18n="action.filter">筛选</span><b class="count-badge hidden" id="filterCount">0</b></button>
+        <button class="action-button quiet pressable" id="exportButton" type="button" aria-haspopup="dialog"><span data-i18n="action.export">导出</span></button>
+        <button class="action-button primary pressable" id="scanButton" type="button"><span class="scan-icon" aria-hidden="true">↻</span><span data-i18n="action.scan">扫描</span></button>
       </div>
     </div>
   </header>
 
   <main class="shell" id="mainContent" tabindex="-1">
+    <section class="demo-banner hidden" id="demoBanner" aria-labelledby="demoTitle">
+      <span class="demo-beacon" aria-hidden="true"></span>
+      <div><p class="eyebrow" data-i18n="demo.kicker">INTERACTIVE DEMO / SYNTHETIC DATA</p><strong id="demoTitle" data-i18n="demo.title">这是交互演示，不是你的本机数据</strong><p data-i18n="demo.body">仅使用会话内合成数据；不读取文件、不设 Cookie、无埋点或外部请求，刷新即复位。</p></div>
+    </section>
     <section class="coverage-banner hidden" id="coverageBanner" aria-live="polite">
       <span class="coverage-icon" aria-hidden="true">!</span>
-      <div><strong>数据质量需要留意</strong><p id="coverageText"></p></div>
-      <button class="text-button pressable" id="warningButton" type="button">查看详情</button>
+      <div><strong data-i18n="quality.title">数据质量需要留意</strong><p id="coverageText"></p></div>
+      <button class="text-button pressable" id="warningButton" type="button" data-i18n="action.viewDetails">查看详情</button>
     </section>
 
-    <div class="filter-context hidden" id="filterContext" aria-label="已应用筛选">
-      <span class="filter-context-label">当前筛选</span>
+    <div class="filter-context hidden" id="filterContext" aria-label="已应用筛选" data-i18n-aria-label="filter.applied">
+      <span class="filter-context-label" data-i18n="filter.current">当前筛选</span>
       <div class="chip-list" id="filterChips"></div>
-      <button class="text-button pressable" id="clearFilters" type="button">全部清除</button>
+      <button class="text-button pressable" id="clearFilters" type="button" data-i18n="action.clearAll">全部清除</button>
     </div>
 
     <section class="view-panel active" id="view-overview" role="tabpanel" aria-labelledby="tab-overview" data-view-panel="overview">
       <div class="view-heading">
         <div>
-          <p class="eyebrow">CURRENT MACHINE</p>
-          <h1>本机用量概览</h1>
+          <p class="eyebrow" data-i18n="overview.eyebrow">CURRENT MACHINE</p>
+          <h1 data-i18n="overview.title">本机用量概览</h1>
           <p class="view-subtitle" id="overviewSubtitle">过去 7 个本地自然日</p>
         </div>
-        <div class="segmented range-control" role="group" aria-label="概览时间范围">
-          <button class="pressable" type="button" data-overview-range="today" aria-pressed="false">今日</button>
-          <button class="pressable selected" type="button" data-overview-range="7d" aria-pressed="true">7 日</button>
-          <button class="pressable" type="button" data-overview-range="30d" aria-pressed="false">30 日</button>
-          <button class="pressable" type="button" data-overview-range="all" aria-pressed="false">全部</button>
+        <div class="segmented range-control" role="group" aria-label="概览时间范围" data-i18n-aria-label="range.overview">
+          <button class="pressable" type="button" data-overview-range="today" aria-pressed="false" data-i18n="range.today">今日</button>
+          <button class="pressable selected" type="button" data-overview-range="7d" aria-pressed="true" data-i18n="range.7d">7 日</button>
+          <button class="pressable" type="button" data-overview-range="30d" aria-pressed="false" data-i18n="range.30d">30 日</button>
+          <button class="pressable" type="button" data-overview-range="all" aria-pressed="false" data-i18n="range.all">全部</button>
         </div>
       </div>
 
-      <section class="hero-metrics surface" aria-label="当前范围核心指标">
+      <section class="hero-metrics surface" aria-label="当前范围核心指标" data-i18n-aria-label="overview.metricsAria">
         <article class="hero-metric token-metric">
-          <span class="metric-label">当前范围 Token 总量</span>
+          <span class="metric-label" data-i18n="overview.total">当前范围 Token 总量</span>
           <strong class="hero-value loading" id="overviewTotal">—</strong>
           <div class="metric-breakdown" id="overviewTokenBreakdown"></div>
         </article>
         <div class="hero-divider" aria-hidden="true"></div>
         <article class="hero-metric cost-metric">
-          <div class="metric-label-row"><span class="metric-label">Standard API 等价成本</span><button class="text-button copper pressable" id="pricingButton" type="button" aria-haspopup="dialog">定价设置</button></div>
+          <div class="metric-label-row"><span class="metric-label" data-i18n="overview.cost">Standard API 等价成本</span><button class="text-button copper pressable" id="pricingButton" type="button" aria-haspopup="dialog" data-i18n="overview.pricing">定价设置</button></div>
           <strong class="hero-value cost loading" id="overviewCost">—</strong>
-          <div class="coverage-line"><span class="coverage-track" aria-hidden="true"><i id="overviewCoverageBar"></i></span><span id="overviewCoverage">正在估算…</span></div>
-          <p class="metric-note" id="overviewCostNote">不是 OpenAI 真实账单</p>
+          <div class="coverage-line"><span class="coverage-track" aria-hidden="true"><i id="overviewCoverageBar"></i></span><span id="overviewCoverage" data-i18n="overview.estimating">正在估算…</span></div>
+          <p class="metric-note" id="overviewCostNote" data-i18n="overview.notBill">不是 OpenAI 真实账单</p>
         </article>
       </section>
 
       <section class="pulse-panel surface" aria-labelledby="pulseTitle">
         <div class="section-head">
-          <div><p class="eyebrow">DAILY PULSE</p><h2 id="pulseTitle">每日脉冲带</h2></div>
-          <p id="pulseCaption">连续本地自然日 · 零用量日保留位置</p>
+          <div><p class="eyebrow">DAILY PULSE</p><h2 id="pulseTitle" data-i18n="pulse.title">每日脉冲带</h2></div>
+          <p id="pulseCaption" data-i18n="pulse.caption">连续本地自然日 · 零用量日保留位置</p>
         </div>
         <div class="pulse-scroll" id="pulseScroll">
-          <div class="pulse-belt" id="pulseBelt" role="listbox" aria-label="每日 Token 用量"></div>
+          <div class="pulse-belt" id="pulseBelt" role="listbox" aria-label="每日 Token 用量" data-i18n-aria-label="pulse.aria"></div>
         </div>
         <div class="pulse-inspector" id="pulseInspector" aria-live="polite">
-          <div><span>选中日期</span><strong id="pulseDate">—</strong></div>
+          <div><span data-i18n="pulse.selectedDate">选中日期</span><strong id="pulseDate">—</strong></div>
           <div><span>Total</span><strong id="pulseTotal">—</strong></div>
           <div><span>Input / Output</span><strong id="pulseIO">—</strong></div>
-          <div><span>等价成本</span><strong class="copper" id="pulseCost">—</strong></div>
+          <div><span data-i18n="pulse.cost">等价成本</span><strong class="copper" id="pulseCost">—</strong></div>
         </div>
       </section>
 
       <div class="overview-lower">
         <section class="surface quiet-section" aria-labelledby="modelsTitle">
-          <div class="section-head compact"><div><p class="eyebrow">MODEL SIGNAL</p><h2 id="modelsTitle">主要模型</h2></div><span class="section-meta" id="modelCount">—</span></div>
-          <div class="rank-list" id="overviewModels"><div class="empty-state">正在整理模型构成…</div></div>
+          <div class="section-head compact"><div><p class="eyebrow">MODEL SIGNAL</p><h2 id="modelsTitle" data-i18n="models.title">主要模型</h2></div><span class="section-meta" id="modelCount">—</span></div>
+          <div class="rank-list" id="overviewModels"><div class="empty-state" data-i18n="models.loading">正在整理模型构成…</div></div>
         </section>
         <section class="surface quiet-section" aria-labelledby="sourceTitle">
-          <div class="section-head compact"><div><p class="eyebrow">DATA PROVENANCE</p><h2 id="sourceTitle">数据来源与归属</h2></div></div>
+          <div class="section-head compact"><div><p class="eyebrow">DATA PROVENANCE</p><h2 id="sourceTitle" data-i18n="provenance.title">数据来源与归属</h2></div></div>
           <dl class="provenance-list">
-            <div><dt>机器 ID</dt><dd><code id="machineId">—</code></dd></div>
-            <div><dt>最后扫描</dt><dd id="lastScan">—</dd></div>
-            <div><dt>实时 OTel</dt><dd id="otelStatus">—</dd></div>
-            <div><dt>历史未归属</dt><dd><strong id="unattributed">—</strong><small>只计入累计，不摊到日期</small></dd></div>
+            <div><dt data-i18n="provenance.machineId">机器 ID</dt><dd><code id="machineId">—</code></dd></div>
+            <div><dt data-i18n="provenance.lastScan">最后扫描</dt><dd id="lastScan">—</dd></div>
+            <div><dt data-i18n="provenance.otel">实时 OTel</dt><dd id="otelStatus">—</dd></div>
+            <div><dt data-i18n="provenance.unattributed">历史未归属</dt><dd><strong id="unattributed">—</strong><small data-i18n="provenance.unattributedHint">只计入累计，不摊到日期</small></dd></div>
           </dl>
         </section>
       </div>
@@ -115,119 +120,120 @@
 
     <section class="view-panel" id="view-daily" role="tabpanel" aria-labelledby="tab-daily" data-view-panel="daily" hidden>
       <div class="view-heading daily-heading">
-        <div><p class="eyebrow">LOCAL CALENDAR</p><h1>每日用量</h1><p class="view-subtitle">按本机时区查看自然日，点击日期下钻</p></div>
-        <div class="month-nav" aria-label="月份切换">
-          <button class="icon-button pressable" id="previousMonth" type="button" aria-label="上个月">←</button>
+        <div><p class="eyebrow">LOCAL CALENDAR</p><h1 data-i18n="daily.title">每日用量</h1><p class="view-subtitle" data-i18n="daily.subtitle">按本机时区查看自然日，点击日期下钻</p></div>
+        <div class="month-nav" aria-label="月份切换" data-i18n-aria-label="daily.monthNav">
+          <button class="icon-button pressable" id="previousMonth" type="button" aria-label="上个月" data-i18n-aria-label="daily.previousMonth">←</button>
           <strong id="monthLabel">—</strong>
-          <button class="icon-button pressable" id="nextMonth" type="button" aria-label="下个月">→</button>
+          <button class="icon-button pressable" id="nextMonth" type="button" aria-label="下个月" data-i18n-aria-label="daily.nextMonth">→</button>
         </div>
       </div>
 
       <div class="daily-layout">
         <section class="surface calendar-panel" aria-labelledby="calendarTitle">
-          <div class="section-head compact"><div><p class="eyebrow">MONTH VIEW</p><h2 id="calendarTitle">月历用量</h2></div><span class="section-meta" id="monthSummary">—</span></div>
-          <div class="weekday-row" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
-          <div class="calendar-grid" id="calendarGrid" role="grid" aria-label="每日用量月历"></div>
-          <div class="calendar-legend"><span><i></i>Token 强度</span><span><i class="cost-dot"></i>含已定价费用</span><span>空白日期 = 0</span></div>
+          <div class="section-head compact"><div><p class="eyebrow">MONTH VIEW</p><h2 id="calendarTitle" data-i18n="daily.calendarTitle">月历用量</h2></div><span class="section-meta" id="monthSummary">—</span></div>
+          <div class="weekday-row" aria-hidden="true"><span data-i18n="daily.weekday.mon">一</span><span data-i18n="daily.weekday.tue">二</span><span data-i18n="daily.weekday.wed">三</span><span data-i18n="daily.weekday.thu">四</span><span data-i18n="daily.weekday.fri">五</span><span data-i18n="daily.weekday.sat">六</span><span data-i18n="daily.weekday.sun">日</span></div>
+          <div class="calendar-grid" id="calendarGrid" role="grid" aria-label="每日用量月历" data-i18n-aria-label="daily.calendarAria"></div>
+          <div class="calendar-legend"><span><i></i><b data-i18n="daily.legendIntensity">Token 强度</b></span><span><i class="cost-dot"></i><b data-i18n="daily.legendPriced">含已定价费用</b></span><span data-i18n="daily.legendZero">空白日期 = 0</span></div>
         </section>
 
         <aside class="surface day-detail" aria-labelledby="selectedDateTitle">
-          <div class="day-detail-head"><div><p class="eyebrow">SELECTED DAY</p><h2 id="selectedDateTitle">选择一天</h2></div><span class="day-status" id="selectedDayStatus">—</span></div>
+          <div class="day-detail-head"><div><p class="eyebrow">SELECTED DAY</p><h2 id="selectedDateTitle" data-i18n="daily.selectDay">选择一天</h2></div><span class="day-status" id="selectedDayStatus">—</span></div>
           <div class="day-total"><span>Total Token</span><strong id="dayTotal">—</strong></div>
-          <div class="composition-bar" id="dayComposition" aria-label="Token 构成"></div>
+          <div class="composition-bar" id="dayComposition" aria-label="Token 构成" data-i18n-aria-label="daily.compositionAria"></div>
           <dl class="token-ledger" id="dayLedger"></dl>
           <div class="day-cost">
-            <span>Standard API 等价成本</span>
+            <span data-i18n="overview.cost">Standard API 等价成本</span>
             <strong id="dayCost">—</strong>
             <small id="dayCoverage">—</small>
           </div>
-          <div class="day-models-head"><h3>模型构成</h3><span id="dayModelCount"></span></div>
-          <div class="mini-model-list" id="dayModels"><div class="empty-state">选择日期后显示</div></div>
+          <div class="day-models-head"><h3 data-i18n="daily.modelComposition">模型构成</h3><span id="dayModelCount"></span></div>
+          <div class="mini-model-list" id="dayModels"><div class="empty-state" data-i18n="daily.selectHint">选择日期后显示</div></div>
         </aside>
       </div>
     </section>
 
     <section class="view-panel" id="view-details" role="tabpanel" aria-labelledby="tab-details" data-view-panel="details" hidden>
       <div class="view-heading details-heading">
-        <div><p class="eyebrow">ATTRIBUTION VIEW</p><h1>明细与归属</h1><p class="view-subtitle">一次聚焦一个维度，避免重复信息并排</p></div>
-        <div class="segmented range-control" role="group" aria-label="明细时间范围">
-          <button class="pressable" type="button" data-detail-range="7d" aria-pressed="false">7 日</button>
-          <button class="pressable selected" type="button" data-detail-range="30d" aria-pressed="true">30 日</button>
-          <button class="pressable" type="button" data-detail-range="all" aria-pressed="false">全部</button>
+        <div><p class="eyebrow">ATTRIBUTION VIEW</p><h1 data-i18n="details.title">明细与归属</h1><p class="view-subtitle" data-i18n="details.subtitle">一次聚焦一个维度，避免重复信息并排</p></div>
+        <div class="segmented range-control" role="group" aria-label="明细时间范围" data-i18n-aria-label="details.rangeAria">
+          <button class="pressable" type="button" data-detail-range="7d" aria-pressed="false" data-i18n="range.7d">7 日</button>
+          <button class="pressable selected" type="button" data-detail-range="30d" aria-pressed="true" data-i18n="range.30d">30 日</button>
+          <button class="pressable" type="button" data-detail-range="all" aria-pressed="false" data-i18n="range.all">全部</button>
         </div>
       </div>
 
-      <div class="dimension-tabs" role="tablist" aria-label="归属维度">
-        <button class="pressable selected" type="button" role="tab" aria-selected="true" aria-controls="detailBreakdown" tabindex="0" data-dimension="model">模型</button>
-        <button class="pressable" type="button" role="tab" aria-selected="false" aria-controls="detailBreakdown" tabindex="-1" data-dimension="source">来源</button>
+      <div class="dimension-tabs" role="tablist" aria-label="归属维度" data-i18n-aria-label="details.dimensionAria">
+        <button class="pressable selected" type="button" role="tab" aria-selected="true" aria-controls="detailBreakdown" tabindex="0" data-dimension="model" data-i18n="dimension.model">模型</button>
+        <button class="pressable" type="button" role="tab" aria-selected="false" aria-controls="detailBreakdown" tabindex="-1" data-dimension="source" data-i18n="dimension.source">来源</button>
         <button class="pressable" type="button" role="tab" aria-selected="false" aria-controls="detailBreakdown" tabindex="-1" data-dimension="agent_type">Agent</button>
-        <button class="pressable" type="button" role="tab" aria-selected="false" aria-controls="detailBreakdown" tabindex="-1" data-dimension="project">项目</button>
+        <button class="pressable" type="button" role="tab" aria-selected="false" aria-controls="detailBreakdown" tabindex="-1" data-dimension="project" data-i18n="dimension.project">项目</button>
         <button class="pressable" type="button" role="tab" aria-selected="false" aria-controls="detailBreakdown" tabindex="-1" data-dimension="thread">Thread</button>
       </div>
 
       <section class="surface detail-breakdown" aria-labelledby="breakdownTitle">
-        <div class="section-head compact"><div><p class="eyebrow">DISTRIBUTION</p><h2 id="breakdownTitle">按模型</h2></div><span class="section-meta" id="breakdownMeta">—</span></div>
-        <div class="breakdown-list" id="detailBreakdown"><div class="empty-state">正在读取归属数据…</div></div>
+        <div class="section-head compact"><div><p class="eyebrow">DISTRIBUTION</p><h2 id="breakdownTitle" data-i18n="details.breakdownTitle">按模型</h2></div><span class="section-meta" id="breakdownMeta">—</span></div>
+        <div class="breakdown-list" id="detailBreakdown"><div class="empty-state" data-i18n="details.breakdownLoading">正在读取归属数据…</div></div>
       </section>
 
       <section class="surface sessions-panel" aria-labelledby="sessionsTitle">
-        <div class="section-head"><div><p class="eyebrow">LOCAL SESSIONS</p><h2 id="sessionsTitle">Session 明细</h2></div><span class="privacy-chip">本机元数据 · 不含 prompt、回复或凭据</span></div>
-        <div class="session-head" aria-hidden="true"><span>Thread</span><span>项目</span><span>模型 / 来源</span><span>Agent</span><span>Token</span><span>最后活动</span></div>
-        <div class="session-list" id="sessionRows"><div class="empty-state">正在加载本机 Session…</div></div>
+        <div class="section-head"><div><p class="eyebrow">LOCAL SESSIONS</p><h2 id="sessionsTitle" data-i18n="details.sessionsTitle">Session 明细</h2></div><span class="privacy-chip" data-i18n="details.privacy">本机元数据 · 不含 prompt、回复或凭据</span></div>
+        <div class="session-head" aria-hidden="true"><span>Thread</span><span data-i18n="details.headerProject">项目</span><span data-i18n="details.headerModelSource">模型 / 来源</span><span>Agent</span><span>Token</span><span data-i18n="details.headerLastActive">最后活动</span></div>
+        <div class="session-list" id="sessionRows"><div class="empty-state" data-i18n="details.sessionsLoading">正在加载本机 Session…</div></div>
       </section>
     </section>
 
     <footer>
-      <div><strong>当前电脑，不是账号用量。</strong> Total 沿用 Codex 原始值；Cached Input 包含在 Input 中，Reasoning 包含在 Output 中。</div>
-      <div>不读取真实账单或账号配额；费用仅按当前内置 Standard API 文本 Token 价格重新折算本机历史数据，未知部分不会当作零费用。</div>
-      <div>OTel 覆盖期机器总量以 OTel 为准；项目、Thread 与 Session 为归属视图，不能与机器总量相加。</div>
-      <div class="footer-last"><span>资源完全嵌入 · 仅监听 <code>127.0.0.1</code> · 无运行时外部请求</span><span id="versionLabel"></span></div>
+      <div><strong data-i18n="footer.scopeStrong">当前电脑，不是账号用量。</strong> <span data-i18n="footer.scopeBody">Total 沿用 Codex 原始值；Cached Input 包含在 Input 中，Reasoning 包含在 Output 中。</span></div>
+      <div data-i18n="footer.cost">不读取真实账单或账号配额；费用仅按当前内置 Standard API 文本 Token 价格重新折算本机历史数据，未知部分不会当作零费用。</div>
+      <div data-i18n="footer.dedup">OTel 覆盖期机器总量以 OTel 为准；项目、Thread 与 Session 为归属视图，不能与机器总量相加。</div>
+      <div class="footer-last"><span data-i18n="footer.runtime">资源完全嵌入 · 仅监听 127.0.0.1 · 无运行时外部请求</span><span id="versionLabel"></span></div>
     </footer>
   </main>
 
   <dialog class="sheet-dialog" id="filterSheet" aria-labelledby="filterTitle">
     <div class="dialog-frame">
-      <div class="dialog-head"><div><p class="eyebrow">LOCAL FILTERS</p><h2 id="filterTitle">筛选当前电脑的数据</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭筛选">×</button></div>
-      <p class="dialog-intro">筛选会同步应用到当前视图的 Token、费用、归属与 Session。</p>
+      <div class="dialog-head"><div><p class="eyebrow">LOCAL FILTERS</p><h2 id="filterTitle" data-i18n="filter.title">筛选当前电脑的数据</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭筛选" data-i18n-aria-label="action.closeFilter">×</button></div>
+      <p class="dialog-intro" data-i18n="filter.intro">筛选会同步应用到当前视图的 Token、费用、归属与 Session。</p>
       <form class="filter-form" id="filterForm">
-        <label>模型<select id="filterModel"><option value="">全部模型</option></select></label>
-        <label>来源<select id="filterSource"><option value="">全部来源</option></select></label>
-        <label>Agent<select id="filterAgent"><option value="">全部 Agent</option><option value="main">主任务</option><option value="subagent">Subagent</option><option value="guardian">Guardian</option><option value="memory">Memory</option></select></label>
-        <label>项目<select id="filterProject"><option value="">全部项目</option></select></label>
-        <label>置信度<select id="filterConfidence"><option value="">全部置信度</option><option value="exact">精确</option><option value="gap_fallback">缺口补位</option><option value="aggregate_only">仅累计</option></select></label>
+        <label><span data-i18n="filter.model">模型</span><select id="filterModel"><option value="" data-i18n="filter.allModels">全部模型</option></select></label>
+        <label><span data-i18n="filter.source">来源</span><select id="filterSource"><option value="" data-i18n="filter.allSources">全部来源</option></select></label>
+        <label><span data-i18n="filter.agent">Agent</span><select id="filterAgent"><option value="" data-i18n="filter.allAgents">全部 Agent</option><option value="main" data-i18n="filter.agent.main">主任务</option><option value="subagent" data-i18n="filter.agent.subagent">Subagent</option><option value="guardian" data-i18n="filter.agent.guardian">Guardian</option><option value="memory" data-i18n="filter.agent.memory">Memory</option></select></label>
+        <label><span data-i18n="filter.project">项目</span><select id="filterProject"><option value="" data-i18n="filter.allProjects">全部项目</option></select></label>
+        <label><span data-i18n="filter.confidence">置信度</span><select id="filterConfidence"><option value="" data-i18n="filter.allConfidence">全部置信度</option><option value="exact" data-i18n="confidence.exact">精确</option><option value="gap_fallback" data-i18n="confidence.gap_fallback">缺口补位</option><option value="aggregate_only" data-i18n="confidence.aggregate_only">仅累计</option></select></label>
       </form>
-      <div class="dialog-actions split"><button class="action-button quiet pressable" id="resetFilters" type="button">清空</button><button class="action-button primary pressable" id="applyFilters" type="button">应用筛选</button></div>
+      <div class="dialog-actions split"><button class="action-button quiet pressable" id="resetFilters" type="button" data-i18n="filter.reset">清空</button><button class="action-button primary pressable" id="applyFilters" type="button" data-i18n="filter.apply">应用筛选</button></div>
     </div>
   </dialog>
 
   <dialog class="modal-dialog pricing-dialog" id="pricingDialog" aria-labelledby="pricingTitle">
     <div class="dialog-frame">
-      <div class="dialog-head"><div><p class="eyebrow">LOCAL PRICING</p><h2 id="pricingTitle">API 等价成本定价</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭定价设置">×</button></div>
-      <p class="dialog-intro">内置价格随程序版本保存，运行时不联网。内部模型保持未定价，除非你明确映射或填写单价。</p>
-      <div class="pricing-meta" id="pricingMeta">正在读取本机定价…</div>
-      <div class="override-toolbar"><label for="newOverrideModel">新增模型覆写</label><div><input id="newOverrideModel" autocomplete="off" placeholder="例如 internal-model"><button class="action-button quiet pressable" id="addOverride" type="button">添加</button></div></div>
+      <div class="dialog-head"><div><p class="eyebrow">LOCAL PRICING</p><h2 id="pricingTitle" data-i18n="pricing.title">API 等价成本定价</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭定价设置" data-i18n-aria-label="action.closePricing">×</button></div>
+      <p class="dialog-intro" data-i18n="pricing.intro">内置价格随程序版本保存，运行时不联网。内部模型保持未定价，除非你明确映射或填写单价。</p>
+      <div class="pricing-meta" id="pricingMeta" data-i18n="pricing.loading">正在读取本机定价…</div>
+      <div class="override-toolbar"><label for="newOverrideModel" data-i18n="pricing.addOverride">新增模型覆写</label><div><input id="newOverrideModel" autocomplete="off" placeholder="例如 internal-model" data-i18n-placeholder="pricing.placeholder"><button class="action-button quiet pressable" id="addOverride" type="button" data-i18n="action.add">添加</button></div></div>
       <div class="override-list" id="pricingOverrideList"></div>
-      <details class="catalog-disclosure"><summary>查看内置 Standard 价格</summary><div class="catalog-table" id="pricingCatalog"></div></details>
-      <div class="dialog-actions"><button class="action-button quiet pressable" type="button" data-close>取消</button><button class="action-button primary pressable" id="savePricing" type="button">保存并重新估算</button></div>
+      <details class="catalog-disclosure"><summary data-i18n="pricing.catalog">查看内置 Standard 价格</summary><div class="catalog-table" id="pricingCatalog"></div></details>
+      <div class="dialog-actions"><button class="action-button quiet pressable" type="button" data-close data-i18n="action.cancel">取消</button><button class="action-button primary pressable" id="savePricing" type="button" data-i18n="pricing.save">保存并重新估算</button></div>
     </div>
   </dialog>
 
   <dialog class="modal-dialog" id="exportDialog" aria-labelledby="exportTitle">
     <div class="dialog-frame">
-      <div class="dialog-head"><div><p class="eyebrow">LOCAL EXPORT</p><h2 id="exportTitle">导出当前筛选</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭导出">×</button></div>
-      <p class="dialog-intro">逐事件导出包含本机项目路径与 Thread 标题，不包含任何对话内容。费用估算不会写入导出文件。</p>
-      <div class="dialog-actions"><a class="action-button quiet pressable" id="exportJson" download>下载 JSON</a><a class="action-button primary pressable" id="exportCsv" download>下载 CSV</a></div>
+      <div class="dialog-head"><div><p class="eyebrow">LOCAL EXPORT</p><h2 id="exportTitle" data-i18n="export.title">导出当前筛选</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭导出" data-i18n-aria-label="action.closeExport">×</button></div>
+      <p class="dialog-intro" data-i18n="export.intro">逐事件导出包含本机项目路径与 Thread 标题，不包含任何对话内容。费用估算不会写入导出文件。</p>
+      <div class="dialog-actions"><a class="action-button quiet pressable" id="exportJson" download data-i18n="export.json">下载 JSON</a><a class="action-button primary pressable" id="exportCsv" download data-i18n="export.csv">下载 CSV</a></div>
     </div>
   </dialog>
 
   <dialog class="modal-dialog warnings-dialog" id="warningsDialog" aria-labelledby="warningsTitle">
     <div class="dialog-frame">
-      <div class="dialog-head"><div><p class="eyebrow">AUDIT TRAIL</p><h2 id="warningsTitle">数据质量与去重记录</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭数据质量详情">×</button></div>
-      <div class="warning-list" id="warningList"><div class="empty-state">正在读取…</div></div>
+      <div class="dialog-head"><div><p class="eyebrow">AUDIT TRAIL</p><h2 id="warningsTitle" data-i18n="warnings.title">数据质量与去重记录</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭数据质量详情" data-i18n-aria-label="action.closeWarnings">×</button></div>
+      <div class="warning-list" id="warningList"><div class="empty-state" data-i18n="common.loading">正在读取…</div></div>
     </div>
   </dialog>
 
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
+  <script src="/i18n.js"></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

@@ -1,15 +1,18 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const i18n = window.CodexUsageI18n;
+const t = (key, values) => i18n.t(key, values);
 
 const FILTER_FIELDS = {
-  model: { selector: "#filterModel", label: "模型" },
-  source: { selector: "#filterSource", label: "来源" },
-  agent_type: { selector: "#filterAgent", label: "Agent" },
-  project: { selector: "#filterProject", label: "项目" },
-  confidence: { selector: "#filterConfidence", label: "置信度" }
+  model: { selector: "#filterModel", labelKey: "filter.model" },
+  source: { selector: "#filterSource", labelKey: "filter.source" },
+  agent_type: { selector: "#filterAgent", labelKey: "filter.agent" },
+  project: { selector: "#filterProject", labelKey: "filter.project" },
+  confidence: { selector: "#filterConfidence", labelKey: "filter.confidence" }
 };
-const DIMENSION_LABELS = { model: "模型", source: "来源", agent_type: "Agent", project: "项目", thread: "Thread" };
-const RANGE_LABELS = { today: "今天", "7d": "过去 7 个本地自然日", "30d": "过去 30 个本地自然日", all: "本机可归属的全部历史" };
+const fieldLabel = (key) => t(FILTER_FIELDS[key]?.labelKey || `dimension.${key}`);
+const dimensionLabel = (key) => t(`dimension.${key}`);
+const rangeLabel = (key) => t(`range.${key}Long`);
 const state = {
   view: "overview",
   overviewRange: "7d",
@@ -52,13 +55,13 @@ const emptyUsage = () => ({ input: 0, cached_input: 0, cache_write_input: 0, out
 const usageTotal = (usage = {}) => Number(usage.total || (Number(usage.input || 0) + Number(usage.output || 0)) || 0);
 
 function rangeBounds(range) {
-  if (range === "all") return { label: RANGE_LABELS.all };
+  if (range === "all") return { label: rangeLabel("all") };
   const today = dateFromKey(todayKey());
   const days = range === "today" ? 1 : range === "7d" ? 7 : 30;
   return {
     since: dateKey(addDays(today, -(days - 1))),
     until: dateKey(addDays(today, 1)),
-    label: RANGE_LABELS[range]
+    label: rangeLabel(range)
   };
 }
 
@@ -81,9 +84,9 @@ const formatToken = (value = 0) => {
   if (absolute >= 1e9) return `${(number / 1e9).toFixed(absolute >= 1e10 ? 1 : 2)}B`;
   if (absolute >= 1e6) return `${(number / 1e6).toFixed(absolute >= 1e7 ? 1 : 2)}M`;
   if (absolute >= 1e3) return `${(number / 1e3).toFixed(absolute >= 1e4 ? 1 : 2)}K`;
-  return number.toLocaleString("zh-CN");
+  return i18n.formatNumber(number);
 };
-const fullToken = (value = 0) => Number(value || 0).toLocaleString("zh-CN");
+const fullToken = (value = 0) => i18n.formatNumber(Number(value || 0));
 const formatUSD = (value = "0") => {
   const amount = Number(value || 0);
   if (!Number.isFinite(amount)) return "—";
@@ -91,16 +94,21 @@ const formatUSD = (value = "0") => {
   return `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: digits })}`;
 };
 const formatPercent = (value = 0) => `${(Number(value || 0) * 100).toFixed(1)}%`;
-const localTime = (value) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
+const localTime = (value) => value ? i18n.formatDateTime(value) : "—";
 const shortId = (value = "") => value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value || "—";
 const shortPath = (value = "") => {
   const parts = String(value).split(/[\\/]/).filter(Boolean);
-  return parts.at(-1) || value || "未记录";
+  return parts.at(-1) || value || t("common.notRecorded");
 };
 const escapeHTML = (value = "") => String(value).replace(/[&<>"']/g, (char) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
 }[char]));
-const confidenceLabel = (value) => ({ exact: "精确", gap_fallback: "缺口补位", aggregate_only: "仅累计" })[value] || value || "—";
+const confidenceLabel = (value) => {
+  if (!value) return "—";
+  const key = `confidence.${value}`;
+  const translated = t(key);
+  return translated === key ? value : translated;
+};
 
 async function api(path, options = {}) {
   const method = String(options.method || "GET").toUpperCase();
@@ -160,9 +168,9 @@ function estimateTokens(estimate = {}) {
 
 function estimateLabel(estimate = {}) {
   const total = estimateTokens(estimate);
-  if (!total) return "暂无可估算 Token";
-  const base = `已定价 ${formatPercent(estimate.coverage_ratio)} Token`;
-  return estimate.unpriced_tokens ? `${base} · ${formatToken(estimate.unpriced_tokens)} 未定价` : base;
+  if (!total) return t("dynamic.estimateNone");
+  const base = t("dynamic.priced", { coverage: formatPercent(estimate.coverage_ratio) });
+  return estimate.unpriced_tokens ? `${base} · ${t("dynamic.unpricedSuffix", { tokens: formatToken(estimate.unpriced_tokens) })}` : base;
 }
 
 function estimateDisplay(estimate = {}) {
@@ -170,16 +178,13 @@ function estimateDisplay(estimate = {}) {
 }
 
 function reasonSummary(estimate = {}) {
-  const labels = {
-    unknown_model: "未知模型",
-    missing_token_categories: "只有累计总量",
-    invalid_token_categories: "字段矛盾",
-    cache_write_rate_missing: "Cache Write 单价未公开",
-    long_context_uncertain: "长上下文请求边界不确定"
-  };
   const reasons = estimate.reasons || [];
   if (!reasons.length) return "";
-  return [...new Set(reasons.map((reason) => labels[reason.kind] || reason.kind))].join("、");
+  return [...new Set(reasons.map((reason) => {
+    const key = `reason.${reason.kind}`;
+    const translated = t(key);
+    return translated === key ? reason.kind : translated;
+  }))].join(i18n.getLocale() === "en" ? ", " : "、");
 }
 
 function toast(message, isError = false) {
@@ -207,27 +212,30 @@ async function loadStatus() {
   if (changed) invalidateDataCache();
   state.dataRevision = revision;
   const machine = status.machine || {};
-  $("#machineLabel").textContent = machine.label || machine.hostname || "本机";
-  $("#machinePill").title = `当前电脑：${machine.label || machine.hostname || "本机"}`;
-  $("#machinePill").setAttribute("aria-label", `当前电脑：${machine.label || machine.hostname || "本机"}`);
+  const machineName = machine.label || machine.hostname || t("common.localMachine");
+  $("#machineLabel").textContent = machineName;
+  $("#machinePill").title = t("dynamic.machineAria", { machine: machineName });
+  $("#machinePill").setAttribute("aria-label", t("dynamic.machineAria", { machine: machineName }));
   $("#machineId").textContent = shortId(machine.id || "");
   $("#machineId").title = machine.id || "";
   $("#lastScan").textContent = localTime(status.last_scan);
   $("#otelStatus").textContent = status.otel_active
-    ? `实时 · ${localTime(status.otel_last_received)}`
-    : status.otel_last_received ? `最近 ${localTime(status.otel_last_received)}` : "未收到 · 历史扫描可用";
+    ? t("dynamic.otelLive", { time: localTime(status.otel_last_received) })
+    : status.otel_last_received ? t("dynamic.otelRecent", { time: localTime(status.otel_last_received) }) : t("dynamic.otelNone");
   $("#otelDot").className = `status-dot ${status.otel_active ? "live" : status.otel_last_received ? "warn" : "neutral"}`;
   $("#versionLabel").textContent = `v${payload.version || "—"}`;
   $("#scanButton").disabled = Boolean(payload.scanning);
   $(".scan-icon").classList.toggle("spin", Boolean(payload.scanning));
 
   const notes = [];
-  if (status.warning_count) notes.push(`${status.warning_count} 条去重后的数据质量记录需复核`);
+  if (status.warning_count) notes.push(t("dynamic.warningCount", { count: i18n.formatNumber(status.warning_count) }));
   if ((status.coverage_gaps || []).length) {
     const open = status.coverage_gaps.some((gap) => gap.open);
-    notes.push(`记录到 ${status.coverage_gaps.length} 段 OTel 覆盖缺口${open ? "，当前仍未恢复" : ""}`);
+    notes.push(t("dynamic.coverageGaps", { count: i18n.formatNumber(status.coverage_gaps.length), open: open ? t("dynamic.coverageOpen") : "" }));
   }
-  for (const home of status.codex_homes || []) if (home.warning) notes.push(home.warning);
+  for (const home of status.codex_homes || []) {
+    if (home.warning) notes.push(i18n.getLocale() === "en" ? `${t("warning.raw")}: ${home.warning}` : home.warning);
+  }
   state.statusQualityNotes = notes;
   renderQualityBanner();
   return changed;
@@ -236,7 +244,7 @@ async function loadStatus() {
 function hydrateSelect(selector, items, placeholder) {
   const select = $(selector);
   const selected = select.value || state.filters[Object.entries(FILTER_FIELDS).find(([, item]) => item.selector === selector)?.[0]] || "";
-  const values = [...new Set((items || []).map((item) => item.key).filter((key) => key && key !== "未知"))];
+  const values = [...new Set((items || []).map((item) => item.key).filter((key) => key && key !== "未知" && key !== "Unknown"))];
   select.innerHTML = `<option value="">${escapeHTML(placeholder)}</option>${values.map((value) => `<option value="${escapeHTML(value)}">${escapeHTML(value)}</option>`).join("")}`;
   if (values.includes(selected)) select.value = selected;
 }
@@ -248,11 +256,11 @@ async function loadFilterOptions() {
       api(apiURL("/api/v1/breakdown", { dimension: "source", limit: 500 }, {})),
       api(apiURL("/api/v1/breakdown", { dimension: "project", limit: 500 }, {}))
     ]);
-    hydrateSelect("#filterModel", models.items, "全部模型");
-    hydrateSelect("#filterSource", sources.items, "全部来源");
-    hydrateSelect("#filterProject", projects.items, "全部项目");
+    hydrateSelect("#filterModel", models.items, t("filter.allModels"));
+    hydrateSelect("#filterSource", sources.items, t("filter.allSources"));
+    hydrateSelect("#filterProject", projects.items, t("filter.allProjects"));
   } catch (error) {
-    toast(`筛选选项读取失败：${error.message}`, true);
+    toast(t("dynamic.filterLoadError", { error: error.message }), true);
   }
 }
 
@@ -264,7 +272,8 @@ function renderFilterChips() {
   $("#filterChips").innerHTML = entries.map(([key, value]) => {
     const meta = FILTER_FIELDS[key];
     const display = key === "project" ? shortPath(value) : key === "confidence" ? confidenceLabel(value) : value;
-    return `<span class="filter-chip" title="${escapeHTML(value)}"><span>${escapeHTML(meta.label)} · ${escapeHTML(display)}</span><button class="pressable" type="button" data-remove-filter="${escapeHTML(key)}" aria-label="移除${escapeHTML(meta.label)}筛选">×</button></span>`;
+    const label = fieldLabel(key);
+    return `<span class="filter-chip" title="${escapeHTML(value)}"><span>${escapeHTML(label)} · ${escapeHTML(display)}</span><button class="pressable" type="button" data-remove-filter="${escapeHTML(key)}" aria-label="${escapeHTML(t("dynamic.removeFilter", { label }))}">×</button></span>`;
   }).join("");
   $$('[data-remove-filter]').forEach((button) => button.addEventListener("click", () => {
     delete state.filters[button.dataset.removeFilter];
@@ -335,7 +344,7 @@ async function loadOverview({ preserve = false } = {}) {
   ]);
   if (serial !== state.requestSerial.overview) return;
   $("#view-overview").removeAttribute("aria-busy");
-  if (firstError) toast(`概览读取失败：${firstError.message}`, true);
+  if (firstError) toast(t("dynamic.overviewError", { error: firstError.message }), true);
 }
 
 function renderOverviewSummary(summary) {
@@ -351,8 +360,8 @@ function renderOverviewSummary(summary) {
   ].map(([label, value]) => `<span>${label}<b title="${fullToken(value)}">${formatToken(value)}</b></span>`).join("");
   const unattributed = Number(summary.unattributed?.total || 0);
   $("#unattributed").textContent = formatToken(unattributed);
-  $("#unattributed").title = `${fullToken(unattributed)} Token 只归入历史累计`;
-  state.dataQualityNotes = unattributed ? [`有 ${fullToken(unattributed)} Token 只能归入历史累计，未分摊到日期`] : [];
+  $("#unattributed").title = t("dynamic.unattributedTitle", { tokens: fullToken(unattributed) });
+  state.dataQualityNotes = unattributed ? [t("dynamic.unattributedNote", { tokens: fullToken(unattributed) })] : [];
   renderQualityBanner();
 }
 
@@ -365,8 +374,8 @@ function renderOverviewCost(cost) {
   $("#overviewCoverageBar").style.width = `${Math.max(0, Math.min(100, Number(estimate.coverage_ratio || 0) * 100))}%`;
   const reasons = reasonSummary(estimate);
   $("#overviewCostNote").textContent = reasons
-    ? `未覆盖：${reasons} · 不是 OpenAI 真实账单`
-    : `价格核对于 ${cost.catalog_as_of || "—"} · 不是 OpenAI 真实账单`;
+    ? t("dynamic.uncovered", { reasons })
+    : t("dynamic.catalogAsOf", { date: cost.catalog_as_of || "—" });
   renderPulse(cost.points || []);
   renderOverviewModels(cost.models || []);
 }
@@ -375,11 +384,11 @@ function renderPulse(allPoints) {
   let points = allPoints;
   const limited = points.length > 90;
   if (limited) points = points.slice(-90);
-  $("#pulseCaption").textContent = limited ? `展示最近 90 个连续自然日 · 其余日期保留在统计中` : "连续本地自然日 · 零用量日保留位置";
+  $("#pulseCaption").textContent = limited ? t("dynamic.pulseLimited") : t("pulse.caption");
   const belt = $("#pulseBelt");
   if (!points.length) {
     belt.style.minWidth = "100%";
-    belt.innerHTML = `<div class="empty-state">当前范围没有可按日期归属的数据</div>`;
+    belt.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.pulseEmpty"))}</div>`;
     renderPulseInspector(null);
     return;
   }
@@ -394,7 +403,7 @@ function renderPulse(allPoints) {
     const height = total ? Math.max(5, total / max * 118) : 2;
     const selected = point.date === state.pulseDate;
     const date = dateFromKey(point.date);
-    const label = `${date.toLocaleDateString("zh-CN", { month: "long", day: "numeric" })}，${fullToken(total)} Token，${estimateLabel(point.estimate)}`;
+    const label = t("dynamic.dayAria", { date: i18n.formatDate(date, { month: "long", day: "numeric" }), tokens: fullToken(total), estimate: estimateLabel(point.estimate) });
     return `<button class="pulse-day pressable ${selected ? "selected" : ""} ${total ? "" : "zero"}" type="button" role="option" data-pulse-date="${point.date}" aria-selected="${selected}" tabindex="${selected ? "0" : "-1"}" aria-label="${escapeHTML(label)}"><span class="pulse-bar-space"><i class="pulse-bar" style="--pulse-height:${height}px"></i></span><time datetime="${point.date}">${pad2(date.getMonth() + 1)}/${pad2(date.getDate())}</time></button>`;
   }).join("");
   const selectPoint = (date) => {
@@ -435,7 +444,7 @@ function renderPulseInspector(point) {
     return;
   }
   const date = dateFromKey(point.date);
-  $("#pulseDate").textContent = date.toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" });
+  $("#pulseDate").textContent = i18n.formatDate(date, { month: "long", day: "numeric", weekday: "short" });
   $("#pulseTotal").textContent = formatToken(usageTotal(point.usage));
   $("#pulseTotal").title = fullToken(usageTotal(point.usage));
   $("#pulseIO").textContent = `${formatToken(point.usage?.input)} / ${formatToken(point.usage?.output)}`;
@@ -443,10 +452,10 @@ function renderPulseInspector(point) {
 }
 
 function renderOverviewModels(models) {
-  $("#modelCount").textContent = models.length ? `${models.length} 个模型` : "无模型数据";
+  $("#modelCount").textContent = models.length ? t("common.models", { count: i18n.formatNumber(models.length) }) : t("dynamic.noModelData");
   const container = $("#overviewModels");
   if (!models.length) {
-    container.innerHTML = `<div class="empty-state">当前范围暂无模型数据</div>`;
+    container.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.noModelsRange"))}</div>`;
     return;
   }
   const visible = models.slice(0, 6);
@@ -454,7 +463,7 @@ function renderOverviewModels(models) {
   container.innerHTML = visible.map((item) => {
     const total = usageTotal(item.usage);
     const cost = estimateDisplay(item.estimate);
-    const coverage = estimateTokens(item.estimate) ? formatPercent(item.estimate.coverage_ratio) : "未定价";
+    const coverage = estimateTokens(item.estimate) ? formatPercent(item.estimate.coverage_ratio) : t("dynamic.unpriced");
     return `<div class="rank-row"><span class="rank-name" title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><span class="rank-signal" aria-hidden="true"><i style="width:${Math.max(1, total / max * 100)}%"></i></span><span class="rank-value" title="${fullToken(total)} Token">${formatToken(total)}<small>${cost} · ${coverage}</small></span></div>`;
   }).join("");
 }
@@ -462,8 +471,8 @@ function renderOverviewModels(models) {
 async function loadDaily({ preserve = false } = {}) {
   const serial = ++state.requestSerial.daily;
   const bounds = monthBounds();
-  $("#monthLabel").textContent = state.monthCursor.toLocaleDateString("zh-CN", { year: "numeric", month: "long" });
-  if (!preserve) $("#calendarGrid").innerHTML = `<div class="empty-state">正在读取这个月…</div>`;
+  $("#monthLabel").textContent = i18n.formatDate(state.monthCursor, { year: "numeric", month: "long" });
+  if (!preserve) $("#calendarGrid").innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.monthLoading"))}</div>`;
   $("#view-daily").setAttribute("aria-busy", "true");
   try {
     const report = await api(apiURL("/api/v1/cost-estimate", { ...bounds, bucket: "day" }));
@@ -491,7 +500,7 @@ async function loadDaily({ preserve = false } = {}) {
     renderCalendar(report);
     if (state.selectedDate) loadDailySelection(state.selectedDate);
   } catch (error) {
-    if (serial === state.requestSerial.daily) toast(`每日统计读取失败：${error.message}`, true);
+    if (serial === state.requestSerial.daily) toast(t("dynamic.dailyError", { error: error.message }), true);
   } finally {
     if (serial === state.requestSerial.daily) $("#view-daily").removeAttribute("aria-busy");
   }
@@ -524,7 +533,8 @@ function renderCalendar(report) {
     const strength = total ? Math.max(5, total / max * 100) : 0;
     const selected = date === state.selectedDate;
     const hasCost = Number(point.estimate?.priced_tokens || 0) > 0;
-    cells.push(`<button class="calendar-day pressable ${selected ? "selected" : ""} ${date === todayKey() ? "today" : ""} ${total ? "" : "zero"}" type="button" role="gridcell" data-calendar-date="${date}" aria-selected="${selected}" tabindex="${selected ? "0" : "-1"}" aria-label="${day} 日，${fullToken(total)} Token，${estimateLabel(point.estimate)}"><span class="day-number">${day}</span>${hasCost ? '<i class="cost-marker" aria-hidden="true"></i>' : ""}<span class="day-usage" aria-hidden="true"><i style="--day-strength:${strength}%"></i></span><span class="day-amount">${total ? formatToken(total) : "0"}</span></button>`);
+    const aria = t("dynamic.calendarDayAria", { day: i18n.formatNumber(day), tokens: fullToken(total), estimate: estimateLabel(point.estimate) });
+    cells.push(`<button class="calendar-day pressable ${selected ? "selected" : ""} ${date === todayKey() ? "today" : ""} ${total ? "" : "zero"}" type="button" role="gridcell" data-calendar-date="${date}" aria-selected="${selected}" tabindex="${selected ? "0" : "-1"}" aria-label="${escapeHTML(aria)}"><span class="day-number">${i18n.formatNumber(day)}</span>${hasCost ? '<i class="cost-marker" aria-hidden="true"></i>' : ""}<span class="day-usage" aria-hidden="true"><i style="--day-strength:${strength}%"></i></span><span class="day-amount">${total ? formatToken(total) : "0"}</span></button>`);
   }
   while (cells.length % 7) cells.push(`<span class="calendar-blank" aria-hidden="true"></span>`);
   const grid = $("#calendarGrid");
@@ -574,7 +584,7 @@ async function loadDailySelection(date) {
     if (serial !== state.requestSerial.day || date !== state.selectedDate) return;
     renderDayDetail(report.points?.find((item) => item.date === date) || point, report);
   } catch (error) {
-    if (serial === state.requestSerial.day) toast(`选中日期读取失败：${error.message}`, true);
+    if (serial === state.requestSerial.day) toast(t("dynamic.selectedError", { error: error.message }), true);
   }
 }
 
@@ -583,10 +593,10 @@ function renderDayDetail(point, report, loadingModels = false) {
   const usage = point.usage || emptyUsage();
   const total = usageTotal(usage);
   const estimate = point.estimate || {};
-  const title = date.toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" });
+  const title = i18n.formatDate(date, { month: "long", day: "numeric", weekday: "long" });
   $("#selectedDateTitle").textContent = title;
   $("#selectedDateTitle").dataset.loadedDate = report ? point.date : "";
-  $("#selectedDayStatus").textContent = total ? "有用量" : "零用量";
+  $("#selectedDayStatus").textContent = total ? t("dynamic.hasUsage") : t("dynamic.zeroUsage");
   $("#dayTotal").textContent = formatToken(total);
   $("#dayTotal").title = `${fullToken(total)} Token`;
   const regular = Math.max(0, Number(usage.input || 0) - Number(usage.cached_input || 0) - Number(usage.cache_write_input || 0));
@@ -602,23 +612,23 @@ function renderDayDetail(point, report, loadingModels = false) {
   $("#dayCost").textContent = estimateDisplay(estimate);
   $("#dayCoverage").textContent = estimateLabel(estimate);
   if (loadingModels) {
-    $("#dayModels").innerHTML = `<div class="empty-state">正在读取模型构成…</div>`;
+    $("#dayModels").innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.modelsLoading"))}</div>`;
     $("#dayModelCount").textContent = "";
     return;
   }
   const models = report?.models || [];
-  $("#dayModelCount").textContent = models.length ? `${models.length} 个` : "";
-  $("#dayModels").innerHTML = models.length ? models.map((item) => `<div class="mini-model-row"><span title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><strong title="${fullToken(usageTotal(item.usage))}">${formatToken(usageTotal(item.usage))}</strong></div>`).join("") : `<div class="empty-state">这一天没有模型用量</div>`;
+  $("#dayModelCount").textContent = models.length ? t("common.modelShort", { count: i18n.formatNumber(models.length) }) : "";
+  $("#dayModels").innerHTML = models.length ? models.map((item) => `<div class="mini-model-row"><span title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><strong title="${fullToken(usageTotal(item.usage))}">${formatToken(usageTotal(item.usage))}</strong></div>`).join("") : `<div class="empty-state">${escapeHTML(t("dynamic.noModelsDay"))}</div>`;
 }
 
 async function loadDetails({ preserve = false } = {}) {
   const serial = ++state.requestSerial.details;
   const bounds = rangeBounds(state.detailRange);
   const dimension = state.detailDimension;
-  $("#breakdownTitle").textContent = `按${DIMENSION_LABELS[dimension]}`;
+  $("#breakdownTitle").textContent = t("dynamic.breakdownBy", { dimension: dimensionLabel(dimension) });
   if (!preserve) {
-    $("#detailBreakdown").innerHTML = `<div class="empty-state">正在读取${DIMENSION_LABELS[dimension]}归属…</div>`;
-    $("#sessionRows").innerHTML = `<div class="empty-state">正在加载本机 Session…</div>`;
+    $("#detailBreakdown").innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.breakdownLoading", { dimension: dimensionLabel(dimension) }))}</div>`;
+    $("#sessionRows").innerHTML = `<div class="empty-state">${escapeHTML(t("details.sessionsLoading"))}</div>`;
   }
   $("#view-details").setAttribute("aria-busy", "true");
   try {
@@ -630,7 +640,7 @@ async function loadDetails({ preserve = false } = {}) {
     renderBreakdown(breakdown.items || [], dimension);
     renderSessions(sessions.items || []);
   } catch (error) {
-    if (serial === state.requestSerial.details) toast(`明细读取失败：${error.message}`, true);
+    if (serial === state.requestSerial.details) toast(t("dynamic.detailsError", { error: error.message }), true);
   } finally {
     if (serial === state.requestSerial.details) $("#view-details").removeAttribute("aria-busy");
   }
@@ -639,16 +649,16 @@ async function loadDetails({ preserve = false } = {}) {
 function renderBreakdown(items, dimension) {
   const container = $("#detailBreakdown");
   const total = items.reduce((sum, item) => sum + usageTotal(item.usage), 0);
-  $("#breakdownMeta").textContent = items.length ? `${items.length} 项 · ${formatToken(total)} Token` : "无数据";
+  $("#breakdownMeta").textContent = items.length ? t("dynamic.breakdownMeta", { count: i18n.formatNumber(items.length), tokens: formatToken(total) }) : t("common.noData");
   if (!items.length) {
-    container.innerHTML = `<div class="empty-state">当前范围没有${DIMENSION_LABELS[dimension]}数据</div>`;
+    container.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.breakdownEmpty", { dimension: dimensionLabel(dimension) }))}</div>`;
     return;
   }
   const max = Math.max(...items.map((item) => usageTotal(item.usage)), 1);
   const canFilter = dimension !== "thread";
   container.innerHTML = items.map((item) => {
     const totalTokens = usageTotal(item.usage);
-    return `<div class="breakdown-row"><span class="breakdown-name" title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><span class="breakdown-track" aria-hidden="true"><i style="width:${Math.max(1, totalTokens / max * 100)}%"></i></span><span class="breakdown-value" title="${fullToken(totalTokens)} Token">${formatToken(totalTokens)}</span>${canFilter ? `<button class="breakdown-filter pressable" type="button" data-drill-value="${escapeHTML(item.key)}" title="仅查看此${DIMENSION_LABELS[dimension]}" aria-label="筛选为 ${escapeHTML(item.key)}">＋</button>` : "<span></span>"}</div>`;
+    return `<div class="breakdown-row"><span class="breakdown-name" title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><span class="breakdown-track" aria-hidden="true"><i style="width:${Math.max(1, totalTokens / max * 100)}%"></i></span><span class="breakdown-value" title="${fullToken(totalTokens)} Token">${formatToken(totalTokens)}</span>${canFilter ? `<button class="breakdown-filter pressable" type="button" data-drill-value="${escapeHTML(item.key)}" title="${escapeHTML(t("dynamic.drillTitle", { dimension: dimensionLabel(dimension) }))}" aria-label="${escapeHTML(t("dynamic.drillAria", { value: item.key }))}">＋</button>` : "<span></span>"}</div>`;
   }).join("");
   $$('[data-drill-value]', container).forEach((button) => button.addEventListener("click", () => {
     state.filters[dimension] = button.dataset.drillValue;
@@ -662,13 +672,13 @@ function renderBreakdown(items, dimension) {
 function renderSessions(items) {
   const container = $("#sessionRows");
   if (!items.length) {
-    container.innerHTML = `<div class="empty-state">当前范围没有 Session 数据</div>`;
+    container.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.sessionsEmpty"))}</div>`;
     return;
   }
   container.innerHTML = items.map((item) => `<article class="session-row">
-    <div class="session-cell"><strong title="${escapeHTML(item.title || item.session_id)}">${escapeHTML(item.title || "无标题 Thread")}</strong><small title="${escapeHTML(item.session_id)}">${escapeHTML(shortId(item.session_id))}</small></div>
-    <div class="session-cell"><span title="${escapeHTML(item.project_path || "未记录")}">${escapeHTML(shortPath(item.project_path))}</span><small title="${escapeHTML(item.project_path || "")}">${escapeHTML(item.project_path || "未记录")}</small></div>
-    <div class="session-cell"><strong title="${escapeHTML(item.model || "未知模型")}">${escapeHTML(item.model || "未知模型")}</strong><span>${escapeHTML(item.source || "未知来源")}</span></div>
+    <div class="session-cell"><strong title="${escapeHTML(item.title || item.session_id)}">${escapeHTML(item.title || t("dynamic.untitledThread"))}</strong><small title="${escapeHTML(item.session_id)}">${escapeHTML(shortId(item.session_id))}</small></div>
+    <div class="session-cell"><span title="${escapeHTML(item.project_path || t("common.notRecorded"))}">${escapeHTML(shortPath(item.project_path))}</span><small title="${escapeHTML(item.project_path || "")}">${escapeHTML(item.project_path || t("common.notRecorded"))}</small></div>
+    <div class="session-cell"><strong title="${escapeHTML(item.model || t("common.unknownModel"))}">${escapeHTML(item.model || t("common.unknownModel"))}</strong><span>${escapeHTML(item.source || t("common.unknownSource"))}</span></div>
     <div class="session-cell"><span class="agent-badge">${escapeHTML(item.agent_type || "main")}</span><span class="confidence-badge ${escapeHTML(item.confidence)}">${confidenceLabel(item.confidence)}</span></div>
     <div class="session-token" title="${fullToken(usageTotal(item.usage))} Token">${formatToken(usageTotal(item.usage))}</div>
     <div class="session-cell"><span>${escapeHTML(localTime(item.last_usage))}</span></div>
@@ -721,23 +731,19 @@ function closeDialog(dialog) {
 
 async function loadWarnings() {
   const container = $("#warningList");
-  container.innerHTML = `<div class="empty-state">正在读取…</div>`;
+  container.innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
   try {
     const payload = await api("/api/v1/warnings?limit=200");
     const items = payload.items || [];
-    const labels = {
-      state_fallback_suppressed_otel: "防止 OTel 重复计数",
-      cumulative_reset: "累计快照回退补位",
-      timestamp: "时间戳无法归属",
-      jsonl_record: "JSONL 记录无法解析"
-    };
     container.innerHTML = items.length ? items.map((item) => {
       const occurrences = Number(item.occurrences || 1);
       const firstSeen = item.first_seen || item.created_at;
-      const period = occurrences > 1 ? `首次 ${localTime(firstSeen)} · 累计 ${fullToken(occurrences)} 次` : "首次出现";
+      const period = occurrences > 1 ? t("warning.firstSeenMany", { time: localTime(firstSeen), count: fullToken(occurrences) }) : t("warning.firstSeen");
       const informational = item.kind === "state_fallback_suppressed_otel" ? " informational" : "";
-      return `<article class="warning-row${informational}"><time>最近 ${escapeHTML(localTime(item.created_at))}<small>${escapeHTML(period)}</small></time><code title="${escapeHTML(item.kind)}">${escapeHTML(labels[item.kind] || item.kind)}</code><p title="${escapeHTML(item.path || "")}">${escapeHTML(item.detail)}</p></article>`;
-    }).join("") : `<div class="empty-state">没有数据质量记录</div>`;
+      const key = `warning.${item.kind}`;
+      const label = t(key) === key ? item.kind : t(key);
+      return `<article class="warning-row${informational}"><time>${escapeHTML(t("warning.recent", { time: localTime(item.created_at) }))}<small>${escapeHTML(period)}</small></time><code title="${escapeHTML(item.kind)}">${escapeHTML(label)}</code><details><summary>${escapeHTML(t("warning.raw"))}</summary><p title="${escapeHTML(item.path || "")}">${escapeHTML(item.detail)}</p></details></article>`;
+    }).join("") : `<div class="empty-state">${escapeHTML(t("warning.none"))}</div>`;
   } catch (error) {
     container.innerHTML = `<div class="empty-state">${escapeHTML(error.message)}</div>`;
   }
@@ -745,13 +751,15 @@ async function loadWarnings() {
 
 function setExportLinks() {
   const bounds = currentBounds();
-  $("#exportCsv").href = apiURL("/api/v1/export", { ...bounds, format: "csv" });
-  $("#exportJson").href = apiURL("/api/v1/export", { ...bounds, format: "json" });
+  const csvPath = apiURL("/api/v1/export", { ...bounds, format: "csv" });
+  const jsonPath = apiURL("/api/v1/export", { ...bounds, format: "json" });
+  $("#exportCsv").href = window.CodexUsageDemo?.createExportURL?.("csv", csvPath) || csvPath;
+  $("#exportJson").href = window.CodexUsageDemo?.createExportURL?.("json", jsonPath) || jsonPath;
 }
 
 async function openPricingDialog() {
   openDialog($("#pricingDialog"));
-  $("#pricingOverrideList").innerHTML = `<div class="empty-state">正在读取本机定价…</div>`;
+  $("#pricingOverrideList").innerHTML = `<div class="empty-state">${escapeHTML(t("pricing.loading"))}</div>`;
   try {
     state.pricing = await api("/api/v1/pricing");
     renderPricing(state.pricing);
@@ -762,7 +770,7 @@ async function openPricingDialog() {
 
 function renderPricing(payload) {
   const unpriced = payload.unpriced_models || [];
-  $("#pricingMeta").textContent = `币种 ${payload.currency} · Standard 文本价格核对于 ${payload.catalog_as_of} · 当前观察到 ${unpriced.length} 个未定价模型`;
+  $("#pricingMeta").textContent = t("pricing.meta", { currency: payload.currency, date: payload.catalog_as_of, count: i18n.formatNumber(unpriced.length) });
   renderCatalog(payload.catalog || []);
   const overrides = payload.overrides || {};
   const models = new Set([...unpriced.map((item) => item.key), ...Object.keys(overrides)]);
@@ -773,23 +781,23 @@ function renderPricing(payload) {
     if (!model) continue;
     if (model === "未知") {
       const tokens = observed.get(model) || 0;
-      list.insertAdjacentHTML("beforeend", `<article class="override-card"><div class="override-card-head"><div><strong>未记录模型名</strong><small>观察到 ${fullToken(tokens)} Token</small></div></div><p class="override-hint">这些事件没有可匹配的模型标识，因此保持未定价；为它们猜测模型会造成虚假的费用精度。</p></article>`);
+      list.insertAdjacentHTML("beforeend", `<article class="override-card"><div class="override-card-head"><div><strong>${escapeHTML(t("pricing.unknownName"))}</strong><small>${escapeHTML(t("pricing.observed", { tokens: fullToken(tokens) }))}</small></div></div><p class="override-hint">${escapeHTML(t("pricing.unknownHint"))}</p></article>`);
       continue;
     }
     appendOverrideCard(model, overrides[model], observed.get(model));
   }
-  if (!list.children.length) list.innerHTML = `<div class="empty-state">当前没有需要设置的内部或未知模型</div>`;
+  if (!list.children.length) list.innerHTML = `<div class="empty-state">${escapeHTML(t("pricing.empty"))}</div>`;
 }
 
 function renderCatalog(catalog) {
-  $("#pricingCatalog").innerHTML = `<div class="catalog-row header"><span>模型</span><span>Input</span><span>Cached</span><span>Write</span><span>Output</span></div>${catalog.map((entry) => `<div class="catalog-row"><a href="${escapeHTML(entry.source)}" target="_blank" rel="noreferrer">${escapeHTML(entry.display_name)}</a><span>${escapeHTML(entry.input_usd_per_million)}</span><span>${escapeHTML(entry.cached_input_usd_per_million)}</span><span>${escapeHTML(entry.cache_write_input_usd_per_million || "—")}</span><span>${escapeHTML(entry.output_usd_per_million)}</span></div>`).join("")}`;
+  $("#pricingCatalog").innerHTML = `<div class="catalog-row header"><span>${escapeHTML(t("pricing.catalogModel"))}</span><span>Input</span><span>Cached</span><span>Write</span><span>Output</span></div>${catalog.map((entry) => `<div class="catalog-row"><a href="${escapeHTML(entry.source)}" target="_blank" rel="noreferrer">${escapeHTML(entry.display_name)}</a><span>${escapeHTML(entry.input_usd_per_million)}</span><span>${escapeHTML(entry.cached_input_usd_per_million)}</span><span>${escapeHTML(entry.cache_write_input_usd_per_million || "—")}</span><span>${escapeHTML(entry.output_usd_per_million)}</span></div>`).join("")}`;
 }
 
 function appendOverrideCard(model, override = null, observedTokens = null) {
   const list = $("#pricingOverrideList");
   if ($('.empty-state', list)) list.innerHTML = "";
   if ($$('[data-pricing-model]', list).some((card) => card.dataset.pricingModel.toLowerCase() === model.toLowerCase())) {
-    toast("这个模型已经在列表中", true);
+    toast(t("pricing.duplicate"), true);
     return;
   }
   const mode = override?.alias_of ? "alias" : override ? "custom" : "unpriced";
@@ -797,17 +805,17 @@ function appendOverrideCard(model, override = null, observedTokens = null) {
   const card = document.createElement("article");
   card.className = "override-card";
   card.dataset.pricingModel = model;
-  card.innerHTML = `<div class="override-card-head"><div><strong>${escapeHTML(model)}</strong><small>${observedTokens == null ? "本机自定义模型" : `观察到 ${fullToken(observedTokens)} Token`}</small></div><button class="remove-override pressable" type="button">从设置中移除</button></div>
+  card.innerHTML = `<div class="override-card-head"><div><strong>${escapeHTML(model)}</strong><small>${observedTokens == null ? escapeHTML(t("pricing.localCustom")) : escapeHTML(t("pricing.observed", { tokens: fullToken(observedTokens) }))}</small></div><button class="remove-override pressable" type="button">${escapeHTML(t("action.remove"))}</button></div>
     <div class="override-mode">
-      <label>处理方式<select data-rate-mode><option value="unpriced" ${mode === "unpriced" ? "selected" : ""}>保持未定价</option><option value="alias" ${mode === "alias" ? "selected" : ""}>映射到内置模型</option><option value="custom" ${mode === "custom" ? "selected" : ""}>填写自定义单价</option></select></label>
-      <label class="alias-field">内置公开模型<select data-alias><option value="">请选择模型</option>${aliasOptions}</select></label>
+      <label>${escapeHTML(t("pricing.mode"))}<select data-rate-mode><option value="unpriced" ${mode === "unpriced" ? "selected" : ""}>${escapeHTML(t("pricing.keepUnpriced"))}</option><option value="alias" ${mode === "alias" ? "selected" : ""}>${escapeHTML(t("pricing.alias"))}</option><option value="custom" ${mode === "custom" ? "selected" : ""}>${escapeHTML(t("pricing.custom"))}</option></select></label>
+      <label class="alias-field">${escapeHTML(t("pricing.publicModel"))}<select data-alias><option value="">${escapeHTML(t("pricing.chooseModel"))}</option>${aliasOptions}</select></label>
       <div class="custom-rate-grid">
         <label>Input<input data-rate="input_usd_per_million" inputmode="decimal" value="${escapeHTML(override?.input_usd_per_million || "")}" placeholder="USD / 1M"></label>
         <label>Cached<input data-rate="cached_input_usd_per_million" inputmode="decimal" value="${escapeHTML(override?.cached_input_usd_per_million || "")}" placeholder="USD / 1M"></label>
         <label>Cache Write<input data-rate="cache_write_input_usd_per_million" inputmode="decimal" value="${escapeHTML(override?.cache_write_input_usd_per_million || "")}" placeholder="USD / 1M"></label>
         <label>Output<input data-rate="output_usd_per_million" inputmode="decimal" value="${escapeHTML(override?.output_usd_per_million || "")}" placeholder="USD / 1M"></label>
       </div>
-      <p class="override-hint">单位均为 USD / 1M Token；最多三位小数。别名只能指向内置模型。</p>
+      <p class="override-hint">${escapeHTML(t("pricing.rateHint"))}</p>
     </div>`;
   list.appendChild(card);
   const updateMode = () => {
@@ -830,7 +838,7 @@ function collectPricingOverrides() {
     if (mode === "unpriced") continue;
     if (mode === "alias") {
       const alias = $('[data-alias]', card).value;
-      if (!alias) throw new Error(`${model} 还没有选择内置模型`);
+      if (!alias) throw new Error(t("pricing.aliasMissing", { model }));
       overrides[model] = { alias_of: alias };
       continue;
     }
@@ -840,9 +848,9 @@ function collectPricingOverrides() {
       if (rate) value[input.dataset.rate] = rate;
     }
     for (const key of ["input_usd_per_million", "cached_input_usd_per_million", "cache_write_input_usd_per_million", "output_usd_per_million"]) {
-      if (!value[key]) throw new Error(`${model} 缺少 ${key.replace("_usd_per_million", "")} 单价`);
+      if (!value[key]) throw new Error(t("pricing.rateMissing", { model, rate: key.replace("_usd_per_million", "") }));
     }
-    for (const rate of Object.values(value)) if (!decimal.test(rate)) throw new Error(`${model} 的单价必须是非负十进制，最多三位小数`);
+    for (const rate of Object.values(value)) if (!decimal.test(rate)) throw new Error(t("pricing.rateInvalid", { model }));
     overrides[model] = value;
   }
   return overrides;
@@ -860,7 +868,7 @@ async function savePricing() {
       body: JSON.stringify({ overrides })
     });
     invalidateDataCache();
-    toast("本机定价已保存，费用已重新估算");
+    toast(t("pricing.saved"));
     closeDialog($("#pricingDialog"));
     await loadCurrentView();
   } catch (error) {
@@ -965,7 +973,7 @@ function setupEvents() {
   $("#addOverride").addEventListener("click", () => {
     const input = $("#newOverrideModel");
     const model = input.value.trim().toLowerCase();
-    if (!model) { toast("请输入要覆写的模型名", true); return; }
+    if (!model) { toast(t("pricing.modelRequired"), true); return; }
     appendOverrideCard(model);
     input.value = "";
   });
@@ -981,7 +989,7 @@ function setupEvents() {
     try {
       const result = await api("/api/v1/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
       invalidateDataCache();
-      toast(`扫描完成：新增 ${result.events_inserted || 0} 个事件，忽略 ${result.duplicates || 0} 个重复`);
+      toast(t("scan.complete", { inserted: i18n.formatNumber(result.events_inserted || 0), duplicates: i18n.formatNumber(result.duplicates || 0) }));
       await loadStatus();
       await Promise.all([loadFilterOptions(), loadCurrentView()]);
     } catch (error) {
@@ -998,9 +1006,22 @@ function setupEvents() {
     document.documentElement.dataset.theme = next;
     localStorage.setItem("codex-usage-theme", next);
   });
+  $("#localeButton").addEventListener("click", () => {
+    i18n.setLocale(i18n.getLocale() === "en" ? "zh-CN" : "en");
+  });
+  window.addEventListener("codex-usage-locale-change", async () => {
+    renderFilterChips();
+    try {
+      await Promise.all([loadStatus(), loadFilterOptions(), loadCurrentView({ preserve: false })]);
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
 }
 
 async function boot() {
+  i18n.applyStatic();
+  if (window.CODEX_USAGE_DEMO || window.CodexUsageDemo) $("#demoBanner").classList.remove("hidden");
   const savedTheme = localStorage.getItem("codex-usage-theme");
   if (savedTheme === "light" || savedTheme === "dark") document.documentElement.dataset.theme = savedTheme;
   setupEvents();

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1280, initial-scale=1">
+  <style>
+    :root { --ink:#182126; --fog:#f3f5f2; --paper:#fbfcfa; --line:#ccd5d1; --teal:#247f72; --teal-soft:#dcefeb; --copper:#a96023; --copper-soft:#f4e4d2; --muted:#63706f; }
+    * { box-sizing: border-box; }
+    html, body { width:1280px; height:640px; margin:0; overflow:hidden; }
+    body { color:var(--ink); background:var(--fog); font-family:"Segoe UI Variable","Segoe UI",Arial,sans-serif; }
+    main { position:relative; width:100%; height:100%; display:grid; grid-template-columns:1.05fr .95fr; gap:54px; padding:54px 62px; }
+    main::before { content:""; position:absolute; inset:16px; border:1px solid var(--line); border-radius:24px; pointer-events:none; }
+    .copy { position:relative; z-index:1; display:flex; flex-direction:column; min-width:0; }
+    .brand { display:flex; align-items:center; gap:14px; font-weight:760; font-size:20px; letter-spacing:-.02em; }
+    .mark { width:42px; height:42px; display:flex; align-items:end; justify-content:center; gap:4px; padding:10px 8px; border:1px solid #aebbb6; border-radius:12px; background:var(--paper); }
+    .mark i { width:4px; border-radius:3px; background:var(--teal); }
+    .mark i:nth-child(1){height:9px;opacity:.45}.mark i:nth-child(2){height:20px;opacity:.75}.mark i:nth-child(3){height:15px}.mark i:nth-child(4){height:25px;background:var(--copper)}
+    .kicker { margin:64px 0 16px; color:var(--teal); font:700 13px/1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.14em; }
+    h1 { max-width:650px; margin:0; font-size:56px; line-height:1.02; letter-spacing:-.055em; text-wrap:balance; }
+    .zh { margin:19px 0 0; color:var(--muted); font-size:24px; font-weight:650; letter-spacing:-.025em; }
+    .chips { display:flex; flex-wrap:wrap; gap:9px; margin-top:auto; }
+    .chips span { padding:8px 11px; border:1px solid var(--line); border-radius:8px; color:var(--muted); background:var(--paper); font:650 12px/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .chips span:last-child { color:var(--copper); border-color:#d9b48f; background:var(--copper-soft); }
+    .ledger { position:relative; z-index:1; align-self:center; padding:24px; border:1px solid #b9c5c0; border-radius:20px; background:var(--paper); box-shadow:0 22px 54px rgba(25,38,38,.11); }
+    .ledger-head { display:flex; justify-content:space-between; align-items:start; padding-bottom:18px; border-bottom:1px solid var(--line); }
+    .ledger-head p { margin:0 0 5px; color:var(--muted); font:700 10px/1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.12em; }
+    .ledger-head strong { font-size:19px; }
+    .live { padding:6px 9px; border-radius:7px; color:var(--teal); background:var(--teal-soft); font:700 10px/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .machines { display:grid; gap:13px; padding:21px 0; }
+    .machine { display:grid; grid-template-columns:82px minmax(0,1fr) 72px; gap:13px; align-items:center; }
+    .machine small { color:var(--muted); font:700 10px/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .track { height:9px; border-radius:5px; background:#e8ece9; overflow:hidden; }
+    .track i { display:block; height:100%; border-radius:inherit; background:var(--teal); }
+    .machine:nth-child(2) .track i { background:var(--copper); }
+    .machine b { text-align:right; font:700 12px/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .total { display:grid; grid-template-columns:1fr auto; gap:16px; align-items:end; padding:20px; border-radius:14px; color:#f7fbf9; background:#172226; }
+    .total p { margin:0 0 6px; color:#a9bbb7; font:700 10px/1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.1em; }
+    .total strong { font-size:42px; letter-spacing:-.05em; }
+    .total .cost { color:#efb06d; font:700 16px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .rule { display:flex; justify-content:space-between; margin-top:14px; color:var(--muted); font-size:11px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="copy">
+      <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>codex-usage</div>
+      <p class="kicker">LOCAL-FIRST · PER-MACHINE ACCOUNTING</p>
+      <h1>Which machine used your Codex tokens?</h1>
+      <p class="zh">同一个 Codex 账号，Token 花在哪台电脑？</p>
+      <div class="chips"><span>JSONL + OTel</span><span>DEDUPLICATED</span><span>NO auth.json</span></div>
+    </section>
+    <section class="ledger">
+      <div class="ledger-head"><div><p>MACHINE LEDGER</p><strong>Synthetic overview</strong></div><span class="live">● LIVE</span></div>
+      <div class="machines">
+        <div class="machine"><small>WINDOWS</small><span class="track"><i style="width:92%"></i></span><b>10.17M</b></div>
+        <div class="machine"><small>WSL</small><span class="track"><i style="width:48%"></i></span><b>5.28M</b></div>
+        <div class="machine"><small>LINUX</small><span class="track"><i style="width:67%"></i></span><b>7.41M</b></div>
+      </div>
+      <div class="total"><div><p>CURRENT MACHINE · 30 DAYS</p><strong>10.17M</strong></div><div class="cost">$31.84<br><small>88.0% priced</small></div></div>
+      <div class="rule"><span>Historical JSONL + live OTel</span><span>local SQLite · loopback only</span></div>
+    </section>
+  </main>
+</body>
+</html>
