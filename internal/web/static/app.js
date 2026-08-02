@@ -219,20 +219,14 @@ async function loadStatus() {
   $("#machineId").textContent = shortId(machine.id || "");
   $("#machineId").title = machine.id || "";
   $("#lastScan").textContent = localTime(status.last_scan);
-  $("#otelStatus").textContent = status.otel_active
-    ? t("dynamic.otelLive", { time: localTime(status.otel_last_received) })
-    : status.otel_last_received ? t("dynamic.otelRecent", { time: localTime(status.otel_last_received) }) : t("dynamic.otelNone");
-  $("#otelDot").className = `status-dot ${status.otel_active ? "live" : status.otel_last_received ? "warn" : "neutral"}`;
+  $("#sourceStatus").textContent = t("dynamic.jsonlOnly");
+  $("#sourceDot").className = "status-dot live";
   $("#versionLabel").textContent = `v${payload.version || "—"}`;
   $("#scanButton").disabled = Boolean(payload.scanning);
   $(".scan-icon").classList.toggle("spin", Boolean(payload.scanning));
 
   const notes = [];
   if (status.warning_count) notes.push(t("dynamic.warningCount", { count: i18n.formatNumber(status.warning_count) }));
-  if ((status.coverage_gaps || []).length) {
-    const open = status.coverage_gaps.some((gap) => gap.open);
-    notes.push(t("dynamic.coverageGaps", { count: i18n.formatNumber(status.coverage_gaps.length), open: open ? t("dynamic.coverageOpen") : "" }));
-  }
   for (const home of status.codex_homes || []) {
     if (home.warning) notes.push(i18n.getLocale() === "en" ? `${t("warning.raw")}: ${home.warning}` : home.warning);
   }
@@ -358,10 +352,7 @@ function renderOverviewSummary(summary) {
     ["Input", usage.input], ["Cached", usage.cached_input], ["Cache Write", usage.cache_write_input],
     ["Output", usage.output], ["Reasoning", usage.reasoning_output]
   ].map(([label, value]) => `<span>${label}<b title="${fullToken(value)}">${formatToken(value)}</b></span>`).join("");
-  const unattributed = Number(summary.unattributed?.total || 0);
-  $("#unattributed").textContent = formatToken(unattributed);
-  $("#unattributed").title = t("dynamic.unattributedTitle", { tokens: fullToken(unattributed) });
-  state.dataQualityNotes = unattributed ? [t("dynamic.unattributedNote", { tokens: fullToken(unattributed) })] : [];
+  state.dataQualityNotes = [];
   renderQualityBanner();
 }
 
@@ -484,7 +475,7 @@ async function loadDaily({ preserve = false } = {}) {
       const history = await api(apiURL("/api/v1/timeseries", { bucket: "day" }));
       if (serial !== state.requestSerial.daily) return;
       const latestPoint = [...(history.points || [])].reverse().find((point) => usageTotal(point.usage) > 0);
-      const latest = latestPoint ? { date: dateKey(new Date(latestPoint.time)) } : null;
+      const latest = latestPoint ? { date: latestPoint.date || dateKey(new Date(latestPoint.time)) } : null;
       state.dailyInitialSelection = false;
       if (latest && !latest.date.startsWith(bounds.since.slice(0, 7))) {
         const latestDate = dateFromKey(latest.date);
@@ -739,10 +730,9 @@ async function loadWarnings() {
       const occurrences = Number(item.occurrences || 1);
       const firstSeen = item.first_seen || item.created_at;
       const period = occurrences > 1 ? t("warning.firstSeenMany", { time: localTime(firstSeen), count: fullToken(occurrences) }) : t("warning.firstSeen");
-      const informational = item.kind === "state_fallback_suppressed_otel" ? " informational" : "";
       const key = `warning.${item.kind}`;
       const label = t(key) === key ? item.kind : t(key);
-      return `<article class="warning-row${informational}"><time>${escapeHTML(t("warning.recent", { time: localTime(item.created_at) }))}<small>${escapeHTML(period)}</small></time><code title="${escapeHTML(item.kind)}">${escapeHTML(label)}</code><details><summary>${escapeHTML(t("warning.raw"))}</summary><p title="${escapeHTML(item.path || "")}">${escapeHTML(item.detail)}</p></details></article>`;
+      return `<article class="warning-row"><time>${escapeHTML(t("warning.recent", { time: localTime(item.created_at) }))}<small>${escapeHTML(period)}</small></time><code title="${escapeHTML(item.kind)}">${escapeHTML(label)}</code><details><summary>${escapeHTML(t("warning.raw"))}</summary><p title="${escapeHTML(item.path || "")}">${escapeHTML(item.detail)}</p></details></article>`;
     }).join("") : `<div class="empty-state">${escapeHTML(t("warning.none"))}</div>`;
   } catch (error) {
     container.innerHTML = `<div class="empty-state">${escapeHTML(error.message)}</div>`;

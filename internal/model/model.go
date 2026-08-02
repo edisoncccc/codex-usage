@@ -8,12 +8,13 @@ import (
 
 const (
 	ProvenanceSessionJSONL = "session_jsonl"
-	ProvenanceOTel         = "otel"
-	ProvenanceState        = "state_fallback"
 
-	ConfidenceExact         = "exact"
+	ConfidenceExact       = "exact"
+	ConfidenceGapFallback = "gap_fallback"
+	// ConfidenceAggregateOnly remains a public export/filter value for
+	// compatibility with pre-1.0 databases. JSONL-only accounting does not
+	// create new aggregate-only events.
 	ConfidenceAggregateOnly = "aggregate_only"
-	ConfidenceGapFallback   = "gap_fallback"
 )
 
 // TokenUsage keeps overlapping token categories separate. CachedInput is a
@@ -92,6 +93,9 @@ func (u TokenUsage) String() string {
 type UsageEvent struct {
 	ID          string     `json:"id"`
 	Timestamp   time.Time  `json:"timestamp,omitempty"`
+	LocalDate   string     `json:"local_date,omitempty"`
+	LocalHour   string     `json:"local_hour,omitempty"`
+	Segment     int64      `json:"-"`
 	ObservedAt  time.Time  `json:"observed_at"`
 	MachineID   string     `json:"machine_id"`
 	SessionID   string     `json:"session_id,omitempty"`
@@ -145,6 +149,8 @@ type Warning struct {
 type Filter struct {
 	Since      time.Time
 	Until      time.Time
+	SinceDate  string
+	UntilDate  string
 	Model      string
 	Source     string
 	AgentType  string
@@ -166,6 +172,7 @@ type Summary struct {
 
 type Point struct {
 	Time  time.Time  `json:"time"`
+	Date  string     `json:"date,omitempty"`
 	Usage TokenUsage `json:"usage"`
 }
 

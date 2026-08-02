@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -13,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -25,7 +23,6 @@ import (
 	"github.com/zJay26/codex-usage/internal/cliui"
 	"github.com/zJay26/codex-usage/internal/config"
 	"github.com/zJay26/codex-usage/internal/model"
-	"github.com/zJay26/codex-usage/internal/otel"
 	"github.com/zJay26/codex-usage/internal/platform"
 	"github.com/zJay26/codex-usage/internal/pricing"
 	usageServer "github.com/zJay26/codex-usage/internal/server"
@@ -34,7 +31,7 @@ import (
 )
 
 var (
-	Version   = "1.0.0"
+	Version   = "2.0.0"
 	Commit    = "dev"
 	BuildDate = "unknown"
 )
@@ -152,18 +149,12 @@ func extractLanguage(args []string) (string, []string, error) {
 }
 
 type runtimeState struct {
-	paths    config.Paths
-	cfg      config.Config
-	homes    []string
-	store    *store.Store
-	scanner  *usage.Scanner
-	receiver *otel.Receiver
-	server   *usageServer.Server
-}
-
-type patchedHome struct {
-	home   string
-	result config.PatchResult
+	paths   config.Paths
+	cfg     config.Config
+	homes   []string
+	store   *store.Store
+	scanner *usage.Scanner
+	server  *usageServer.Server
 }
 
 func openState() (*runtimeState, error) {
@@ -192,9 +183,8 @@ func openState() (*runtimeState, error) {
 		return nil, fmt.Errorf("收紧状态目录权限: %w", err)
 	}
 	scanner := &usage.Scanner{Store: st}
-	receiver := otel.NewReceiver(st)
 	srv := &usageServer.Server{
-		Store: st, Scanner: scanner, Receiver: receiver,
+		Store: st, Scanner: scanner,
 		Homes: func() ([]string, error) {
 			current, loadErr := config.Load(paths)
 			if loadErr != nil {
@@ -221,7 +211,7 @@ func openState() (*runtimeState, error) {
 	}
 	return &runtimeState{
 		paths: paths, cfg: cfg, homes: homes, store: st,
-		scanner: scanner, receiver: receiver, server: srv,
+		scanner: scanner, server: srv,
 	}, nil
 }
 
@@ -591,29 +581,17 @@ func (c CLI) install(args []string) error {
 	if err != nil {
 		return err
 	}
-	var patched []patchedHome
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/v1/metrics", cfg.Port)
 	for _, home := range homes {
-		result, patchErr := config.InstallOTel(home, endpoint, paths.BackupDir)
-		if patchErr != nil {
-			rollbackPatches(patched)
-			return fmt.Errorf("%s: %w", home, patchErr)
+		changed, removeErr := config.RemoveLegacyManagedOTel(home)
+		if removeErr != nil {
+			return fmt.Errorf("%s: %w", home, removeErr)
 		}
-		fmt.Fprintf(c.Stdout, c.tr("install.home"), home, result.Message)
-		if result.Conflict {
-			fmt.Fprintln(c.Stderr, c.tr("install.conflict"))
-		}
-		if result.Changed {
-			patched = append(patched, patchedHome{home: home, result: result})
-			if validateErr := validateCodexConfig(home); validateErr != nil {
-				rollbackPatches(patched)
-				return fmt.Errorf(c.tr("install.validate"), home, validateErr)
-			}
+		if changed {
+			fmt.Fprintln(c.Stdout, c.tr("install.legacyRemoved", home))
 		}
 	}
 	serviceResult, err := platform.InstallService(destination, paths.StateDir)
 	if err != nil {
-		rollbackPatches(patched)
 		return err
 	}
 	serviceURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
@@ -623,7 +601,6 @@ func (c CLI) install(args []string) error {
 	}
 	if !healthOK(serviceURL) {
 		_ = platform.UninstallService(paths.StateDir)
-		rollbackPatches(patched)
 		return errors.New(c.tr("install.health"))
 	}
 	if serviceResult.Detail != "" {
@@ -640,12 +617,6 @@ func (c CLI) install(args []string) error {
 	fmt.Fprintf(c.Stdout, "Dashboard: http://127.0.0.1:%d\n", cfg.Port)
 	fmt.Fprintln(c.Stdout, c.tr("install.done"))
 	return nil
-}
-
-func rollbackPatches(items []patchedHome) {
-	for i := len(items) - 1; i >= 0; i-- {
-		_ = config.RollbackOTel(items[i].home, items[i].result.Backup)
-	}
 }
 
 func (c CLI) uninstall(args []string) error {
@@ -668,12 +639,12 @@ func (c CLI) uninstall(args []string) error {
 		return err
 	}
 	for _, home := range homes {
-		changed, removeErr := config.UninstallOTel(home)
+		changed, removeErr := config.RemoveLegacyManagedOTel(home)
 		if removeErr != nil {
 			return fmt.Errorf("移除 %s managed stanza: %w", home, removeErr)
 		}
 		if changed {
-			fmt.Fprintln(c.Stdout, "已移除工具管理的 OTel 配置:", home)
+			fmt.Fprintln(c.Stdout, "已移除旧版工具管理的 OTel 配置:", home)
 		}
 	}
 	if err := platform.RemoveInstalledExecutable(paths.InstalledEXE, paths.StateDir, *purge); err != nil {
@@ -752,16 +723,9 @@ func (c CLI) doctor(args []string) error {
 						status.Machine.OS, status.Machine.Arch, runtime.GOOS, runtime.GOARCH))
 			}
 			add("ok", "database", c.tr("doctor.database", paths.Database, status.EventCount, status.SessionCount))
-			if status.OTelActive {
-				add("ok", "otel", c.tr("doctor.otelLive"))
-			} else {
-				add("warn", "otel", c.tr("doctor.otelIdle"))
-			}
+			add("ok", "accounting", c.tr("doctor.jsonlOnly"))
 			if status.WarningCount > 0 {
 				add("warn", "coverage", c.tr("doctor.coverage", status.WarningCount))
-			}
-			if len(status.CoverageGaps) > 0 {
-				add("warn", "coverage", c.tr("doctor.gaps", len(status.CoverageGaps)))
 			}
 		}
 		st.Close()
@@ -790,16 +754,13 @@ func (c CLI) doctor(args []string) error {
 			}
 			sessionHomes[session.SessionID] = home
 		}
-		configData, _ := os.ReadFile(config.CodexConfigPath(home))
-		hasManaged := bytes.Contains(configData, []byte("# BEGIN codex-usage managed"))
-		hasExporter := bytes.Contains(configData, []byte("metrics_exporter"))
-		switch {
-		case hasManaged:
-			add("ok", "codex_config", c.tr("doctor.configManaged", home))
-		case hasExporter:
-			add("warn", "codex_config", c.tr("doctor.configConflict", home))
-		default:
-			add("warn", "codex_config", c.tr("doctor.configMissing", home))
+		legacyManaged, legacyErr := config.HasLegacyManagedOTel(home)
+		if legacyErr != nil {
+			add("warn", "codex_config", legacyErr.Error())
+		} else if legacyManaged {
+			add("warn", "codex_config", c.tr("doctor.legacyManaged", home))
+		} else {
+			add("ok", "codex_config", c.tr("doctor.configUntouched", home))
 		}
 		if runtime.GOOS == "linux" && strings.Contains(filepath.ToSlash(home), "/mnt/") {
 			add("warn", "shared_home", c.tr("doctor.sharedHome", home))
@@ -819,27 +780,6 @@ func (c CLI) doctor(args []string) error {
 	for _, item := range checks {
 		symbol := map[string]string{"ok": "✓", "warn": "!", "error": "✗"}[item.Level]
 		fmt.Fprintf(c.Stdout, "%s %-16s %s\n", symbol, item.Name, item.Detail)
-	}
-	return nil
-}
-
-func validateCodexConfig(home string) error {
-	binary, err := exec.LookPath("codex")
-	if err != nil {
-		// The TOML parser already performed semantic validation. Desktop-only
-		// installs may legitimately have no CLI on PATH.
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, binary, "features", "list")
-	command.Env = append(os.Environ(), "CODEX_HOME="+home)
-	output, err := command.CombinedOutput()
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }

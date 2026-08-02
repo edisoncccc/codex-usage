@@ -11,154 +11,48 @@ import (
 	"github.com/zJay26/codex-usage/internal/pricing"
 )
 
-func TestInstallOTelPreservesCommentsAndExistingSection(t *testing.T) {
+func TestRemoveLegacyManagedOTelPreservesUserConfiguration(t *testing.T) {
 	home := t.TempDir()
-	backup := filepath.Join(t.TempDir(), "backups")
 	path := CodexConfigPath(home)
-	original := "# 用户注释\r\nmodel = \"gpt-5\"\r\n\r\n[otel]\r\n# 保留这一行\r\nlog_user_prompt = false\r\n"
+	original := "# 用户注释\r\nmodel = \"gpt-5\"\r\n\r\n[otel]\r\n" +
+		legacyManagedBegin + "\r\n" +
+		`metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:43189/v1/metrics", protocol = "json" } }` + "\r\n" +
+		legacyManagedEnd + "\r\n" +
+		`log_user_prompt = false` + "\r\n"
 	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := InstallOTel(home, "http://127.0.0.1:43189/v1/metrics", backup)
-	if err != nil {
-		t.Fatal(err)
+	found, err := HasLegacyManagedOTel(home)
+	if err != nil || !found {
+		t.Fatalf("legacy detection found=%v err=%v", found, err)
 	}
-	if !result.Changed || result.Conflict || result.Backup == "" {
-		t.Fatalf("unexpected result: %+v", result)
-	}
-	updated, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(updated)
-	for _, wanted := range []string{
-		"# 用户注释", `model = "gpt-5"`, "# 保留这一行",
-		managedBegin, `protocol = "json"`, managedEnd,
-	} {
-		if !strings.Contains(text, wanted) {
-			t.Fatalf("updated config lost %q:\n%s", wanted, text)
-		}
-	}
-	backupData, err := os.ReadFile(result.Backup)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(backupData) != original {
-		t.Fatalf("backup mismatch\nwant %q\ngot  %q", original, string(backupData))
-	}
-	changed, err := UninstallOTel(home)
+	changed, err := RemoveLegacyManagedOTel(home)
 	if err != nil || !changed {
-		t.Fatalf("uninstall changed=%v err=%v", changed, err)
-	}
-	restored, _ := os.ReadFile(path)
-	if strings.Contains(string(restored), "codex-usage managed") ||
-		!strings.Contains(string(restored), "# 保留这一行") {
-		t.Fatalf("managed stanza removal damaged config:\n%s", restored)
-	}
-}
-
-func TestInstallOTelDoesNotOverwriteExporter(t *testing.T) {
-	home := t.TempDir()
-	path := CodexConfigPath(home)
-	original := `[otel]
-metrics_exporter = { otlp-http = { endpoint = "http://collector:4318", protocol = "binary" } }
-`
-	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	result, err := InstallOTel(home, "http://127.0.0.1:43189/v1/metrics", t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Conflict || result.Changed {
-		t.Fatalf("unexpected result: %+v", result)
-	}
-	after, _ := os.ReadFile(path)
-	if string(after) != original {
-		t.Fatalf("existing exporter was modified")
-	}
-}
-
-func TestInstallOTelInvalidTOMLDoesNotModify(t *testing.T) {
-	home := t.TempDir()
-	path := CodexConfigPath(home)
-	original := "[otel\nbroken = true\n"
-	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := InstallOTel(home, "http://127.0.0.1:43189/v1/metrics", t.TempDir()); err == nil {
-		t.Fatal("expected semantic TOML error")
-	}
-	after, _ := os.ReadFile(path)
-	if string(after) != original {
-		t.Fatal("invalid input was modified")
-	}
-}
-
-func TestRollbackRestoresExactOriginal(t *testing.T) {
-	home := t.TempDir()
-	path := CodexConfigPath(home)
-	original := "# exact\nmodel = \"gpt-5\"\n"
-	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	result, err := InstallOTel(home, "http://127.0.0.1:43189/v1/metrics", t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := RollbackOTel(home, result.Backup); err != nil {
-		t.Fatal(err)
-	}
-	after, _ := os.ReadFile(path)
-	if string(after) != original {
-		t.Fatalf("rollback mismatch: %q", after)
-	}
-}
-
-func TestInstallIntoOTelHeaderWithoutTrailingNewline(t *testing.T) {
-	home := t.TempDir()
-	path := CodexConfigPath(home)
-	if err := os.WriteFile(path, []byte("[otel]"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	result, err := InstallOTel(home, "http://127.0.0.1:43189/v1/metrics", t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Changed {
-		t.Fatalf("expected change: %+v", result)
+		t.Fatalf("legacy cleanup changed=%v err=%v", changed, err)
 	}
 	updated, _ := os.ReadFile(path)
-	if !strings.Contains(string(updated), "[otel]\n"+managedBegin) {
-		t.Fatalf("missing newline after section header: %q", updated)
+	text := string(updated)
+	if strings.Contains(text, "codex-usage managed") || strings.Contains(text, "127.0.0.1:43189") ||
+		!strings.Contains(text, "# 用户注释") || !strings.Contains(text, `log_user_prompt = false`) {
+		t.Fatalf("legacy cleanup damaged user config:\n%s", text)
 	}
 }
 
-func TestInstallOTelMigratesPreviousManagedBlock(t *testing.T) {
+func TestRemoveLegacyManagedOTelLeavesThirdPartyExporterUntouched(t *testing.T) {
 	home := t.TempDir()
 	path := CodexConfigPath(home)
-	original := "[otel]\n" + previousManagedBegin() + "\n" +
-		`metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:40000/v1/metrics", protocol = "json" } }` + "\n" +
-		previousManagedEnd() + "\n"
+	original := "[otel]\n" +
+		`metrics_exporter = { otlp-http = { endpoint = "http://collector:4318", protocol = "binary" } }` + "\n"
 	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := InstallOTel(home, "http://127.0.0.1:43189/v1/metrics", t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	changed, err := RemoveLegacyManagedOTel(home)
+	if err != nil || changed {
+		t.Fatalf("third-party config changed=%v err=%v", changed, err)
 	}
-	if !result.Changed || result.Backup == "" {
-		t.Fatalf("unexpected result: %+v", result)
-	}
-	updated, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(updated)
-	if !strings.Contains(text, managedBegin) || !strings.Contains(text, managedEnd) ||
-		strings.Contains(text, previousManagedBegin()) || strings.Contains(text, "127.0.0.1:40000") ||
-		!strings.Contains(text, "127.0.0.1:43189") {
-		t.Fatalf("managed block was not migrated correctly:\n%s", text)
+	after, _ := os.ReadFile(path)
+	if string(after) != original {
+		t.Fatal("third-party exporter was modified")
 	}
 }
 

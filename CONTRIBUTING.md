@@ -35,6 +35,6 @@ npm test
 提交消息建议使用简洁的祈使句，例如：
 
 ```text
-Fix cumulative OTel reset handling
+Fix fork replay boundary handling
 Add Linux linger diagnostics
 ```

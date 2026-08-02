@@ -39,11 +39,11 @@
   ];
   const threads = [
     { key: "Dashboard localization", share: .61, events: 12, sessions: 1 },
-    { key: "OTel deduplication audit", share: .39, events: 9, sessions: 1 }
+    { key: "JSONL fork replay audit", share: .39, events: 9, sessions: 1 }
   ];
   const sessions = [
     { session_id: "demo-session-a", title: "Dashboard localization", project_path: "synthetic://visual-lab", model: "gpt-5.4", source: "codex_desktop", agent_type: "main", share: .48, confidence: "exact", hoursAgo: 0 },
-    { session_id: "demo-session-b", title: "OTel deduplication audit", project_path: "synthetic://service-api", model: "gpt-5.6-terra", source: "codex_cli_rs", agent_type: "subagent", share: .31, confidence: "gap_fallback", hoursAgo: 2 },
+    { session_id: "demo-session-b", title: "JSONL fork replay audit", project_path: "synthetic://service-api", model: "gpt-5.6-terra", source: "codex_cli_rs", agent_type: "subagent", share: .31, confidence: "gap_fallback", hoursAgo: 2 },
     { session_id: "demo-session-c", title: "Local data-quality review", project_path: "synthetic://visual-lab", model: "gpt-5.4", source: "codex_desktop", agent_type: "guardian", share: .21, confidence: "exact", hoursAgo: 7 }
   ];
 
@@ -68,14 +68,13 @@
     const until = url.searchParams.get("until");
     const dayScale = since && until ? Math.min(1, Math.max(1, (new Date(until) - new Date(since)) / 86_400_000) / 30) : 1;
     const usage = scaledUsage(baseUsage, dayScale * filterScale(url));
-    const unattributed = Math.round(84_200 * filterScale(url));
     return {
       usage,
-      unattributed: { ...scaledUsage(baseUsage, 0), total: unattributed },
-      grand_total: usage.total + unattributed,
+      unattributed: scaledUsage(baseUsage, 0),
+      grand_total: usage.total,
       event_count: Math.max(1, Math.round(114 * dayScale * filterScale(url))),
       session_count: Math.max(1, Math.round(26 * dayScale * filterScale(url))),
-      coverage_incomplete: unattributed > 0
+      coverage_incomplete: false
     };
   }
 
@@ -178,21 +177,21 @@
     const endpoint = url.pathname.slice(url.pathname.indexOf("/api/v1/"));
     const method = String(init.method || (typeof input !== "string" && input.method) || "GET").toUpperCase();
     if (endpoint === "/api/v1/status") return jsonResponse({
-      version: "1.0.0-demo", scanning: false,
+      version: "2.0.0-demo", scanning: false,
       status: {
         machine: { id: "synthetic-machine", label: "Synthetic Windows · demo", hostname: "synthetic-host", os: "windows", arch: "amd64" },
-        last_scan: now.toISOString(), otel_last_received: now.toISOString(), otel_active: true,
-        event_count: 114, session_count: 26, warning_count: 2, data_revision: "demo-1", coverage_gaps: [],
+        last_scan: now.toISOString(), accounting_mode: "jsonl_only", otel_active: false,
+        event_count: 114, session_count: 26, warning_count: 2, data_revision: "demo-1",
         codex_homes: [{ path: "synthetic://codex-home", last_scan: now.toISOString(), files_scanned: 26 }]
       }
     });
     if (endpoint === "/api/v1/summary") return jsonResponse(summary(url));
     if (endpoint === "/api/v1/cost-estimate") return jsonResponse(costEstimate(url));
-    if (endpoint === "/api/v1/timeseries") return jsonResponse({ bucket: "day", points: dailyPoints(url).map((point) => ({ time: point.time, usage: point.usage })) });
+    if (endpoint === "/api/v1/timeseries") return jsonResponse({ bucket: "day", points: dailyPoints(url).map((point) => ({ time: point.time, date: point.date, usage: point.usage })) });
     if (endpoint === "/api/v1/breakdown") return jsonResponse(breakdown(url));
     if (endpoint === "/api/v1/sessions") return jsonResponse(sessionPayload(url));
     if (endpoint === "/api/v1/warnings") return jsonResponse({ items: [
-      { created_at: now.toISOString(), first_seen: new Date(now.getTime() - 86_400_000).toISOString(), occurrences: 3, kind: "state_fallback_suppressed_otel", path: "synthetic://state", detail: "Synthetic JSONL fallback was suppressed because OTel was authoritative for the same interval." },
+      { created_at: now.toISOString(), first_seen: new Date(now.getTime() - 86_400_000).toISOString(), occurrences: 1, kind: "fork_replay_detected", path: "synthetic://rollout", detail: "Synthetic copied parent history was skipped and the JSONL index was rebuilt." },
       { created_at: now.toISOString(), occurrences: 1, kind: "cumulative_reset", path: "synthetic://rollout", detail: "Synthetic cumulative vector moved backward; last_token_usage filled the delta." }
     ] });
     if (endpoint === "/api/v1/pricing" && method === "GET") return jsonResponse(pricingPayload());

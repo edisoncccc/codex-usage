@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/zJay26/codex-usage/internal/model"
-	"github.com/zJay26/codex-usage/internal/otel"
 	"github.com/zJay26/codex-usage/internal/pricing"
 	"github.com/zJay26/codex-usage/internal/store"
 	"github.com/zJay26/codex-usage/internal/usage"
@@ -27,7 +26,6 @@ import (
 type Server struct {
 	Store                *store.Store
 	Scanner              *usage.Scanner
-	Receiver             *otel.Receiver
 	Homes                func() ([]string, error)
 	Address              string
 	Port                 int
@@ -50,7 +48,6 @@ func (s *Server) URL() string {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/v1/metrics", s.Receiver)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.Version})
 	})
@@ -77,8 +74,7 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
 		isLocalMutation := strings.HasPrefix(r.URL.Path, "/api/") && r.Method != http.MethodGet
-		isMetricsPost := r.URL.Path == "/v1/metrics" && r.Method == http.MethodPost
-		if (isLocalMutation || isMetricsPost) && !safeOrigin(r) {
+		if isLocalMutation && !safeOrigin(r) {
 			http.Error(w, "拒绝非本机来源", http.StatusForbidden)
 			return
 		}
@@ -557,11 +553,19 @@ func parseFilter(query url.Values) (model.Filter, error) {
 		if err != nil {
 			return filter, fmt.Errorf("since: %w", err)
 		}
+		if isDateOnly(value) {
+			filter.SinceDate = value
+		} else if strings.EqualFold(value, "today") {
+			filter.SinceDate = time.Now().In(time.Local).Format("2006-01-02")
+		}
 	}
 	if value := query.Get("until"); value != "" {
 		filter.Until, err = parseAbsoluteTime(value)
 		if err != nil {
 			return filter, fmt.Errorf("until: %w", err)
+		}
+		if isDateOnly(value) {
+			filter.UntilDate = value
 		}
 	}
 	filter.Model = query.Get("model")
@@ -571,6 +575,14 @@ func parseFilter(query url.Values) (model.Filter, error) {
 	filter.SessionID = query.Get("session_id")
 	filter.Confidence = query.Get("confidence")
 	return filter, nil
+}
+
+func isDateOnly(value string) bool {
+	if len(value) != len("2006-01-02") {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", value)
+	return err == nil
 }
 
 func ParseSince(value string) (time.Time, error) { return parseSince(value) }

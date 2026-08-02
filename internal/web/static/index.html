@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <meta name="description" content="当前电脑的 Codex Token 用量与 Standard API 等价成本估算">
-  <title>Codex Usage · 本机用量</title>
+  <meta name="description" content="本地优先的 Codex 使用分析：逐电脑归属、模型/项目/会话明细与 Standard API 等价成本">
+  <title>Codex Usage · 本地使用分析</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -15,7 +15,7 @@
     <div class="topbar-inner">
       <button class="brand pressable" id="brandButton" type="button" aria-label="返回概览" data-i18n-aria-label="brand.home">
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-        <span class="brand-copy"><strong>Codex Usage</strong><small>LOCAL USAGE</small></span>
+        <span class="brand-copy"><strong>Codex Usage</strong><small>USAGE ANALYTICS</small></span>
       </button>
 
       <nav class="primary-nav" role="tablist" aria-label="主要视图" data-i18n-aria-label="nav.label">
@@ -26,7 +26,7 @@
 
       <div class="top-actions">
         <div class="machine-pill" id="machinePill" aria-live="polite">
-          <span class="status-dot neutral" id="otelDot" aria-hidden="true"></span>
+          <span class="status-dot neutral" id="sourceDot" aria-hidden="true"></span>
           <span><small data-i18n="machine.current">当前电脑</small><strong id="machineLabel" data-i18n="common.loading">正在读取…</strong></span>
         </div>
         <button class="icon-button pressable locale-button" id="localeButton" type="button" aria-label="Switch to English" title="Switch to English" data-i18n-aria-label="action.language" data-i18n-title="action.language"><span data-i18n="action.languageShort">EN</span></button>
@@ -111,8 +111,8 @@
           <dl class="provenance-list">
             <div><dt data-i18n="provenance.machineId">机器 ID</dt><dd><code id="machineId">—</code></dd></div>
             <div><dt data-i18n="provenance.lastScan">最后扫描</dt><dd id="lastScan">—</dd></div>
-            <div><dt data-i18n="provenance.otel">实时 OTel</dt><dd id="otelStatus">—</dd></div>
-            <div><dt data-i18n="provenance.unattributed">历史未归属</dt><dd><strong id="unattributed">—</strong><small data-i18n="provenance.unattributedHint">只计入累计，不摊到日期</small></dd></div>
+            <div><dt data-i18n="provenance.source">计数来源</dt><dd id="sourceStatus">—</dd></div>
+            <div><dt data-i18n="provenance.stateRole">状态库角色</dt><dd><strong data-i18n="provenance.metadataOnly">仅发现与 metadata</strong><small data-i18n="provenance.stateRoleHint">不使用 tokens_used 补总量</small></dd></div>
           </dl>
         </section>
       </div>
@@ -185,7 +185,7 @@
     <footer>
       <div><strong data-i18n="footer.scopeStrong">当前电脑，不是账号用量。</strong> <span data-i18n="footer.scopeBody">Total 沿用 Codex 原始值；Cached Input 包含在 Input 中，Reasoning 包含在 Output 中。</span></div>
       <div data-i18n="footer.cost">不读取真实账单或账号配额；费用仅按当前内置 Standard API 文本 Token 价格重新折算本机历史数据，未知部分不会当作零费用。</div>
-      <div data-i18n="footer.dedup">OTel 覆盖期机器总量以 OTel 为准；项目、Thread 与 Session 为归属视图，不能与机器总量相加。</div>
+      <div data-i18n="footer.dedup">Token 总量只来自本机 session JSONL；项目、Thread 与 Session 是同一批 Token 的归属视图，不能相加。</div>
       <div class="footer-last"><span data-i18n="footer.runtime">资源完全嵌入 · 仅监听 127.0.0.1 · 无运行时外部请求</span><span id="versionLabel"></span></div>
     </footer>
   </main>
