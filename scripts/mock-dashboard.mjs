@@ -34,7 +34,7 @@ function json(response, value, status = 200) {
 
 function summary(multiplier = 1) {
   const scaled = Object.fromEntries(Object.entries(usage).map(([key, value]) => [key, Math.round(value * multiplier)]));
-  return { usage: scaled, unattributed: { input: 0, cached_input: 0, cache_write_input: 0, output: 0, reasoning_output: 0, total: 84_200 }, grand_total: scaled.total + 84_200, event_count: 114, session_count: 26, coverage_incomplete: true };
+  return { usage: scaled, unattributed: { input: 0, cached_input: 0, cache_write_input: 0, output: 0, reasoning_output: 0, total: 0 }, grand_total: scaled.total, event_count: 114, session_count: 26, coverage_incomplete: false };
 }
 
 function localDateKey(date) {
@@ -77,10 +77,10 @@ function costEstimate(url) {
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://127.0.0.1:${port}`);
   if (url.pathname === "/api/v1/status") return json(response, {
-    version: "1.0.0-preview", scanning: false,
+    version: "2.0.0-preview", scanning: false,
     status: {
       machine: { id: "62c0172d-36c4-4ec9-a074-02b9ec2b45e1", label: "WORKSTATION-19 · windows", hostname: "WORKSTATION-19", os: "windows", arch: "amd64" },
-      last_scan: now.toISOString(), otel_last_received: now.toISOString(), otel_active: true,
+      last_scan: now.toISOString(), accounting_mode: "jsonl_only", otel_active: false,
       event_count: 114, session_count: 26, warning_count: 2,
       codex_homes: [{ path: "C:\\Users\\demo\\.codex", last_scan: now.toISOString(), files_scanned: 26 }]
     }
@@ -110,7 +110,7 @@ const server = http.createServer(async (request, response) => {
     const points = Array.from({ length: 30 }, (_, index) => {
       const time = new Date(now.getTime() - (29 - index) * 86400000);
       const wave = 150_000 + Math.round((Math.sin(index * .72) + 1.35) * 145_000) + index * 8500;
-      return { time: time.toISOString(), usage: { input: Math.round(wave * .78), cached_input: Math.round(wave * .42), cache_write_input: 0, output: Math.round(wave * .22), reasoning_output: Math.round(wave * .08), total: wave } };
+      return { time: time.toISOString(), date: time.toISOString().slice(0, 10), usage: { input: Math.round(wave * .78), cached_input: Math.round(wave * .42), cache_write_input: 0, output: Math.round(wave * .22), reasoning_output: Math.round(wave * .08), total: wave } };
     });
     return json(response, { bucket: "day", points });
   }
@@ -128,7 +128,7 @@ const server = http.createServer(async (request, response) => {
     { session_id: "019f9821-d272-7812-814d-94cc02dc39a1", title: "本地数据管线检查", project_path: "C:\\dev\\private-data", model: "gpt-5.4", source: "codex_desktop", agent_type: "guardian", usage: { ...usage, total: 760_000 }, confidence: "exact", last_usage: new Date(now.getTime() - 7200000).toISOString() }
   ] });
   if (url.pathname === "/api/v1/warnings") return json(response, { items: [
-    { created_at: now.toISOString(), kind: "state_fallback", path: "state_5.sqlite", detail: "84,200 Token 只能归属到历史累计，未分摊日期" },
+    { created_at: now.toISOString(), kind: "fork_replay_detected", path: "rollout-fork.jsonl", detail: "检测到复制的父线程历史前缀，已跳过并重建派生索引" },
     { created_at: now.toISOString(), kind: "cumulative_reset", path: "rollout-example.jsonl", detail: "累计向量回退，已使用 last_token_usage 补位" }
   ] });
   if (url.pathname === "/api/v1/rescan") return json(response, { homes: 1, files: 26, records: 940, events_inserted: 2, duplicates: 14, warnings: 0 });

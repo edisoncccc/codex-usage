@@ -29,7 +29,7 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 	}
 	unitPath := filepath.Join(unitDir, "codex-usage.service")
 	unit := `[Unit]
-Description=Codex Usage local token collector
+Description=Codex Usage local JSONL analytics service
 After=default.target
 
 [Service]

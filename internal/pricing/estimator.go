@@ -55,7 +55,7 @@ type Report struct {
 type Builder struct {
 	overrides map[string]Override
 	summary   aggregate
-	points    map[int64]*aggregate
+	points    map[string]*aggregate
 	models    map[string]*aggregate
 }
 
@@ -90,7 +90,7 @@ func NewBuilder(overrides map[string]Override) (*Builder, error) {
 	}
 	return &Builder{
 		overrides: normalized,
-		points:    map[int64]*aggregate{},
+		points:    map[string]*aggregate{},
 		models:    map[string]*aggregate{},
 	}, nil
 }
@@ -116,12 +116,14 @@ func (b *Builder) Add(event model.UsageEvent) error {
 		return err
 	}
 	if !event.Timestamp.IsZero() {
-		local := event.Timestamp.In(time.Local)
-		start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
-		pointAggregate := b.points[start.Unix()]
+		date := event.LocalDate
+		if date == "" {
+			date = event.Timestamp.In(time.Local).Format("2006-01-02")
+		}
+		pointAggregate := b.points[date]
 		if pointAggregate == nil {
 			pointAggregate = &aggregate{}
-			b.points[start.Unix()] = pointAggregate
+			b.points[date] = pointAggregate
 		}
 		if err := pointAggregate.add(evaluated); err != nil {
 			return err
@@ -131,17 +133,17 @@ func (b *Builder) Add(event model.UsageEvent) error {
 }
 
 func (b *Builder) Report() Report {
-	pointKeys := make([]int64, 0, len(b.points))
+	pointKeys := make([]string, 0, len(b.points))
 	for key := range b.points {
 		pointKeys = append(pointKeys, key)
 	}
-	sort.Slice(pointKeys, func(i, j int) bool { return pointKeys[i] < pointKeys[j] })
+	sort.Strings(pointKeys)
 	points := make([]ReportPoint, 0, len(pointKeys))
 	for _, key := range pointKeys {
-		local := time.Unix(key, 0).In(time.Local)
 		item := b.points[key]
+		pointTime, _ := time.ParseInLocation("2006-01-02", key, time.UTC)
 		points = append(points, ReportPoint{
-			Date: local.Format("2006-01-02"), Time: time.Unix(key, 0).UTC(),
+			Date: key, Time: pointTime,
 			Usage: item.usage, Estimate: item.estimate(),
 		})
 	}
@@ -168,7 +170,7 @@ func FillDaily(report Report, since, until, now time.Time) (Report, error) {
 	if !since.IsZero() {
 		start = localDay(since)
 	} else if len(report.Points) > 0 {
-		start = localDay(report.Points[0].Time)
+		start, _ = time.ParseInLocation("2006-01-02", report.Points[0].Date, time.Local)
 	}
 	if start.IsZero() {
 		return report, nil

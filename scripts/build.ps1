@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.0.0"
+    [string]$Version = "2.0.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,6 +12,10 @@ if (Test-Path -LiteralPath (Join-Path $ProjectRoot ".git")) {
     $GitCommit = git -C $ProjectRoot rev-parse --short HEAD 2>$null
     if ($LASTEXITCODE -eq 0 -and $GitCommit) {
         $Commit = ([string]$GitCommit).Trim()
+        $TrackedChanges = git -C $ProjectRoot status --porcelain --untracked-files=no 2>$null
+        if ($LASTEXITCODE -eq 0 -and $TrackedChanges) {
+            $Commit = "$Commit-dirty"
+        }
     }
 }
 

@@ -18,10 +18,10 @@ import (
 )
 
 const (
-	DefaultPort  = 43189
-	databaseName = "usage.sqlite"
-	managedBegin = "# BEGIN codex-usage managed"
-	managedEnd   = "# END codex-usage managed"
+	DefaultPort        = 43189
+	databaseName       = "usage.sqlite"
+	legacyManagedBegin = "# BEGIN codex-usage managed"
+	legacyManagedEnd   = "# END codex-usage managed"
 )
 
 type Config struct {
@@ -39,13 +39,6 @@ type Paths struct {
 	BackupDir    string
 	InstallDir   string
 	InstalledEXE string
-}
-
-type PatchResult struct {
-	Changed  bool
-	Conflict bool
-	Backup   string
-	Message  string
 }
 
 func Default() Config {
@@ -285,52 +278,22 @@ func CodexConfigPath(home string) string {
 	return filepath.Join(home, "config.toml")
 }
 
-func InstallOTel(home, endpoint, backupDir string) (PatchResult, error) {
-	path := CodexConfigPath(home)
-	original, err := os.ReadFile(path)
+func HasLegacyManagedOTel(home string) (bool, error) {
+	data, err := os.ReadFile(CodexConfigPath(home))
 	if errors.Is(err, os.ErrNotExist) {
-		original = nil
-	} else if err != nil {
-		return PatchResult{}, err
+		return false, nil
 	}
-	if bytes.Contains(original, []byte(managedBegin)) {
-		return PatchResult{Message: "已由 codex-usage 管理"}, nil
+	if err != nil {
+		return false, err
 	}
-	line := fmt.Sprintf(`metrics_exporter = { otlp-http = { endpoint = %q, protocol = "json" } }`, endpoint)
-	if bytes.Contains(original, []byte(previousManagedBegin())) {
-		updated, replaceErr := replaceManagedOTel(original, previousManagedBegin(), previousManagedEnd(), line)
-		if replaceErr != nil {
-			return PatchResult{}, replaceErr
-		}
-		var check map[string]any
-		if err := toml.Unmarshal(updated, &check); err != nil {
-			return PatchResult{}, fmt.Errorf("迁移后的 config.toml 未通过语义校验: %w", err)
-		}
-		return persistOTelUpdate(home, backupDir, path, original, updated, "已迁移本机 OTLP/HTTP JSON exporter")
-	}
-	if len(original) > 0 {
-		var parsed map[string]any
-		if err := toml.Unmarshal(original, &parsed); err != nil {
-			return PatchResult{}, fmt.Errorf("原 config.toml 语义无效，未修改: %w", err)
-		}
-		if hasMetricsExporter(parsed) {
-			return PatchResult{
-				Conflict: true,
-				Message:  "已有 otel.metrics_exporter；为避免覆盖，仅启用历史扫描",
-			}, nil
-		}
-	}
-
-	updated := insertManagedOTel(original, line)
-	var check map[string]any
-	if err := toml.Unmarshal(updated, &check); err != nil {
-		return PatchResult{}, fmt.Errorf("生成的 config.toml 未通过语义校验: %w", err)
-	}
-
-	return persistOTelUpdate(home, backupDir, path, original, updated, "已安全添加本机 OTLP/HTTP JSON exporter")
+	return bytes.Contains(data, []byte(legacyManagedBegin)) ||
+		bytes.Contains(data, []byte(previousManagedBegin())), nil
 }
 
-func UninstallOTel(home string) (bool, error) {
+// RemoveLegacyManagedOTel is upgrade cleanup for releases that used to add a
+// managed exporter. It removes only our marker-delimited stanza and leaves any
+// user or third-party [otel] configuration untouched.
+func RemoveLegacyManagedOTel(home string) (bool, error) {
 	path := CodexConfigPath(home)
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -339,7 +302,7 @@ func UninstallOTel(home string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	begin, endMarker := managedBegin, managedEnd
+	begin, endMarker := legacyManagedBegin, legacyManagedEnd
 	start := bytes.Index(data, []byte(begin))
 	if start < 0 {
 		begin, endMarker = previousManagedBegin(), previousManagedEnd()
@@ -375,124 +338,6 @@ func UninstallOTel(home string) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-func replaceManagedOTel(original []byte, begin, end, exporterLine string) ([]byte, error) {
-	start := bytes.Index(original, []byte(begin))
-	if start < 0 {
-		return nil, fmt.Errorf("未找到可迁移的 managed stanza")
-	}
-	endRel := bytes.Index(original[start:], []byte(end))
-	if endRel < 0 {
-		return nil, fmt.Errorf("发现不完整的 managed stanza，拒绝自动修改")
-	}
-	endOffset := start + endRel + len(end)
-	newline := "\n"
-	if bytes.Contains(original, []byte("\r\n")) {
-		newline = "\r\n"
-	}
-	replacement := managedBegin + newline + exporterLine + newline + managedEnd
-	updated := append([]byte{}, original[:start]...)
-	updated = append(updated, []byte(replacement)...)
-	updated = append(updated, original[endOffset:]...)
-	return updated, nil
-}
-
-func persistOTelUpdate(home, backupDir, path string, original, updated []byte, message string) (PatchResult, error) {
-	if err := EnsurePrivateDir(home); err != nil {
-		return PatchResult{}, err
-	}
-	if err := EnsurePrivateDir(backupDir); err != nil {
-		return PatchResult{}, err
-	}
-	backup := ""
-	if len(original) > 0 {
-		backup = filepath.Join(backupDir, fmt.Sprintf("config-%s.toml", randomSuffix()))
-		if err := atomicWrite(backup, original, 0o600); err != nil {
-			return PatchResult{}, fmt.Errorf("写入受限备份: %w", err)
-		}
-	}
-	if err := atomicWriteWithRollback(path, original, updated, 0o600); err != nil {
-		return PatchResult{}, err
-	}
-	return PatchResult{Changed: true, Backup: backup, Message: message}, nil
-}
-
-func RollbackOTel(home, backup string) error {
-	path := CodexConfigPath(home)
-	if backup == "" {
-		changed, err := UninstallOTel(home)
-		if err != nil {
-			return err
-		}
-		if changed {
-			data, readErr := os.ReadFile(path)
-			if readErr == nil && len(bytes.TrimSpace(data)) == 0 {
-				return os.Remove(path)
-			}
-		}
-		return nil
-	}
-	original, err := os.ReadFile(backup)
-	if err != nil {
-		return err
-	}
-	return atomicWriteWithRollback(path, nil, original, 0o600)
-}
-
-func insertManagedOTel(original []byte, exporterLine string) []byte {
-	newline := "\n"
-	if bytes.Contains(original, []byte("\r\n")) {
-		newline = "\r\n"
-	}
-	block := managedBegin + newline + exporterLine + newline + managedEnd + newline
-	text := string(original)
-	lines := strings.SplitAfter(text, newline)
-	offset := 0
-	for _, part := range lines {
-		trimmed := strings.TrimSpace(strings.TrimSuffix(part, newline))
-		if trimmed == "[otel]" {
-			offset += len(part)
-			separator := ""
-			if !strings.HasSuffix(part, newline) {
-				separator = newline
-			}
-			out := text[:offset] + separator + block + text[offset:]
-			return []byte(out)
-		}
-		offset += len(part)
-	}
-	var b strings.Builder
-	b.WriteString(text)
-	if len(text) > 0 && !strings.HasSuffix(text, "\n") {
-		b.WriteString(newline)
-	}
-	if len(text) > 0 {
-		b.WriteString(newline)
-	}
-	b.WriteString(managedBegin)
-	b.WriteString(newline)
-	b.WriteString("[otel]")
-	b.WriteString(newline)
-	b.WriteString(exporterLine)
-	b.WriteString(newline)
-	b.WriteString(managedEnd)
-	b.WriteString(newline)
-	return []byte(b.String())
-}
-
-func hasMetricsExporter(root map[string]any) bool {
-	raw, ok := root["otel"]
-	if !ok {
-		return false
-	}
-	switch section := raw.(type) {
-	case map[string]any:
-		_, ok = section["metrics_exporter"]
-		return ok
-	default:
-		return strings.Contains(strings.ToLower(fmt.Sprint(section)), "metrics_exporter")
-	}
 }
 
 func cleanHomes(values []string) []string {

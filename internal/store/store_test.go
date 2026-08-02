@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,39 +21,18 @@ func BenchmarkPricingEventTraversal(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer st.Close()
-	ctx := context.Background()
-	b.Run("stream", func(b *testing.B) {
-		for range b.N {
-			count := 0
-			if err := st.WalkPricingEvents(ctx, model.Filter{}, func(model.UsageEvent) error {
-				count++
-				return nil
-			}); err != nil {
-				b.Fatal(err)
-			}
-			if count == 0 {
-				b.Fatal("no pricing events")
-			}
+	for range b.N {
+		count := 0
+		if err := st.WalkPricingEvents(context.Background(), model.Filter{}, func(model.UsageEvent) error {
+			count++
+			return nil
+		}); err != nil {
+			b.Fatal(err)
 		}
-	})
-	b.Run("paged", func(b *testing.B) {
-		for range b.N {
-			count := 0
-			for offset := 0; ; offset += 5000 {
-				items, err := st.PricingEvents(ctx, EventQuery{Limit: 5000, Offset: offset})
-				if err != nil {
-					b.Fatal(err)
-				}
-				count += len(items)
-				if len(items) < 5000 {
-					break
-				}
-			}
-			if count == 0 {
-				b.Fatal("no pricing events")
-			}
+		if count == 0 {
+			b.Fatal("no pricing events")
 		}
-	})
+	}
 }
 
 func TestWarningsAreGroupedByKindAndPath(t *testing.T) {
@@ -65,7 +43,7 @@ func TestWarningsAreGroupedByKindAndPath(t *testing.T) {
 	}
 	defer st.Close()
 	for _, detail := range []string{"第一次", "第二次", "第三次"} {
-		if err := st.AddWarning(ctx, "state_fallback_suppressed_otel", "same.jsonl", detail); err != nil {
+		if err := st.AddWarning(ctx, "cumulative_reset", "same.jsonl", detail); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -80,128 +58,127 @@ func TestWarningsAreGroupedByKindAndPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.WarningCount != 0 {
-		t.Fatalf("informational de-dup warning counted as actionable: %+v", status)
-	}
-	if err := st.AddWarning(ctx, "cumulative_reset", "same.jsonl", "需要复核"); err != nil {
-		t.Fatal(err)
-	}
-	status, _ = st.Status(ctx)
-	if status.WarningCount != 1 {
-		t.Fatalf("actionable warning count=%d want 1", status.WarningCount)
+	if status.WarningCount != 1 || status.AccountingMode != "jsonl_only" {
+		t.Fatalf("unexpected status: %+v", status)
 	}
 }
 
-func TestWarningV1MigrationCollapsesHistoricalNoise(t *testing.T) {
-	databasePath := filepath.Join(t.TempDir(), "usage.sqlite")
-	db, err := sql.Open("sqlite", databasePath)
+func TestV2MigrationPurgesDerivedRowsAndDropsOTelTables(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "usage.sqlite")
+	st, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-		INSERT INTO meta VALUES('schema_version','1');
-		CREATE TABLE warnings(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,created_at INTEGER NOT NULL,
-			kind TEXT NOT NULL,path TEXT NOT NULL DEFAULT '',detail TEXT NOT NULL,
-			fingerprint TEXT NOT NULL UNIQUE);
-		INSERT INTO warnings(created_at,kind,path,detail,fingerprint) VALUES
-			(10,'state_fallback_suppressed_otel','same.jsonl','旧差额','a'),
-			(20,'state_fallback_suppressed_otel','same.jsonl','新差额','b');`); err != nil {
+	at := time.Date(2026, 7, 30, 1, 0, 0, 0, time.UTC)
+	if _, err := st.InsertEvent(ctx, model.UsageEvent{
+		ID: "old-json", Timestamp: at, Usage: model.TokenUsage{Input: 8, Output: 2, Total: 10},
+		Provenance: model.ProvenanceSessionJSONL, Confidence: model.ConfidenceExact,
+	}, "old.jsonl"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE meta SET value='2' WHERE key='schema_version';
+		CREATE TABLE otel_series(series_key TEXT PRIMARY KEY);
+		CREATE TABLE otel_coverage(run_id TEXT PRIMARY KEY,started_at INTEGER,last_at INTEGER);
+		INSERT INTO otel_coverage VALUES('legacy',1,2);`); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	st, err := Open(databasePath)
+	db.Close()
+
+	st, err = Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	warnings, err := st.Warnings(context.Background(), 10)
+	summary, err := st.Summary(ctx, model.Filter{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(warnings) != 1 || warnings[0].Occurrences != 2 || warnings[0].Detail != "新差额" || warnings[0].FirstSeen.Unix() != 10 {
-		t.Fatalf("v1 warning migration mismatch: %+v", warnings)
+	if summary.GrandTotal != 0 || summary.EventCount != 0 {
+		t.Fatalf("legacy derived rows survived migration: %+v", summary)
+	}
+	var count int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'otel_%'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("legacy OTel tables remain: %d", count)
 	}
 }
 
-func TestStateFallbackDoesNotGrowAcrossOTelCoverage(t *testing.T) {
+func TestV3MigrationAddsEventSegmentAndPurgesDerivedRows(t *testing.T) {
 	ctx := context.Background()
-	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	path := filepath.Join(t.TempDir(), "usage.sqlite")
+	st, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
-	}
-	defer st.Close()
-
-	session := model.SessionInfo{
-		SessionID: "session-a", RolloutPath: "fixture.jsonl", CodexHome: "/codex",
-		TokensUsed: 150, UpdatedAt: time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC),
 	}
 	if _, err := st.InsertEvent(ctx, model.UsageEvent{
-		ID: "json-a", Timestamp: session.UpdatedAt, SessionID: session.SessionID,
-		Usage: model.TokenUsage{Total: 100}, Provenance: model.ProvenanceSessionJSONL,
-		Confidence: model.ConfidenceExact,
-	}, session.RolloutPath); err != nil {
+		ID: "v3-derived", Timestamp: time.Now(), SessionID: "session", Segment: 2,
+		Usage:      model.TokenUsage{Input: 8, Output: 2, Total: 10},
+		Provenance: model.ProvenanceSessionJSONL, Confidence: model.ConfidenceExact,
+	}, "old.jsonl"); err != nil {
+		st.Close()
 		t.Fatal(err)
 	}
-	if err := st.ApplyStateFallback(ctx, session); err != nil {
+	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	before, err := st.Summary(ctx, model.Filter{})
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.Unattributed.Total != 50 {
-		t.Fatalf("initial fallback=%d want 50", before.Unattributed.Total)
+	if _, err := db.Exec(`UPDATE meta SET value='3' WHERE key='schema_version';
+		ALTER TABLE usage_events DROP COLUMN segment;`); err != nil {
+		db.Close()
+		t.Fatal(err)
 	}
+	db.Close()
 
-	coverageStart := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
-	if err := st.TouchCoverageInterval(ctx, "run", coverageStart, coverageStart.Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	session.TokensUsed = 250
-	session.UpdatedAt = coverageStart.Add(time.Minute)
-	if err := st.ApplyStateFallback(ctx, session); err != nil {
-		t.Fatal(err)
-	}
-	after, err := st.Summary(ctx, model.Filter{})
+	st, err = Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Unattributed.Total != 50 {
-		t.Fatalf("OTel-overlapping fallback grew to %d", after.Unattributed.Total)
-	}
-
-	newSession := model.SessionInfo{
-		SessionID: "session-new", RolloutPath: "new.jsonl", CodexHome: "/codex",
-		TokensUsed: 80, UpdatedAt: coverageStart.Add(time.Minute),
-	}
-	if err := st.ApplyStateFallback(ctx, newSession); err != nil {
-		t.Fatal(err)
-	}
-	final, err := st.Summary(ctx, model.Filter{})
+	defer st.Close()
+	summary, err := st.Summary(ctx, model.Filter{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if final.Unattributed.Total != 50 {
-		t.Fatalf("new OTel-overlapping fallback was counted: %d", final.Unattributed.Total)
+	if summary.EventCount != 0 || summary.GrandTotal != 0 {
+		t.Fatalf("v3 derived rows survived v4 migration: %+v", summary)
 	}
-	warnings, err := st.Warnings(ctx, 20)
+	var segmentColumns int
+	rows, err := st.db.Query(`PRAGMA table_info(usage_events)`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, warning := range warnings {
-		found = found || warning.Kind == "state_fallback_suppressed_otel"
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, typ string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		if name == "segment" {
+			segmentColumns++
+		}
 	}
-	if !found {
-		t.Fatal("suppressed fallback was not made visible")
+	rows.Close()
+	if segmentColumns != 1 {
+		t.Fatalf("segment column count = %d", segmentColumns)
 	}
 }
 
-func TestPricingEventsPreserveCanonicalTotalsAndJSONLAttribution(t *testing.T) {
+func TestCanonicalViewsUseOnlyJSONL(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
 	if err != nil {
@@ -209,42 +186,27 @@ func TestPricingEventsPreserveCanonicalTotalsAndJSONLAttribution(t *testing.T) {
 	}
 	defer st.Close()
 	at := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
-	if err := st.TouchCoverageInterval(ctx, "run", at.Add(-time.Minute), at.Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
 	for _, event := range []model.UsageEvent{
-		{
-			ID: "json", Timestamp: at, ObservedAt: at, SessionID: "session", Model: "gpt-5.6-luna", ProjectPath: "/work/project",
-			Usage: model.TokenUsage{Input: 80, Output: 20, Total: 100}, Provenance: model.ProvenanceSessionJSONL, Confidence: model.ConfidenceExact,
-		},
-		{
-			ID: "otel", Timestamp: at, ObservedAt: at, Model: "gpt-5.6-luna",
-			Usage: model.TokenUsage{Input: 120, Output: 30, Total: 150}, Provenance: model.ProvenanceOTel, Confidence: model.ConfidenceExact,
-		},
+		{ID: "json", Timestamp: at, SessionID: "session", Usage: model.TokenUsage{Input: 80, Output: 20, Total: 100}, Provenance: model.ProvenanceSessionJSONL, Confidence: model.ConfidenceExact},
+		{ID: "legacy-otel", Timestamp: at, Usage: model.TokenUsage{Input: 120, Output: 30, Total: 150}, Provenance: "otel", Confidence: model.ConfidenceExact},
+		{ID: "legacy-state", Usage: model.TokenUsage{Total: 90}, Provenance: "state_fallback", Confidence: model.ConfidenceAggregateOnly},
 	} {
 		if _, err := st.InsertEvent(ctx, event, event.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
-	machineView, err := st.PricingEvents(ctx, EventQuery{Limit: 10})
+	summary, err := st.Summary(ctx, model.Filter{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(machineView) != 1 || machineView[0].ID != "otel" {
-		t.Fatalf("canonical pricing view double counted sources: %#v", machineView)
-	}
-	projectView, err := st.PricingEvents(ctx, EventQuery{Filter: model.Filter{Project: "/work/project"}, Limit: 10})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(projectView) != 1 || projectView[0].ID != "json" {
-		t.Fatalf("project pricing view lost JSONL attribution: %#v", projectView)
+	if summary.Usage.Total != 100 || summary.GrandTotal != 100 || summary.Unattributed.Total != 0 {
+		t.Fatalf("non-JSONL provenance affected totals: %+v", summary)
 	}
 }
 
-func TestTimeseriesUsesLocalNaturalDaysAndExclusiveUntil(t *testing.T) {
+func TestTimeseriesKeepsIngestionLocalDateAfterTimezoneChange(t *testing.T) {
 	previousLocal := time.Local
-	time.Local = time.FixedZone("test", 8*60*60)
+	time.Local = time.FixedZone("UTC+8", 8*60*60)
 	t.Cleanup(func() { time.Local = previousLocal })
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
@@ -252,23 +214,19 @@ func TestTimeseriesUsesLocalNaturalDaysAndExclusiveUntil(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	for index, at := range []time.Time{
-		time.Date(2026, 7, 30, 15, 59, 0, 0, time.UTC),
-		time.Date(2026, 7, 30, 16, 1, 0, 0, time.UTC),
-	} {
-		if _, err := st.InsertEvent(ctx, model.UsageEvent{
-			ID: fmt.Sprintf("event-%d", index), Timestamp: at, ObservedAt: at,
-			Usage: model.TokenUsage{Input: 10, Total: 10}, Provenance: model.ProvenanceSessionJSONL, Confidence: model.ConfidenceExact,
-		}, "fixture"); err != nil {
-			t.Fatal(err)
-		}
+	at := time.Date(2026, 7, 30, 16, 1, 0, 0, time.UTC)
+	if _, err := st.InsertEvent(ctx, model.UsageEvent{
+		ID: "event", Timestamp: at, Usage: model.TokenUsage{Input: 8, Output: 2, Total: 10},
+		Provenance: model.ProvenanceSessionJSONL, Confidence: model.ConfidenceExact,
+	}, "fixture.jsonl"); err != nil {
+		t.Fatal(err)
 	}
-	until := time.Date(2026, 7, 31, 0, 0, 0, 0, time.Local)
-	points, err := st.Timeseries(ctx, model.Filter{Until: until}, "day")
+	time.Local = time.FixedZone("UTC-7", -7*60*60)
+	points, err := st.Timeseries(ctx, model.Filter{SinceDate: "2026-07-31", UntilDate: "2026-08-01"}, "day")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(points) != 1 || points[0].Usage.Total != 10 || points[0].Time.In(time.Local).Day() != 30 {
-		t.Fatalf("exclusive local-day boundary failed: %#v", points)
+	if len(points) != 1 || points[0].Date != "2026-07-31" || points[0].Usage.Total != 10 {
+		t.Fatalf("stored local day drifted with query timezone: %+v", points)
 	}
 }

@@ -21,7 +21,7 @@
 
 ## 30 秒理解
 
-在每台 Windows、WSL 或 Linux 主机分别运行一个单文件程序。它扫描该机的历史 Codex JSONL，并通过 loopback OTel 接收之后的新用量；两种来源按覆盖时间合并和去重，结果只写入该机的 SQLite。Dashboard 因而回答的是**这台电脑用了多少**，不是整个账号用了多少。
+在每台 Windows、WSL 或 Linux 主机分别运行一个单文件程序。它只扫描该机的 Codex session JSONL，并默认每 60 秒增量读取新追加的 `token_count`；结果只写入该机的 SQLite。Dashboard 因而回答的是**这台电脑用了多少**，不是整个账号用了多少。
 
 逐电脑归属是 codex-usage 最鲜明的入口，但不是终点。它把本机总量继续拆到模型与 Token 类型、项目、Thread、Session、Agent 和本地自然日，并给出 Standard API 等价成本、定价覆盖率与数据质量记录。
 
@@ -38,18 +38,18 @@ Codex 官方 [`/usage`](https://learn.chatgpt.com/docs/developer-commands.md?sur
 | 哪项工作驱动了用量？ | 项目、Thread、Session，以及主任务 / Subagent / Guardian / Memory 归属 |
 | 什么时候发生？ | 今天、7 日、30 日、全部历史、本地自然日与单日下钻 |
 | 如果按 API 价格折算大约是多少？ | Standard API 等价成本与明确的 Token 定价覆盖率 |
-| 这些数字能否被复核？ | JSONL / OTel 来源、防重覆盖区间、未归属差额与数据质量记录 |
+| 这些数字能否被复核？ | 唯一 JSONL 来源、累计快照差分、fork 重放防重与数据质量记录 |
 
 ## 它统计什么 / 不统计什么
 
 | 统计 | 不统计 |
 |---|---|
 | 当前电脑的 Token、模型、来源、项目、Thread、Session、Agent 和本地自然日 | 账号在其他电脑上的用量 |
-| 历史 session JSONL 与未来 `turn.token_usage` OTel 指标 | 账号配额、订阅余额或真实账单 |
+| session JSONL 中已有及之后追加的 `token_count` | 账号配额、订阅余额或真实账单 |
 | Standard API 文本 Token 的等价成本与定价覆盖率 | prompt、回复、reasoning、工具输出或 `auth.json` |
-| 去重记录、覆盖缺口和无法按日期归属的历史差额 | 云同步、远程遥测或第三方分析 |
+| fork 历史重放、累计回退、坏记录与文件重写的审计提示 | Codex state 数据库中的 `tokens_used`、云同步、远程遥测或第三方分析 |
 
-> “电脑”指运行 Codex 客户端和采集器的主机，不是 shell 或 tool 实际执行的远程环境。费用是等价估算，不是 OpenAI 真实账单。
+> “电脑”指运行 Codex 客户端和 codex-usage 的主机，不是 shell 或 tool 实际执行的远程环境。费用是等价估算，不是 OpenAI 真实账单。
 
 ## 直接安装
 
@@ -74,7 +74,7 @@ chmod +x codex-usage
 codex-usage --lang en install
 ```
 
-安装器会创建本机数据库、扫描历史 session、安全添加 loopback OTel endpoint，并启动用户级后台服务；不会覆盖已有第三方 metrics exporter。安装后在方便时重启 Codex，让新进程加载实时采集配置。随后运行 `codex-usage` 即可打开 Dashboard。
+安装器会创建本机数据库、扫描历史 session，并启动用户级后台服务；不配置 Codex 遥测 exporter，也无需重启 Codex。若从旧版升级，安装器只移除原来由 codex-usage marker 管理的 OTel exporter，绝不会改写第三方 exporter。随后运行 `codex-usage` 即可打开 Dashboard。
 
 Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自己的电脑执行命令后访问 `http://127.0.0.1:43189`。
 
@@ -83,12 +83,12 @@ Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自
 | 功能 | 你得到什么 |
 |---|---|
 | 标志性的逐电脑归属 | 每台机器生成独立 `machine_id` 和 SQLite 数据库，不把账号其他电脑混进来 |
-| 历史 + 实时 | 首次扫描已有 JSONL，之后接收官方 OTel 指标 |
-| 防重 | OTel、JSONL 与状态库按明确覆盖规则合并，不直接相加 |
+| 历史 + 持续增量 | 首次扫描已有 JSONL，后台默认每 60 秒读取新增记录 |
+| 可解释防重 | 固定物理文件 owner session，识别 fork 复制的父历史，并按累计向量差分 |
 | 每日下钻 | 连续自然日脉冲带、月历、零用量日与单日模型构成 |
 | 多维使用分析 | 按模型、Token 类型、来源、项目、Thread、Session、主任务/Subagent/Guardian/Memory 理解用量 |
 | 成本洞察 | 查询时估算 Standard API 等价成本并显示定价覆盖率，未知部分不伪装成零费用 |
-| 可审计质量 | 明示来源、防重记录、覆盖缺口和未按日期归属的历史差额 |
+| 可审计质量 | 明示唯一来源、fork 重放、累计回退、坏记录和文件重建 |
 | 本地优先 | 只监听 `127.0.0.1`，资源嵌入二进制，无运行时外部请求 |
 | 单文件部署 | Windows/Linux、amd64/arm64、无 CGO、无需外部数据库服务 |
 | 双语 | Dashboard 与 CLI 支持 `zh-CN` / `en`，URL、按钮、环境变量均可切换 |
@@ -103,13 +103,12 @@ Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自
 
 ## 它是怎么运行的
 
-`codex-usage` 是一个 Go 单文件程序，里面同时包含采集器、SQLite、HTTP API 和 Web Dashboard。安装后，它以用户级后台服务运行。
+`codex-usage` 是一个 Go 单文件程序，里面同时包含 JSONL 扫描器、SQLite、HTTP API 和 Web Dashboard。安装后，它以用户级后台服务运行。
 
 ```mermaid
 flowchart LR
-    A[Codex session JSONL] -->|历史增量扫描| C[归一化 Token 事件]
-    B[Codex OTel 指标] -->|实时 OTLP/HTTP| C
-    S[state SQLite] -->|只做历史差额兜底| C
+    A[Codex session JSONL] -->|历史 + 持续增量扫描| C[归一化 Token 事件]
+    S[state SQLite] -->|只发现路径与补充 metadata| C
     C --> D[(本机 SQLite)]
     D --> P[查询时费用估算]
     D --> E[127.0.0.1 API]
@@ -124,28 +123,20 @@ flowchart LR
 
 每个 session 里的 Token 是累计值。程序在**每一条** `token_count` 记录处保存累计向量，用“本次累计值 - 上次累计值”得到这一次的增量，并把增量归到该条记录时间戳对应的本地自然日；不会按 session 的最后更新时间把整段历史塞到同一天。重复扫描仍由稳定事件 ID 与游标去重。超大的 prompt、回复和工具输出记录会被跳过，不会整行载入内存，也不会写进数据库。
 
-状态库中只有累计总量、没有事件时间的差额会保持“未归属日期”，只进入“全部”累计，不会被猜测或平均摊到某一天。OpenAI 的 [`account/usage/read`](https://learn.chatgpt.com/docs/app-server#7-token-usage-chatgpt) 是由 Codex 服务返回的 ChatGPT 账号 Token 活动与可选每日桶；本工具只统计当前电脑的本地来源，两者的范围并不相同，官方文档也没有规定每日桶与本地自然日必须使用相同的时区口径。
+Codex 状态库只用于发现 rollout 路径并补充标题、项目等 metadata；其中的 `tokens_used` 不参与 Token 总量。OpenAI 的 [`account/usage/read`](https://learn.chatgpt.com/docs/app-server#7-token-usage-chatgpt) 是服务端账号 Token 活动；本工具只统计当前电脑的本地 JSONL，两者范围不同。
 
-### 2. 实时采集
+### 2. JSONL 防重与 fork 识别
 
-安装器会在不覆盖用户现有 exporter 的前提下，为 Codex 配置本机 OTLP/HTTP JSON endpoint：
+- 一个物理 JSONL 的 owner session 由第一条 `session_meta` 固定，后续复制进来的父 `session_meta` 不会改写归属
+- `forked_from_id` 文件中“子线程 metadata → 父线程历史快照 → 父线程 metadata”这一前缀只建立累计基线，不计作子线程新消耗
+- 同一 session 恢复到新文件时使用 session 级累计高水位；重复累计快照不会再次入账
+- `total_tokens` 不变但 Cached Input、Cache Write、Reasoning 等分类被修正时，会修正原事件，而不是当作重复忽略
 
-```text
-http://127.0.0.1:43189/v1/metrics
-```
+### 3. 文件与日期稳定性
 
-新启动的 Codex 进程把官方 `turn.token_usage` 指标发到这个地址。接收器只监听 loopback，外部机器无法直接访问。
+扫描器每次都用状态库路径与 `sessions/`、`archived_sessions/` 目录取并集，避免状态库漏行。Windows 普通路径与 `\\?\` 扩展路径会归一为同一物理文件。检测到截断、原范围重写或后补出的 fork 重放边界时，程序会清除可重建的派生索引并从全部 JSONL 自动重建，旧事件不会残留。
 
-### 3. 合并但不重复计算
-
-- OTel 覆盖到的时间段，以 OTel 为机器总量
-- OTel 启用前或离线期间，用 session JSONL 补位
-- 状态库里的 `tokens_used` 只用于无法分配日期的历史差额
-- 项目、Thread 和 session 明细来自本机 JSONL 归属信息，不会再次加到机器总量
-
-这套规则避免把 OTel、JSONL 和状态库三份数据直接相加。
-
-重复出现的同类数据质量记录会按“类型 + 本地路径”聚合，保留首次、最近时间和累计次数。`state_fallback_suppressed_otel` 表示防重规则成功阻止了状态库差额与 OTel 重复相加，属于审计信息，不计入需复核异常数；累计回退、坏记录或无效时间戳仍会明确保留。
+每个事件在入库时保存本地日期与小时，因此之后修改系统时区不会让既有历史在查询时换日。重复出现的同类数据质量记录会按“类型 + 本地路径”聚合；累计回退、坏记录、无效时间戳和自动重建都会明确保留。
 
 ### 4. 展示与服务
 
@@ -199,7 +190,7 @@ codex-usage summary --since 30d --json
 codex-usage summary --since all --csv
 codex-usage scan                    增量扫描
 codex-usage scan --rebuild          重建历史扫描数据
-codex-usage doctor                  检查路径、服务和数据缺口
+codex-usage doctor                  检查路径、JSONL 来源和服务
 codex-usage config add-home PATH    添加额外 CODEX_HOME
 codex-usage uninstall               卸载程序，保留统计库
 codex-usage uninstall --purge       卸载并删除统计数据
@@ -268,8 +259,8 @@ CODEX_USAGE_BIN=./codex-usage npm test
 
 ## 已知边界
 
-- v1 不做跨电脑聚合；每台机器独立查看
-- Codex OTel 默认可能不带 Thread ID 或 cwd，此时总量仍准确，归属视图依赖同期 JSONL
+- 当前版本不做跨电脑聚合；每台机器独立查看
+- JSONL 若被外部工具永久删除或损坏，缺失部分无法由 state `tokens_used` 或账号用量伪造补回
 - 主动同步同一个 Codex Home 后，安装前的历史无法可靠拆回原始电脑
 - `total` 按 Codex 原始值展示，不等于独立生成文字量、真实账单或账号配额；API 等价成本只是按当前价格对本机 Token 的重新折算
 

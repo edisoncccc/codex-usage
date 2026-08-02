@@ -21,7 +21,7 @@
 
 ## Understand it in 30 seconds
 
-Run one single-file binary on each Windows, WSL, or Linux host. It scans that machine's historical Codex JSONL and receives future usage over loopback OTel. Coverage-aware merge rules deduplicate the two sources, and the result stays in that machine's SQLite database. The Dashboard therefore answers **how much this computer used**, not how much the whole account used.
+Run one single-file binary on each Windows, WSL, or Linux host. It uses Codex session JSONL as the sole accounting source and incrementally reads newly appended `token_count` records every 60 seconds by default. The result stays in that machine's SQLite database, so the Dashboard answers **how much this computer used**, not how much the whole account used.
 
 Per-machine attribution is codex-usage's most distinctive entry point, but it is not the endpoint. It breaks the local total down by model and token category, project, Thread, Session, Agent, and local calendar day, then adds Standard API-equivalent cost, pricing coverage, and data-quality records.
 
@@ -38,18 +38,18 @@ The analysis stays local-first: one binary, loopback-only services, local SQLite
 | Which work drove it? | Project, Thread, Session, and main task / Subagent / Guardian / Memory attribution |
 | When did it happen? | Today, 7 days, 30 days, all time, local calendar days, and single-day drill-down |
 | What would it roughly cost at API rates? | Standard API-equivalent cost with explicit token pricing coverage |
-| Can the number be audited? | JSONL / OTel provenance, coverage-aware deduplication, unattributed deltas, and data-quality records |
+| Can the number be audited? | One JSONL source, cumulative differencing, fork-replay deduplication, and data-quality records |
 
 ## What it counts / what it does not count
 
 | Counts | Does not count or read |
 |---|---|
 | Tokens, models, sources, projects, Threads, Sessions, Agents, and local calendar days on this machine | Usage from other machines on the account |
-| Historical session JSONL and future `turn.token_usage` OTel metrics | Account quota, subscription balance, or real bills |
+| Existing and newly appended `token_count` records in session JSONL | Account quota, subscription balance, or real bills |
 | Standard API text-token equivalent cost and pricing coverage | Prompts, replies, reasoning, tool output, or `auth.json` |
-| Dedup records, coverage gaps, and historical deltas without dates | Cloud sync, remote telemetry, or third-party analytics |
+| Audits for fork replay, cumulative resets, malformed records, and rewritten files | State-database `tokens_used`, cloud sync, remote telemetry, or third-party analytics |
 
-> “Machine” means the host running the Codex client and collector, not a remote target used by a shell or tool. Cost is an equivalent estimate, never an OpenAI bill.
+> “Machine” means the host running the Codex client and codex-usage, not a remote target used by a shell or tool. Cost is an equivalent estimate, never an OpenAI bill.
 
 ## Install directly
 
@@ -70,7 +70,7 @@ chmod +x codex-usage
 
 Need arm64? Download `windows-arm64.exe` or `linux-arm64` from the [latest Release](https://github.com/zJay26/codex-usage/releases/latest). Verify the file against `SHA256SUMS` on the same page.
 
-The installer creates the local database, scans historical sessions, safely adds a loopback OTel endpoint, and starts a user-level background service. It never overwrites a third-party metrics exporter. Restart Codex when convenient so new processes load live collection, then run `codex-usage` to open the Dashboard.
+The installer creates the local database, scans historical sessions, and starts a user-level background service. It does not configure a Codex telemetry exporter, and Codex does not need to restart. During an upgrade, it removes only the legacy OTel exporter enclosed by codex-usage's own markers and never changes a third-party exporter. Then run `codex-usage` to open the Dashboard.
 
 On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it from your own computer, then open `http://127.0.0.1:43189`.
 
@@ -79,12 +79,12 @@ On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it fro
 | Capability | What you get |
 |---|---|
 | Signature per-machine attribution | A separate `machine_id` and SQLite database on every host |
-| Historical + live | Scan existing JSONL first, then receive official OTel metrics |
-| Deduplication | Merge OTel, JSONL, and state data by explicit coverage rules instead of summing them |
+| Historical + continuous incremental | Scan existing JSONL first, then read newly appended records every 60 seconds |
+| Explainable deduplication | Fix one owner session per physical file, recognize copied fork history, and difference cumulative vectors |
 | Daily drill-down | Continuous daily pulse, calendar, zero-usage days, and per-day model mix |
 | Multi-dimensional usage analytics | Understand usage by model, token category, source, project, Thread, Session, main task, Subagent, Guardian, or Memory |
 | Cost insight | Query-time Standard API-equivalent estimate with visible token pricing coverage; unknown usage never looks free |
-| Auditable quality | Visible provenance, dedup records, coverage gaps, and historical deltas without dates |
+| Auditable quality | Visible sole source, fork replay, cumulative resets, malformed records, and file rebuilds |
 | Local-first | Loopback-only at `127.0.0.1`, embedded assets, and no runtime external requests |
 | Single binary | Windows/Linux, amd64/arm64, no CGO or external database service |
 | Bilingual | Dashboard and CLI support `zh-CN` / `en` through URL, button, flag, and environment |
@@ -99,13 +99,12 @@ On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it fro
 
 ## How it works
 
-`codex-usage` is one Go binary containing the collector, SQLite store, local API, and Web Dashboard.
+`codex-usage` is one Go binary containing the JSONL scanner, SQLite store, local API, and Web Dashboard.
 
 ```mermaid
 flowchart LR
-    A[Codex session JSONL] -->|historical incremental scan| C[normalized token events]
-    B[Codex OTel metrics] -->|real-time OTLP/HTTP| C
-    S[state SQLite] -->|historical gap fallback only| C
+    A[Codex session JSONL] -->|historical + continuous incremental scan| C[normalized token events]
+    S[state SQLite] -->|path discovery and metadata only| C
     C --> D[(local SQLite)]
     D --> P[query-time pricing estimator]
     D --> E[127.0.0.1 API]
@@ -120,28 +119,20 @@ The tool reads the current machine's `CODEX_HOME`. It first discovers canonical 
 
 Codex session usage is cumulative. At **each** `token_count` record, the scanner subtracts the previous cumulative vector and assigns that delta to the record timestamp's local calendar day. It never moves an entire multi-day session to the session's latest update date. Stable event IDs and cursors keep repeated scans idempotent. Large prompt, response, reasoning, and tool-output records are skipped without loading the entire line into memory or writing content to the database.
 
-State-database differences that have only an aggregate total and no event timestamp remain date-unattributed. They appear only in the all-time total and are never guessed or spread across days. OpenAI's [`account/usage/read`](https://learn.chatgpt.com/docs/app-server#7-token-usage-chatgpt) returns service-backed ChatGPT account token activity and optional daily buckets; this tool uses only current-machine local sources, so the scopes differ, and the public documentation does not define those account buckets as using the same local-calendar timezone.
+The Codex state database is used only to discover rollout paths and enrich titles, projects, and other metadata. Its `tokens_used` value never changes token totals. OpenAI's [`account/usage/read`](https://learn.chatgpt.com/docs/app-server#7-token-usage-chatgpt) is service-backed account activity; this tool counts only current-machine local JSONL, so the scopes differ.
 
-### Real-time collection
+### JSONL deduplication and fork ownership
 
-The installer safely configures Codex to send official `turn.token_usage` metrics to:
+- The first `session_meta` fixes the owner session of a physical JSONL file; a copied parent `session_meta` cannot overwrite it.
+- In a `forked_from_id` rollout, the “child metadata → copied parent snapshots → parent metadata” prefix establishes a cumulative baseline but is not counted as new child usage.
+- A resumed session uses a session-wide cumulative high-water mark, so repeated cumulative snapshots do not create new events.
+- If a same-total snapshot corrects Cached Input, Cache Write, Reasoning, or another category, the original event is corrected instead of treating the snapshot as a duplicate.
 
-```text
-http://127.0.0.1:43189/v1/metrics
-```
+### File and calendar stability
 
-The receiver accepts OTLP/HTTP JSON on loopback only. It never exposes a public listener.
+Every scan unions paths from the state database with `sessions/` and `archived_sessions/`, so a missing state row cannot hide a JSONL file. Ordinary Windows paths and `\\?\` extended paths normalize to one file. Truncation, a rewrite inside the scanned range, or a newly completed fork-replay boundary triggers an automatic rebuild from all JSONL, leaving no stale events.
 
-### Merge rules
-
-- OTel is the machine total during known OTel coverage windows
-- session JSONL fills time before OTel was enabled or while the receiver was offline
-- state-database `tokens_used` only fills historical differences that cannot be assigned to a date
-- project, thread, and session details are attribution views and are not added again to the machine total
-
-The three sources are never blindly summed.
-
-Repeated data-quality records are grouped by kind and local path while retaining first seen, last seen, and occurrence count. `state_fallback_suppressed_otel` means the de-duplication guard successfully prevented a state total from being added on top of OTel, so it remains informational rather than actionable. Cumulative resets, malformed records, and invalid timestamps remain visible for review.
+Each event stores its local date and hour at ingestion, so changing the system timezone later does not move existing history at query time. Repeated data-quality records are grouped by kind and local path; cumulative resets, malformed records, invalid timestamps, and automatic rebuilds remain visible.
 
 ### Local service
 
@@ -195,7 +186,7 @@ codex-usage summary --since 30d --json
 codex-usage summary --since all --csv
 codex-usage scan                    Incremental historical scan
 codex-usage scan --rebuild          Rebuild historical scan data
-codex-usage doctor                  Check paths, service, and coverage gaps
+codex-usage doctor                  Check paths, JSONL sources, and service
 codex-usage config add-home PATH    Add another CODEX_HOME
 codex-usage uninstall               Remove the app, keep the database
 codex-usage uninstall --purge       Remove the app and local data
@@ -252,8 +243,8 @@ See [ACCEPTANCE.md](ACCEPTANCE.md) for validation results, [CONTRIBUTING.md](CON
 
 ## Known boundaries
 
-- v1 does not aggregate multiple machines; open each machine's Dashboard separately
-- Codex OTel may omit thread IDs or cwd, so exact totals can coexist with JSONL-based attribution
+- This release does not aggregate multiple machines; open each machine's Dashboard separately
+- JSONL that is permanently deleted or damaged cannot be fabricated from state `tokens_used` or account usage
 - historical sessions cannot be reliably split after users synchronize one Codex Home across machines
 - Codex `total` is displayed as reported; it is not an actual bill or account-quota measurement, and API-equivalent cost is only a current-price conversion of local tokens
 

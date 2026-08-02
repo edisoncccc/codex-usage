@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/zJay26/codex-usage/internal/model"
-	"github.com/zJay26/codex-usage/internal/otel"
 	"github.com/zJay26/codex-usage/internal/pricing"
 	"github.com/zJay26/codex-usage/internal/store"
 	"github.com/zJay26/codex-usage/internal/usage"
@@ -48,7 +47,7 @@ func TestDashboardAPIAndExport(t *testing.T) {
 	scanner := &usage.Scanner{Store: st}
 	savedOverrides := map[string]pricing.Override{}
 	srv := &Server{
-		Store: st, Scanner: scanner, Receiver: otel.NewReceiver(st),
+		Store: st, Scanner: scanner,
 		Homes: func() ([]string, error) { return []string{filepath.Join(root, ".codex")}, nil },
 		LoadPricingOverrides: func() (map[string]pricing.Override, error) {
 			return savedOverrides, nil
@@ -108,6 +107,29 @@ func TestDashboardAPIAndExport(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown API route status=%d", response.StatusCode)
+	}
+	response, err = http.Post(httpServer.URL+"/v1/metrics", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("removed metrics receiver status=%d want 404", response.StatusCode)
+	}
+	response, err = http.Get(httpServer.URL + "/api/v1/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statusPayload struct {
+		Status store.Status `json:"status"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&statusPayload); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if statusPayload.Status.AccountingMode != "jsonl_only" {
+		t.Fatalf("accounting mode=%q", statusPayload.Status.AccountingMode)
 	}
 
 	response, err = http.Get(httpServer.URL + "/api/v1/cost-estimate?bucket=day")
@@ -184,7 +206,7 @@ func TestPricingOverrideValidationAndBodyLimit(t *testing.T) {
 	}
 	defer st.Close()
 	srv := &Server{
-		Store: st, Receiver: otel.NewReceiver(st),
+		Store:                st,
 		SavePricingOverrides: func(map[string]pricing.Override) error { return nil },
 	}
 	httpServer := httptest.NewServer(srv.Handler())

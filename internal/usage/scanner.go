@@ -40,6 +40,7 @@ type ScanResult struct {
 	Files          int64    `json:"files"`
 	Records        int64    `json:"records"`
 	EventsInserted int64    `json:"events_inserted"`
+	Corrections    int64    `json:"classification_corrections"`
 	Duplicates     int64    `json:"duplicates"`
 	Warnings       int64    `json:"warnings"`
 	Unattributed   int64    `json:"unattributed_sessions"`
@@ -76,14 +77,31 @@ func (s *Scanner) Scan(ctx context.Context, homes []string, rebuild bool) (ScanR
 			return ScanResult{}, err
 		}
 	}
+	result, err := s.scanPass(ctx, homes)
+	var changed *historicalRewriteError
+	if errors.As(err, &changed) {
+		if resetErr := s.Store.ResetHistorical(ctx); resetErr != nil {
+			return result, resetErr
+		}
+		result, err = s.scanPass(ctx, homes)
+		if err == nil {
+			result.Warnings++
+			_ = s.Store.AddWarning(ctx, changed.Kind, changed.Path,
+				changed.Detail+"；已清除派生索引并从全部 JSONL 自动重建")
+		}
+	}
+	result.ElapsedMillis = time.Since(started).Milliseconds()
+	return result, err
+}
 
+func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, error) {
 	result := ScanResult{Homes: len(homes)}
 	seenSessionHome := map[string]string{}
 	for _, rawHome := range homes {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		home, err := filepath.Abs(rawHome)
+		home, err := canonicalPath(rawHome)
 		if err != nil {
 			result.Warnings++
 			_ = s.Store.AddWarning(ctx, "home_path", rawHome, err.Error())
@@ -108,8 +126,11 @@ func (s *Scanner) Scan(ctx context.Context, homes []string, rebuild bool) (ScanR
 				seenSessionHome[session.SessionID] = home
 			}
 			if session.RolloutPath != "" {
-				abs, _ := filepath.Abs(session.RolloutPath)
-				metadata[pathKey(abs)] = session
+				abs, pathErr := canonicalPath(session.RolloutPath)
+				if pathErr == nil {
+					session.RolloutPath = abs
+					metadata[pathKey(abs)] = session
+				}
 			}
 			if err := s.Store.UpsertSession(ctx, session); err != nil {
 				return result, err
@@ -118,6 +139,12 @@ func (s *Scanner) Scan(ctx context.Context, homes []string, rebuild bool) (ScanR
 
 		var files int64
 		for _, path := range discovery.Paths {
+			path, err = canonicalPath(path)
+			if err != nil {
+				result.Warnings++
+				_ = s.Store.AddWarning(ctx, "rollout_path", path, err.Error())
+				continue
+			}
 			info, err := os.Stat(path)
 			if err != nil || info.IsDir() {
 				if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -134,25 +161,22 @@ func (s *Scanner) Scan(ctx context.Context, homes []string, rebuild bool) (ScanR
 			fileResult, err := s.scanFile(ctx, home, path, metadata[pathKey(path)])
 			result.Records += fileResult.Records
 			result.EventsInserted += fileResult.EventsInserted
+			result.Corrections += fileResult.Corrections
 			result.Duplicates += fileResult.Duplicates
 			result.Warnings += fileResult.Warnings
 			if err != nil {
+				var changed *historicalRewriteError
+				if errors.As(err, &changed) {
+					return result, err
+				}
 				result.Warnings++
 				_ = s.Store.AddWarning(ctx, "rollout_scan", path, err.Error())
 				continue
 			}
 		}
 
-		increased, fallbackErr := s.Store.ApplyStateFallbacks(ctx, discovery.Sessions)
-		if fallbackErr != nil {
-			result.Warnings++
-			_ = s.Store.AddWarning(ctx, "state_fallback", discovery.StateDB, fallbackErr.Error())
-		} else {
-			result.Unattributed += increased
-		}
 		_ = s.Store.UpdateScanState(ctx, home, discovery.StateDB, files, discovery.Warning)
 	}
-	result.ElapsedMillis = time.Since(started).Milliseconds()
 	return result, nil
 }
 
@@ -161,9 +185,18 @@ func (s *Scanner) Busy() bool { return s.busy.Load() }
 type fileScanResult struct {
 	Records        int64
 	EventsInserted int64
+	Corrections    int64
 	Duplicates     int64
 	Warnings       int64
 }
+
+type historicalRewriteError struct {
+	Kind   string
+	Path   string
+	Detail string
+}
+
+func (e *historicalRewriteError) Error() string { return e.Detail }
 
 func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.SessionInfo) (fileScanResult, error) {
 	var result fileScanResult
@@ -175,6 +208,53 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 	if err != nil {
 		return result, err
 	}
+	if exists {
+		probeBytes := cursor.Size
+		if probeBytes > 4096 {
+			probeBytes = 4096
+		}
+		prefix, hashErr := hashFilePrefix(path, probeBytes)
+		if hashErr != nil {
+			return result, hashErr
+		}
+		switch {
+		case cursor.Offset > info.Size() || cursor.Size > info.Size():
+			return result, &historicalRewriteError{Kind: "rollout_truncated", Path: path,
+				Detail: fmt.Sprintf("文件从 %d 缩短到 %d", cursor.Size, info.Size())}
+		case cursor.PrefixHash != "" && prefix != cursor.PrefixHash:
+			return result, &historicalRewriteError{Kind: "rollout_rewritten", Path: path,
+				Detail: "文件已在原有扫描范围内重写"}
+		case cursor.Size == info.Size() && cursor.ModifiedNanos != 0 && cursor.ModifiedNanos != info.ModTime().UnixNano():
+			return result, &historicalRewriteError{Kind: "rollout_rewritten", Path: path,
+				Detail: "文件大小未变但修改时间变化"}
+		}
+		if cursor.ForkedFromID != "" && cursor.ReplayOffset == 0 && info.Size() > cursor.Size {
+			inspection, inspectErr := s.inspectRollout(ctx, path)
+			if inspectErr != nil {
+				return result, inspectErr
+			}
+			if inspection.ReplayOffset > 0 {
+				if cursor.Offset > 0 {
+					return result, &historicalRewriteError{Kind: "fork_replay_detected", Path: path,
+						Detail: "fork 文件补全了父线程历史重放边界"}
+				}
+				cursor.Offset = inspection.ReplayOffset
+				cursor.ReplayOffset = inspection.ReplayOffset
+				cursor.Cumulative = inspection.Baseline
+			} else {
+				cursor.Size = info.Size()
+				cursor.ModifiedNanos = info.ModTime().UnixNano()
+				cursor.PrefixHash, err = hashFilePrefix(path, minInt64(info.Size(), 4096))
+				if err != nil {
+					return result, err
+				}
+				if err := s.Store.PutCursor(ctx, cursor); err != nil {
+					return result, err
+				}
+				return result, nil
+			}
+		}
+	}
 	if !exists {
 		cursor = store.FileCursor{
 			Path:        path,
@@ -185,22 +265,37 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 			Source:      firstNonEmpty(meta.Source, meta.ThreadSource),
 			AgentType:   meta.AgentType,
 		}
-	}
-	if cursor.Offset > info.Size() || cursor.Size > info.Size() {
-		_ = s.Store.AddWarning(ctx, "rollout_truncated", path,
-			fmt.Sprintf("文件从 %d 缩短到 %d；重新扫描并以稳定事件 ID 去重", cursor.Size, info.Size()))
-		result.Warnings++
-		cursor.Offset = 0
-		cursor.Cumulative = model.TokenUsage{}
-		cursor.Segment = 0
-	}
-	if exists && cursor.Offset >= info.Size() && cursor.Size == info.Size() &&
-		cursor.ModifiedNanos != 0 && cursor.ModifiedNanos != info.ModTime().UnixNano() {
-		_ = s.Store.AddWarning(ctx, "rollout_rewritten", path,
-			"文件大小未变但修改时间变化；从头复核并以 session 高水位去重")
-		result.Warnings++
-		cursor.Offset = 0
-		cursor.Cumulative = model.TokenUsage{}
+		inspection, inspectErr := s.inspectRollout(ctx, path)
+		if inspectErr != nil {
+			return result, inspectErr
+		}
+		if inspection.OwnerID != "" {
+			cursor.SessionID = inspection.OwnerID
+			cursor.ForkedFromID = inspection.ForkedFromID
+			cursor.ProjectPath = firstNonEmpty(inspection.Owner.Cwd, cursor.ProjectPath)
+			cursor.Source = firstNonEmpty(inspection.Owner.Originator, rawText(inspection.Owner.Source),
+				inspection.Owner.ThreadSource, cursor.Source)
+			cursor.AgentType = model.ClassifyAgent(cursor.Source, rawText(inspection.Owner.Source),
+				inspection.Owner.ThreadSource)
+		}
+		if inspection.ReplayOffset > 0 {
+			cursor.Offset = inspection.ReplayOffset
+			cursor.ReplayOffset = inspection.ReplayOffset
+			cursor.Cumulative = inspection.Baseline
+		} else if inspection.ForkedFromID != "" {
+			// A fork is written in stages. Do not expose its copied parent
+			// prefix as child usage while the parent boundary is incomplete.
+			cursor.Size = info.Size()
+			cursor.ModifiedNanos = info.ModTime().UnixNano()
+			cursor.PrefixHash, err = hashFilePrefix(path, minInt64(info.Size(), 4096))
+			if err != nil {
+				return result, err
+			}
+			if err := s.Store.PutCursor(ctx, cursor); err != nil {
+				return result, err
+			}
+			return result, nil
+		}
 	}
 	if cursor.SessionID != "" {
 		if err := s.inheritSessionProgress(ctx, &cursor); err != nil {
@@ -268,6 +363,10 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 	cursor.Offset = committedOffset
 	cursor.Size = info.Size()
 	cursor.ModifiedNanos = info.ModTime().UnixNano()
+	cursor.PrefixHash, err = hashFilePrefix(path, minInt64(info.Size(), 4096))
+	if err != nil {
+		return result, err
+	}
 	if err := s.Store.PutCursor(ctx, cursor); err != nil {
 		return result, err
 	}
@@ -302,6 +401,7 @@ type sessionMetaPayload struct {
 	Source        json.RawMessage `json:"source"`
 	ThreadSource  string          `json:"thread_source"`
 	ModelProvider string          `json:"model_provider"`
+	ForkedFromID  string          `json:"forked_from_id"`
 }
 
 type turnContextPayload struct {
@@ -321,23 +421,44 @@ type tokenInfo struct {
 }
 
 type tokenVector struct {
-	Input           int64 `json:"input_tokens"`
-	CachedInput     int64 `json:"cached_input_tokens"`
-	CacheWriteInput int64 `json:"cache_write_input_tokens"`
-	Output          int64 `json:"output_tokens"`
-	ReasoningOutput int64 `json:"reasoning_output_tokens"`
-	Total           int64 `json:"total_tokens"`
+	Input           *int64 `json:"input_tokens"`
+	CachedInput     *int64 `json:"cached_input_tokens"`
+	CacheWriteInput *int64 `json:"cache_write_input_tokens"`
+	Output          *int64 `json:"output_tokens"`
+	ReasoningOutput *int64 `json:"reasoning_output_tokens"`
+	Total           *int64 `json:"total_tokens"`
 }
 
 func (v tokenVector) usage() model.TokenUsage {
 	return model.TokenUsage{
-		Input:           v.Input,
-		CachedInput:     v.CachedInput,
-		CacheWriteInput: v.CacheWriteInput,
-		Output:          v.Output,
-		ReasoningOutput: v.ReasoningOutput,
-		Total:           v.Total,
+		Input:           int64Value(v.Input),
+		CachedInput:     int64Value(v.CachedInput),
+		CacheWriteInput: int64Value(v.CacheWriteInput),
+		Output:          int64Value(v.Output),
+		ReasoningOutput: int64Value(v.ReasoningOutput),
+		Total:           int64Value(v.Total),
 	}.Compatible()
+}
+
+func (v tokenVector) withMissingSubsets(previous model.TokenUsage) model.TokenUsage {
+	current := v.usage()
+	if v.CachedInput == nil {
+		current.CachedInput = previous.CachedInput
+	}
+	if v.CacheWriteInput == nil {
+		current.CacheWriteInput = previous.CacheWriteInput
+	}
+	if v.ReasoningOutput == nil {
+		current.ReasoningOutput = previous.ReasoningOutput
+	}
+	return current
+}
+
+func int64Value(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func (s *Scanner) processRecord(
@@ -359,7 +480,15 @@ func (s *Scanner) processRecord(
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
 			return err
 		}
-		cursor.SessionID = firstNonEmpty(payload.ID, payload.SessionID, cursor.SessionID, meta.SessionID)
+		candidateID := firstNonEmpty(payload.ID, payload.SessionID)
+		if cursor.SessionID == "" {
+			cursor.SessionID = firstNonEmpty(candidateID, meta.SessionID)
+			cursor.ForkedFromID = payload.ForkedFromID
+		} else if candidateID != "" && candidateID != cursor.SessionID {
+			// Fork rollouts can embed a copied parent session_meta after the
+			// child's own metadata. Ownership is immutable per physical file.
+			return nil
+		}
 		if err := s.inheritSessionProgress(ctx, cursor); err != nil {
 			return err
 		}
@@ -414,14 +543,31 @@ func (s *Scanner) processRecord(
 		if err := json.Unmarshal(payload.Info, &info); err != nil {
 			return err
 		}
-		current := info.Total.usage()
+		current := info.Total.withMissingSubsets(cursor.Cumulative)
 		if current.IsZero() {
 			return nil
 		}
-		current = carryMissingSubsets(current, cursor.Cumulative)
-		if current.Equal(cursor.Cumulative) ||
-			(current.Total > 0 && current.Total == cursor.Cumulative.Total) {
+		if current.Equal(cursor.Cumulative) {
 			result.Duplicates++
+			return nil
+		}
+		if current.Total > 0 && current.Total == cursor.Cumulative.Total {
+			difference := current.Sub(cursor.Cumulative)
+			corrected, err := s.Store.CorrectEventUsage(
+				ctx, cursor.LastEventID, cursor.SessionID, cursor.Segment, difference,
+			)
+			if err != nil {
+				return err
+			}
+			cursor.Cumulative = current
+			if corrected {
+				result.Corrections++
+			} else {
+				result.Duplicates++
+			}
+			if cursor.SessionID != "" {
+				return s.Store.PutSessionProgress(ctx, cursor.SessionID, cursor.Segment, current)
+			}
 			return nil
 		}
 		if cursor.InheritedBaseline && !current.MonotonicFrom(cursor.Cumulative) {
@@ -470,6 +616,7 @@ func (s *Scanner) processRecord(
 		event := model.UsageEvent{
 			ID:          stableJSONLEventID(sessionID, cursor.Segment, current),
 			Timestamp:   timestamp,
+			Segment:     cursor.Segment,
 			ObservedAt:  s.Now(),
 			MachineID:   s.Store.Machine().ID,
 			SessionID:   sessionID,
@@ -493,6 +640,7 @@ func (s *Scanner) processRecord(
 		} else {
 			result.Duplicates++
 		}
+		cursor.LastEventID = event.ID
 		cursor.Cumulative = current
 		if err := s.Store.PutSessionProgress(ctx, sessionID, cursor.Segment, current); err != nil {
 			return err
@@ -531,8 +679,117 @@ func (s *Scanner) inheritSessionProgress(ctx context.Context, cursor *store.File
 	return nil
 }
 
+type rolloutInspection struct {
+	Owner        sessionMetaPayload
+	OwnerID      string
+	ForkedFromID string
+	ReplayOffset int64
+	Baseline     model.TokenUsage
+}
+
+// inspectRollout reads only metadata and token_count records. A fork file owns
+// the first session_meta; a later parent session_meta terminates the copied
+// history prefix. The prefix establishes a cumulative baseline but emits no
+// usage events for the child.
+func (s *Scanner) inspectRollout(ctx context.Context, path string) (rolloutInspection, error) {
+	var out rolloutInspection
+	file, err := os.Open(path)
+	if err != nil {
+		return out, err
+	}
+	defer file.Close()
+	reader := bufio.NewReaderSize(file, 64<<10)
+	var offset int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		record, consumed, complete, tooLarge, readErr := readSelectiveRecord(reader, s.MaxRelevantRecord)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return out, readErr
+		}
+		if consumed == 0 && errors.Is(readErr, io.EOF) {
+			return out, nil
+		}
+		if !complete {
+			return out, nil
+		}
+		offset += consumed
+		if !tooLarge && len(record) > 0 {
+			var env envelope
+			if json.Unmarshal(record, &env) == nil {
+				switch env.Type {
+				case "session_meta":
+					var payload sessionMetaPayload
+					if json.Unmarshal(env.Payload, &payload) == nil {
+						candidate := firstNonEmpty(payload.ID, payload.SessionID)
+						if out.OwnerID == "" {
+							out.Owner = payload
+							out.OwnerID = candidate
+							out.ForkedFromID = payload.ForkedFromID
+							if out.ForkedFromID == "" {
+								return out, nil
+							}
+						} else if candidate != "" && candidate != out.OwnerID &&
+							(out.ForkedFromID == "" || candidate == out.ForkedFromID) {
+							out.ReplayOffset = offset
+							return out, nil
+						}
+					}
+				case "event_msg":
+					if out.OwnerID != "" && out.ForkedFromID != "" {
+						var payload eventPayload
+						if json.Unmarshal(env.Payload, &payload) == nil && payload.Type == "token_count" && len(payload.Info) > 0 {
+							var info tokenInfo
+							if json.Unmarshal(payload.Info, &info) == nil {
+								current := info.Total.withMissingSubsets(out.Baseline)
+								if !current.IsZero() {
+									out.Baseline = current
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return out, nil
+		}
+	}
+}
+
+func hashFilePrefix(path string, length int64) (string, error) {
+	if length <= 0 {
+		return "", nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	data := make([]byte, length)
+	n, err := io.ReadFull(file, data)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", err
+	}
+	sum := sha256.Sum256(data[:n])
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func minInt64(left, right int64) int64 {
+	if left < right {
+		return left
+	}
+	return right
+}
+
 func DiscoverHome(ctx context.Context, home string) HomeDiscovery {
 	out := HomeDiscovery{Home: home}
+	if canonical, err := canonicalPath(home); err == nil {
+		home = canonical
+		out.Home = canonical
+	}
+	directoryPaths := walkRollouts(home)
 	out.StateDB = store.FindLatestStateDB(home)
 	if out.StateDB != "" {
 		sessions, err := store.ReadStateThreads(ctx, out.StateDB, home)
@@ -546,7 +803,7 @@ func DiscoverHome(ctx context.Context, home string) HomeDiscovery {
 				if !filepath.IsAbs(session.RolloutPath) {
 					session.RolloutPath = filepath.Join(home, session.RolloutPath)
 				}
-				abs, err := filepath.Abs(session.RolloutPath)
+				abs, err := canonicalPath(session.RolloutPath)
 				if err != nil || seen[pathKey(abs)] {
 					continue
 				}
@@ -560,30 +817,32 @@ func DiscoverHome(ctx context.Context, home string) HomeDiscovery {
 				out.Paths = append(out.Paths, abs)
 			}
 			out.Sessions = sessions
-			if missing > 0 {
-				for _, candidate := range walkRollouts(home) {
-					key := pathKey(candidate)
-					if seen[key] {
-						continue
-					}
-					seen[key] = true
-					out.Paths = append(out.Paths, candidate)
+			extras := 0
+			for _, candidate := range directoryPaths {
+				key := pathKey(candidate)
+				if seen[key] {
+					continue
 				}
-				out.Warning = fmt.Sprintf("状态库有 %d 个 rollout_path 不可读；已用 sessions 目录补充", missing)
+				seen[key] = true
+				extras++
+				out.Paths = append(out.Paths, candidate)
+			}
+			switch {
+			case missing > 0 && extras > 0:
+				out.Warning = fmt.Sprintf("状态库有 %d 个 rollout_path 不可读且漏列 %d 个 JSONL；已用 sessions 目录补充", missing, extras)
+			case missing > 0:
+				out.Warning = fmt.Sprintf("状态库有 %d 个 rollout_path 不可读；已检查 sessions 目录", missing)
+			case extras > 0:
+				out.Warning = fmt.Sprintf("状态库漏列 %d 个 JSONL；已用 sessions 目录补充", extras)
 			}
 			sort.Strings(out.Paths)
-			if len(out.Paths) > 0 {
-				return out
-			}
-			if out.Warning == "" {
-				out.Warning = "状态库可读，但没有可读的 canonical rollout_path；回退目录扫描"
-			}
+			return out
 		} else {
 			out.Warning = err.Error()
 		}
 	}
 	out.Fallback = true
-	out.Paths = walkRollouts(home)
+	out.Paths = directoryPaths
 	return out
 }
 
@@ -601,7 +860,9 @@ func walkRollouts(home string) []string {
 				return nil
 			}
 			if strings.EqualFold(filepath.Ext(entry.Name()), ".jsonl") {
-				out = append(out, path)
+				if canonical, canonicalErr := canonicalPath(path); canonicalErr == nil {
+					out = append(out, canonical)
+				}
 			}
 			return nil
 		})
@@ -702,22 +963,6 @@ func parseTimestamp(value string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("无法解析 timestamp %q", value)
 }
 
-func carryMissingSubsets(current, previous model.TokenUsage) model.TokenUsage {
-	if current.Total < previous.Total {
-		return current
-	}
-	if current.CachedInput == 0 && previous.CachedInput > 0 {
-		current.CachedInput = previous.CachedInput
-	}
-	if current.CacheWriteInput == 0 && previous.CacheWriteInput > 0 {
-		current.CacheWriteInput = previous.CacheWriteInput
-	}
-	if current.ReasoningOutput == 0 && previous.ReasoningOutput > 0 {
-		current.ReasoningOutput = previous.ReasoningOutput
-	}
-	return current
-}
-
 func rawText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -761,11 +1006,34 @@ func shortHash(value string) string {
 }
 
 func pathKey(path string) string {
-	clean := filepath.Clean(path)
+	clean := filepath.Clean(stripExtendedPath(path))
 	if os.PathSeparator == '\\' {
 		return strings.ToLower(clean)
 	}
 	return clean
+}
+
+func canonicalPath(path string) (string, error) {
+	clean := filepath.Clean(stripExtendedPath(strings.TrimSpace(path)))
+	if clean == "." && strings.TrimSpace(path) == "" {
+		return "", errors.New("empty path")
+	}
+	abs, err := filepath.Abs(clean)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
+}
+
+func stripExtendedPath(path string) string {
+	lower := strings.ToLower(path)
+	if strings.HasPrefix(lower, `\\?\unc\`) {
+		return `\\` + path[len(`\\?\UNC\`):]
+	}
+	if strings.HasPrefix(lower, `\\?\`) {
+		return path[len(`\\?\`):]
+	}
+	return path
 }
 
 func samePath(a, b string) bool { return pathKey(a) == pathKey(b) }

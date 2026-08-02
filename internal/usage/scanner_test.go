@@ -50,7 +50,7 @@ func TestScannerCumulativeDedupeModelSwitchResetAndPartialAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.EventsInserted != 3 || first.Duplicates != 2 {
+	if first.EventsInserted != 3 || first.Corrections != 1 || first.Duplicates != 1 {
 		t.Fatalf("unexpected first scan: %+v", first)
 	}
 	summary, err := st.Summary(context.Background(), model.Filter{})
@@ -70,6 +70,14 @@ func TestScannerCumulativeDedupeModelSwitchResetAndPartialAppend(t *testing.T) {
 	}
 	if got["gpt-5.4"] != 100 || got["gpt-5.5"] != 125 {
 		t.Fatalf("model attribution mismatch: %+v", got)
+	}
+	if models[0].Usage.CachedInput+models[1].Usage.CachedInput != 32 {
+		t.Fatalf("classification totals drifted: %+v", models)
+	}
+	for _, item := range models {
+		if item.Key == "gpt-5.4" && item.Usage.CachedInput != 12 {
+			t.Fatalf("same-total correction was not attributed to the original model: %+v", models)
+		}
 	}
 	warnings, _ := st.Warnings(context.Background(), 20)
 	foundReset := false
@@ -188,8 +196,8 @@ func TestScannerStateFallbackAndSchemaChange(t *testing.T) {
 		t.Fatalf("canonical state path not used: %+v", result)
 	}
 	summary, _ := st.Summary(context.Background(), model.Filter{})
-	if summary.Usage.Total != 100 || summary.Unattributed.Total != 50 {
-		t.Fatalf("fallback mismatch: %+v", summary)
+	if summary.Usage.Total != 100 || summary.Unattributed.Total != 0 || summary.GrandTotal != 100 {
+		t.Fatalf("state tokens_used affected JSONL-only totals: %+v", summary)
 	}
 	sessions, err := st.Sessions(context.Background(), model.Filter{}, 10, 0)
 	if err != nil {
@@ -320,6 +328,238 @@ func TestStateStaleRolloutPathSupplementsSessionDirectory(t *testing.T) {
 	discovery := DiscoverHome(context.Background(), home)
 	if len(discovery.Paths) != 1 || discovery.Paths[0] != actual || discovery.Warning == "" {
 		t.Fatalf("stale canonical path was not supplemented: %+v", discovery)
+	}
+}
+
+func TestStateIndexOmittedRowStillSupplementsSessionDirectory(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	indexed := filepath.Join(dir, "indexed.jsonl")
+	omitted := filepath.Join(dir, "omitted.jsonl")
+	for _, path := range []string{indexed, omitted} {
+		if err := os.WriteFile(path, []byte(`{"type":"session_meta","payload":{"id":"`+filepath.Base(path)+`"}}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := sql.Open("sqlite", filepath.Join(home, "state_5.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE threads (id TEXT, rollout_path TEXT); INSERT INTO threads VALUES('indexed',?)`, indexed); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+	discovery := DiscoverHome(context.Background(), home)
+	if len(discovery.Paths) != 2 || discovery.Warning == "" {
+		t.Fatalf("state omission was not supplemented: %+v", discovery)
+	}
+}
+
+func TestForkReplayPrefixIsSkippedAndFileOwnerNeverChanges(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	parent := strings.Join([]string{
+		`{"timestamp":"2026-07-30T01:00:00Z","type":"session_meta","payload":{"id":"parent","cwd":"/parent","originator":"codex_cli_rs"}}`,
+		`{"timestamp":"2026-07-30T01:00:01Z","type":"turn_context","payload":{"turn_id":"parent-turn","cwd":"/parent","model":"gpt-5.4"}}`,
+		tokenLine("2026-07-30T01:00:02Z", usage(120, 20, 0, 30, 3, 150), usage(120, 20, 0, 30, 3, 150)),
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "z-parent.jsonl"), []byte(parent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for index, total := range []int64{180, 170, 160} {
+		childID := fmt.Sprintf("child-%d", index)
+		content := strings.Join([]string{
+			fmt.Sprintf(`{"timestamp":"2026-07-30T02:00:00Z","type":"session_meta","payload":{"id":%q,"forked_from_id":"parent","cwd":"/child","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}`, childID),
+			tokenLine("2026-07-30T01:00:02Z", usage(120, 20, 0, 30, 3, 150), usage(120, 20, 0, 30, 3, 150)),
+			`{"timestamp":"2026-07-30T01:00:00Z","type":"session_meta","payload":{"id":"parent","cwd":"/parent","originator":"codex_cli_rs"}}`,
+			fmt.Sprintf(`{"timestamp":"2026-07-30T02:00:01Z","type":"turn_context","payload":{"turn_id":%q,"cwd":"/child","model":"gpt-5.6-terra"}}`, "turn-"+childID),
+			tokenLine("2026-07-30T02:00:02Z", usage(total-30, 25, 0, 30, 3, total), usage(total-150, 5, 0, 0, 0, total-150)),
+		}, "\n") + "\n"
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("a-fork-%d.jsonl", index)), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	result, err := (&Scanner{Store: st}).Scan(context.Background(), []string{home}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := st.Summary(context.Background(), model.Filter{})
+	if summary.GrandTotal != 210 || result.EventsInserted != 4 {
+		t.Fatalf("fork replay was counted as new usage: summary=%+v scan=%+v", summary, result)
+	}
+	sessions, err := st.Sessions(context.Background(), model.Filter{}, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageBySession := map[string]int64{}
+	for _, session := range sessions {
+		usageBySession[session.SessionID] = session.Usage.Total
+		if strings.HasPrefix(session.SessionID, "child-") && (session.AgentType != "subagent" || session.ProjectPath != "/child") {
+			t.Fatalf("fork continuation attribution changed to parent: %+v", session)
+		}
+	}
+	if usageBySession["parent"] != 150 || usageBySession["child-0"] != 30 || usageBySession["child-1"] != 20 || usageBySession["child-2"] != 10 {
+		t.Fatalf("unexpected per-session usage: %+v", usageBySession)
+	}
+}
+
+func TestSameTotalClassificationCorrectionPersists(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "correction.jsonl")
+	content := strings.Join([]string{
+		`{"timestamp":"2026-07-30T01:00:00Z","type":"session_meta","payload":{"id":"corrected","cwd":"/p","originator":"codex_cli_rs"}}`,
+		tokenLine("2026-07-30T01:00:01Z", usage(80, 10, 0, 20, 2, 100), usage(80, 10, 0, 20, 2, 100)),
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := store.Open(filepath.Join(root, "usage.sqlite"))
+	defer st.Close()
+	scanner := &Scanner{Store: st}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(tokenLine("2026-07-30T01:00:02Z", usage(80, 12, 0, 20, 3, 100), usage(0, 2, 0, 0, 1, 0)) + "\n"); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	file.Close()
+	result, err := scanner.Scan(context.Background(), []string{home}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := st.Summary(context.Background(), model.Filter{})
+	if result.Corrections != 1 || summary.Usage.CachedInput != 12 || summary.Usage.ReasoningOutput != 3 || summary.GrandTotal != 100 {
+		t.Fatalf("classification correction was lost: summary=%+v scan=%+v", summary, result)
+	}
+}
+
+func TestSameTotalClassificationCorrectionCanReachEarlierEvents(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "correction-across-events.jsonl")
+	content := strings.Join([]string{
+		`{"timestamp":"2026-07-30T01:00:00Z","type":"session_meta","payload":{"id":"corrected-across-events","cwd":"/p","originator":"codex_cli_rs"}}`,
+		tokenLine("2026-07-30T01:00:01Z", usage(80, 10, 0, 20, 2, 100), usage(80, 10, 0, 20, 2, 100)),
+		tokenLine("2026-07-30T01:00:02Z", usage(160, 10, 0, 40, 2, 200), usage(80, 0, 0, 20, 0, 100)),
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	scanner := &Scanner{Store: st}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	correction := tokenLine("2026-07-30T01:00:03Z",
+		usage(150, 0, 0, 50, 2, 200), usage(0, 0, 0, 0, 0, 0)) + "\n"
+	if _, err := file.WriteString(correction); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	file.Close()
+	result, err := scanner.Scan(context.Background(), []string{home}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := model.TokenUsage{Input: 150, Output: 50, ReasoningOutput: 2, Total: 200}
+	if result.Corrections != 1 || summary.Usage != want {
+		t.Fatalf("cross-event classification correction was lost: want=%+v summary=%+v scan=%+v", want, summary, result)
+	}
+}
+
+func TestRewriteAndTruncationRebuildWithoutStaleEvents(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "rewrite.jsonl")
+	makeContent := func(input, output, total int64) string {
+		return `{"timestamp":"2026-07-30T01:00:00Z","type":"session_meta","payload":{"id":"rewrite","cwd":"/p","originator":"codex_cli_rs"}}` + "\n" +
+			tokenLine("2026-07-30T01:00:01Z", usage(input, 0, 0, output, 0, total), usage(input, 0, 0, output, 0, total)) + "\n"
+	}
+	if err := os.WriteFile(path, []byte(makeContent(700, 200, 900)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := store.Open(filepath.Join(root, "usage.sqlite"))
+	defer st.Close()
+	scanner := &Scanner{Store: st}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	if err := os.WriteFile(path, []byte(makeContent(600, 200, 800)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed := info.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(path, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := st.Summary(context.Background(), model.Filter{})
+	if summary.GrandTotal != 800 {
+		t.Fatalf("same-size rewrite left stale usage: %+v", summary)
+	}
+	if err := os.WriteFile(path, []byte(makeContent(40, 10, 50)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ = st.Summary(context.Background(), model.Filter{})
+	if summary.GrandTotal != 50 {
+		t.Fatalf("truncation left stale usage: %+v", summary)
+	}
+}
+
+func TestExtendedWindowsPathPrefixNormalizesToOrdinaryPath(t *testing.T) {
+	ordinary := `C:\Users\demo\.codex\sessions\one.jsonl`
+	extended := `\\?\C:\Users\demo\.codex\sessions\one.jsonl`
+	if pathKey(ordinary) != pathKey(extended) {
+		t.Fatalf("extended path was not normalized: %q != %q", pathKey(ordinary), pathKey(extended))
 	}
 }
 
