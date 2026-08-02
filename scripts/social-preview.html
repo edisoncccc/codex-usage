@@ -15,9 +15,9 @@
     .mark { width:42px; height:42px; display:flex; align-items:end; justify-content:center; gap:4px; padding:10px 8px; border:1px solid #aebbb6; border-radius:12px; background:var(--paper); }
     .mark i { width:4px; border-radius:3px; background:var(--teal); }
     .mark i:nth-child(1){height:9px;opacity:.45}.mark i:nth-child(2){height:20px;opacity:.75}.mark i:nth-child(3){height:15px}.mark i:nth-child(4){height:25px;background:var(--copper)}
-    .kicker { margin:64px 0 16px; color:var(--teal); font:700 13px/1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.14em; }
-    h1 { max-width:650px; margin:0; font-size:56px; line-height:1.02; letter-spacing:-.055em; text-wrap:balance; }
-    .zh { margin:19px 0 0; color:var(--muted); font-size:24px; font-weight:650; letter-spacing:-.025em; }
+    .kicker { margin:54px 0 16px; color:var(--teal); font:700 13px/1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.14em; }
+    h1 { max-width:660px; margin:0; font-size:51px; line-height:1.01; letter-spacing:-.052em; text-wrap:balance; }
+    .zh { margin:17px 0 0; color:var(--muted); font-size:22px; font-weight:650; letter-spacing:-.025em; }
     .chips { display:flex; flex-wrap:wrap; gap:9px; margin-top:auto; }
     .chips span { padding:8px 11px; border:1px solid var(--line); border-radius:8px; color:var(--muted); background:var(--paper); font:650 12px/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
     .chips span:last-child { color:var(--copper); border-color:#d9b48f; background:var(--copper-soft); }
@@ -44,20 +44,20 @@
   <main>
     <section class="copy">
       <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>codex-usage</div>
-      <p class="kicker">LOCAL-FIRST · PER-MACHINE ACCOUNTING</p>
-      <h1>Which machine used your Codex tokens?</h1>
-      <p class="zh">同一个 Codex 账号，Token 花在哪台电脑？</p>
-      <div class="chips"><span>JSONL + OTel</span><span>DEDUPLICATED</span><span>NO auth.json</span></div>
+      <p class="kicker">LOCAL-FIRST · CODEX USAGE ANALYTICS</p>
+      <h1>Which machine used your Codex tokens—and what drove it?</h1>
+      <p class="zh">从电脑到模型、项目、会话与 API 等价成本</p>
+      <div class="chips"><span>MACHINE ATTRIBUTION</span><span>MODEL · SESSION</span><span>API-EQUIV. COST</span></div>
     </section>
     <section class="ledger">
-      <div class="ledger-head"><div><p>MACHINE LEDGER</p><strong>Synthetic overview</strong></div><span class="live">● LIVE</span></div>
+      <div class="ledger-head"><div><p>USAGE INTELLIGENCE</p><strong>Synthetic attribution</strong></div><span class="live">● LIVE</span></div>
       <div class="machines">
         <div class="machine"><small>WINDOWS</small><span class="track"><i style="width:92%"></i></span><b>10.17M</b></div>
         <div class="machine"><small>WSL</small><span class="track"><i style="width:48%"></i></span><b>5.28M</b></div>
         <div class="machine"><small>LINUX</small><span class="track"><i style="width:67%"></i></span><b>7.41M</b></div>
       </div>
       <div class="total"><div><p>CURRENT MACHINE · 30 DAYS</p><strong>10.17M</strong></div><div class="cost">$31.84<br><small>88.0% priced</small></div></div>
-      <div class="rule"><span>Historical JSONL + live OTel</span><span>local SQLite · loopback only</span></div>
+      <div class="rule"><span>JSONL + OTel · deduplicated</span><span>model · session · cost</span></div>
     </section>
   </main>
 </body>

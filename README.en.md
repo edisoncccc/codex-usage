@@ -2,9 +2,9 @@
 
 # codex-usage
 
-**Which machine used your Codex tokens?**
+**Which machine, model, project, or session used your Codex tokens?**
 
-*同一个 Codex 账号跑在多台电脑：哪台机器用掉了 Token？*
+*本地优先的 Codex 使用分析：从逐电脑归属，到模型、项目、会话与 API 等价成本。*
 
 [Live Demo](https://zjay26.github.io/codex-usage/?lang=en) · [Windows x64](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe) · [Linux x64](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64) · English / [简体中文](README.md)
 
@@ -23,13 +23,28 @@
 
 Run one single-file binary on each Windows, WSL, or Linux host. It scans that machine's historical Codex JSONL and receives future usage over loopback OTel. Coverage-aware merge rules deduplicate the two sources, and the result stays in that machine's SQLite database. The Dashboard therefore answers **how much this computer used**, not how much the whole account used.
 
-The differentiators are deliberately narrow: per-machine scope, historical JSONL + live OTel, deduplication, single-file deployment, local-first operation, and **no access to `auth.json`**.
+Per-machine attribution is codex-usage's most distinctive entry point, but it is not the endpoint. It breaks the local total down by model and token category, project, Thread, Session, Agent, and local calendar day, then adds Standard API-equivalent cost, pricing coverage, and data-quality records.
+
+Codex's official [`/usage`](https://learn.chatgpt.com/docs/developer-commands.md?surface=cli) is useful for daily, weekly, and cumulative account token activity. codex-usage complements that account view with an explainable local attribution layer: **where these machine-local tokens came from and what drove them**.
+
+The analysis stays local-first: one binary, loopback-only services, local SQLite, and **no access to `auth.json` or conversation content**.
+
+## From totals to explainable usage analytics
+
+| Question | What codex-usage shows |
+|---|---|
+| Which machine used the tokens? | An independent ledger for each Windows, WSL, or Linux host |
+| Which models and token categories drove usage? | Model plus Input, Cached, Cache Write, Output, and Reasoning composition |
+| Which work drove it? | Project, Thread, Session, and main task / Subagent / Guardian / Memory attribution |
+| When did it happen? | Today, 7 days, 30 days, all time, local calendar days, and single-day drill-down |
+| What would it roughly cost at API rates? | Standard API-equivalent cost with explicit token pricing coverage |
+| Can the number be audited? | JSONL / OTel provenance, coverage-aware deduplication, unattributed deltas, and data-quality records |
 
 ## What it counts / what it does not count
 
 | Counts | Does not count or read |
 |---|---|
-| Tokens, models, sources, projects, Threads, Agents, and local calendar days on this machine | Usage from other machines on the account |
+| Tokens, models, sources, projects, Threads, Sessions, Agents, and local calendar days on this machine | Usage from other machines on the account |
 | Historical session JSONL and future `turn.token_usage` OTel metrics | Account quota, subscription balance, or real bills |
 | Standard API text-token equivalent cost and pricing coverage | Prompts, replies, reasoning, tool output, or `auth.json` |
 | Dedup records, coverage gaps, and historical deltas without dates | Cloud sync, remote telemetry, or third-party analytics |
@@ -63,12 +78,13 @@ On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it fro
 
 | Capability | What you get |
 |---|---|
-| Per-machine accounting | A separate `machine_id` and SQLite database on every host |
+| Signature per-machine attribution | A separate `machine_id` and SQLite database on every host |
 | Historical + live | Scan existing JSONL first, then receive official OTel metrics |
 | Deduplication | Merge OTel, JSONL, and state data by explicit coverage rules instead of summing them |
 | Daily drill-down | Continuous daily pulse, calendar, zero-usage days, and per-day model mix |
-| Useful attribution | Filter by model, source, project, Thread, main task, Subagent, Guardian, or Memory |
-| Equivalent cost | Query-time estimate with visible token pricing coverage; unknown usage never looks free |
+| Multi-dimensional usage analytics | Understand usage by model, token category, source, project, Thread, Session, main task, Subagent, Guardian, or Memory |
+| Cost insight | Query-time Standard API-equivalent estimate with visible token pricing coverage; unknown usage never looks free |
+| Auditable quality | Visible provenance, dedup records, coverage gaps, and historical deltas without dates |
 | Local-first | Loopback-only at `127.0.0.1`, embedded assets, and no runtime external requests |
 | Single binary | Windows/Linux, amd64/arm64, no CGO or external database service |
 | Bilingual | Dashboard and CLI support `zh-CN` / `en` through URL, button, flag, and environment |

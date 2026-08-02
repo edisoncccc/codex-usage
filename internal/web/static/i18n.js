@@ -4,8 +4,8 @@
   const STORAGE_KEY = "codex-usage-locale";
   const catalogs = {
     "zh-CN": {
-      "app.title": "Codex Usage · 本机用量",
-      "app.description": "当前电脑的 Codex Token 用量与 Standard API 等价成本估算",
+      "app.title": "Codex Usage · 本地使用分析",
+      "app.description": "本地优先的 Codex 使用分析：逐电脑归属、模型/项目/会话明细与 Standard API 等价成本",
       "skip.main": "跳到主要内容",
       "brand.home": "返回概览",
       "nav.label": "主要视图",
@@ -227,8 +227,8 @@
       "scan.complete": "扫描完成：新增 {inserted} 个事件，忽略 {duplicates} 个重复"
     },
     en: {
-      "app.title": "Codex Usage · Per-machine usage",
-      "app.description": "Per-machine Codex token usage and Standard API-equivalent cost estimates",
+      "app.title": "Codex Usage · Local usage analytics",
+      "app.description": "Local-first Codex usage analytics by machine, model, project, and session, with Standard API-equivalent cost",
       "skip.main": "Skip to main content",
       "brand.home": "Return to overview",
       "nav.label": "Primary views",

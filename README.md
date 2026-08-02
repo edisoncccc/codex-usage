@@ -2,9 +2,9 @@
 
 # codex-usage
 
-**同一个 Codex 账号跑在多台电脑：哪台机器用掉了 Token？**
+**同一个 Codex 账号：哪台电脑、哪个模型、哪个项目和会话用掉了 Token？**
 
-*Which machine used your Codex tokens?*
+*Local-first Codex usage analytics—from machine attribution to models, projects, sessions, and API-equivalent cost.*
 
 [在线体验](https://zjay26.github.io/codex-usage/?lang=zh-CN) · [Windows x64 下载](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe) · [Linux x64 下载](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64) · [English](README.en.md) / 简体中文
 
@@ -23,13 +23,28 @@
 
 在每台 Windows、WSL 或 Linux 主机分别运行一个单文件程序。它扫描该机的历史 Codex JSONL，并通过 loopback OTel 接收之后的新用量；两种来源按覆盖时间合并和去重，结果只写入该机的 SQLite。Dashboard 因而回答的是**这台电脑用了多少**，不是整个账号用了多少。
 
-核心差异只有六点：逐电脑口径、历史 JSONL + 实时 OTel、防重复计算、单文件部署、本地优先，以及**从不读取 `auth.json`**。
+逐电脑归属是 codex-usage 最鲜明的入口，但不是终点。它把本机总量继续拆到模型与 Token 类型、项目、Thread、Session、Agent 和本地自然日，并给出 Standard API 等价成本、定价覆盖率与数据质量记录。
+
+Codex 官方 [`/usage`](https://learn.chatgpt.com/docs/developer-commands.md?surface=cli) 适合查看账号级 daily / weekly / cumulative Token 活动；codex-usage 不替代官方视图，而是补上**这些本机 Token 在哪里产生、由什么构成**的可解释归属层。
+
+分析全程保持本地优先：单文件部署、loopback 服务、本机 SQLite，**从不读取 `auth.json` 或对话内容**。
+
+## 从总量到可解释的使用分析
+
+| 你想知道 | codex-usage 给出的视图 |
+|---|---|
+| 哪台电脑用了 Token？ | 每台 Windows、WSL 或 Linux 主机独立统计，保留清晰机器边界 |
+| 用在了什么模型与 Token 类型？ | 模型及 Input、Cached、Cache Write、Output、Reasoning 构成 |
+| 哪项工作驱动了用量？ | 项目、Thread、Session，以及主任务 / Subagent / Guardian / Memory 归属 |
+| 什么时候发生？ | 今天、7 日、30 日、全部历史、本地自然日与单日下钻 |
+| 如果按 API 价格折算大约是多少？ | Standard API 等价成本与明确的 Token 定价覆盖率 |
+| 这些数字能否被复核？ | JSONL / OTel 来源、防重覆盖区间、未归属差额与数据质量记录 |
 
 ## 它统计什么 / 不统计什么
 
 | 统计 | 不统计 |
 |---|---|
-| 当前电脑的 Token、模型、来源、项目、Thread、Agent 和本地自然日 | 账号在其他电脑上的用量 |
+| 当前电脑的 Token、模型、来源、项目、Thread、Session、Agent 和本地自然日 | 账号在其他电脑上的用量 |
 | 历史 session JSONL 与未来 `turn.token_usage` OTel 指标 | 账号配额、订阅余额或真实账单 |
 | Standard API 文本 Token 的等价成本与定价覆盖率 | prompt、回复、reasoning、工具输出或 `auth.json` |
 | 去重记录、覆盖缺口和无法按日期归属的历史差额 | 云同步、远程遥测或第三方分析 |
@@ -67,12 +82,13 @@ Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自
 
 | 功能 | 你得到什么 |
 |---|---|
-| 逐电脑统计 | 每台机器生成独立 `machine_id` 和 SQLite 数据库，不把账号其他电脑混进来 |
+| 标志性的逐电脑归属 | 每台机器生成独立 `machine_id` 和 SQLite 数据库，不把账号其他电脑混进来 |
 | 历史 + 实时 | 首次扫描已有 JSONL，之后接收官方 OTel 指标 |
 | 防重 | OTel、JSONL 与状态库按明确覆盖规则合并，不直接相加 |
 | 每日下钻 | 连续自然日脉冲带、月历、零用量日与单日模型构成 |
-| 清晰归属 | 按模型、来源、项目、Thread、主任务/Subagent/Guardian/Memory 筛选 |
-| 等价成本 | 查询时估算并显示 Token 定价覆盖率，未知部分不伪装成零费用 |
+| 多维使用分析 | 按模型、Token 类型、来源、项目、Thread、Session、主任务/Subagent/Guardian/Memory 理解用量 |
+| 成本洞察 | 查询时估算 Standard API 等价成本并显示定价覆盖率，未知部分不伪装成零费用 |
+| 可审计质量 | 明示来源、防重记录、覆盖缺口和未按日期归属的历史差额 |
 | 本地优先 | 只监听 `127.0.0.1`，资源嵌入二进制，无运行时外部请求 |
 | 单文件部署 | Windows/Linux、amd64/arm64、无 CGO、无需外部数据库服务 |
 | 双语 | Dashboard 与 CLI 支持 `zh-CN` / `en`，URL、按钮、环境变量均可切换 |
