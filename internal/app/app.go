@@ -31,10 +31,12 @@ import (
 )
 
 var (
-	Version   = "2.0.0"
+	Version   = "2.1.0"
 	Commit    = "dev"
 	BuildDate = "unknown"
 )
+
+const activityProbeInterval = 30 * time.Second
 
 type CLI struct {
 	Stdout io.Writer
@@ -258,37 +260,73 @@ func (c CLI) serve(args []string, daemon bool) error {
 			log.Printf("initial scan: files=%d inserted=%d warnings=%d", result.Files, result.EventsInserted, result.Warnings)
 		}
 	}()
-	go periodicScan(ctx, state, time.Duration(state.cfg.ScanIntervalSeconds)*time.Second)
+	go backgroundScan(ctx, state, time.Duration(state.cfg.ScanIntervalSeconds)*time.Second)
 	if !daemon {
 		fmt.Fprintf(c.Stdout, c.tr("serve.running"), state.server.URL())
 	}
 	return state.server.Run(ctx)
 }
 
-func periodicScan(ctx context.Context, state *runtimeState, interval time.Duration) {
-	if interval < 15*time.Second {
-		interval = time.Minute
+func backgroundScan(ctx context.Context, state *runtimeState, fallbackInterval time.Duration) {
+	if fallbackInterval < 10*time.Minute {
+		fallbackInterval = 10 * time.Minute
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	probe := &usage.ActivityProbe{}
+	_, _ = probe.Changed(ctx, state.homes)
+	activityTicker := time.NewTicker(activityProbeInterval)
+	fallbackTicker := time.NewTicker(fallbackInterval)
+	defer activityTicker.Stop()
+	defer fallbackTicker.Stop()
+
+	loadHomes := func() ([]string, error) {
+		cfg, err := config.Load(state.paths)
+		if err != nil {
+			return nil, fmt.Errorf("reload config: %w", err)
+		}
+		homes, err := config.CodexHomes(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("resolve homes: %w", err)
+		}
+		return homes, nil
+	}
+	runScan := func(reason string, homes []string) {
+		result, err := state.scanner.Scan(ctx, homes, false)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("%s scan: %v", reason, err)
+			return
+		}
+		if result.EventsInserted > 0 || result.Warnings > 0 {
+			log.Printf("%s scan: files=%d inserted=%d warnings=%d elapsed_ms=%d",
+				reason, result.Files, result.EventsInserted, result.Warnings, result.ElapsedMillis)
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			cfg, err := config.Load(state.paths)
+		case <-activityTicker.C:
+			homes, err := loadHomes()
 			if err != nil {
-				log.Printf("reload config: %v", err)
+				log.Printf("activity probe: %v", err)
 				continue
 			}
-			homes, err := config.CodexHomes(cfg)
+			changed, err := probe.Changed(ctx, homes)
 			if err != nil {
-				log.Printf("resolve homes: %v", err)
+				if !errors.Is(err, context.Canceled) {
+					log.Printf("activity probe: %v", err)
+				}
 				continue
 			}
-			if _, err := state.scanner.Scan(ctx, homes, false); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("periodic scan: %v", err)
+			if changed {
+				runScan("activity", homes)
 			}
+		case <-fallbackTicker.C:
+			homes, err := loadHomes()
+			if err != nil {
+				log.Printf("fallback scan: %v", err)
+				continue
+			}
+			runScan("fallback", homes)
 		}
 	}
 }

@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/zJay26/codex-usage/internal/model"
+	"github.com/zJay26/codex-usage/internal/pricing"
 )
 
 func BenchmarkPricingEventTraversal(b *testing.B) {
@@ -32,6 +34,141 @@ func BenchmarkPricingEventTraversal(b *testing.B) {
 		if count == 0 {
 			b.Fatal("no pricing events")
 		}
+	}
+}
+
+func BenchmarkPricingAggregateTraversal(b *testing.B) {
+	path := os.Getenv("CODEX_USAGE_BENCH_DB")
+	if path == "" {
+		b.Skip("set CODEX_USAGE_BENCH_DB to a disposable database copy")
+	}
+	st, err := Open(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.Close()
+	for range b.N {
+		count := 0
+		if err := st.WalkPricingAggregates(context.Background(), model.Filter{}, func(model.UsageEvent) error {
+			count++
+			return nil
+		}); err != nil {
+			b.Fatal(err)
+		}
+		if count == 0 {
+			b.Fatal("no pricing aggregates")
+		}
+	}
+}
+
+func BenchmarkDashboardQueries(b *testing.B) {
+	path := os.Getenv("CODEX_USAGE_BENCH_DB")
+	if path == "" {
+		b.Skip("set CODEX_USAGE_BENCH_DB to a disposable database copy")
+	}
+	st, err := Open(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.Close()
+	filter := model.Filter{SinceDate: "2026-07-28", UntilDate: "2026-08-04"}
+	b.Run("summary-7d", func(b *testing.B) {
+		for range b.N {
+			if _, err := st.Summary(context.Background(), filter); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("timeseries-all", func(b *testing.B) {
+		for range b.N {
+			if _, err := st.Timeseries(context.Background(), model.Filter{}, "day"); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("dimensions", func(b *testing.B) {
+		for range b.N {
+			if _, err := st.Dimensions(context.Background()); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func TestReadPoolRemainsAvailableWhileWriterConnectionIsBusy(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.InsertEvent(ctx, model.UsageEvent{
+		ID: "committed", Timestamp: time.Now(), Usage: model.TokenUsage{Input: 8, Output: 2, Total: 10},
+		Provenance: model.ProvenanceSessionJSONL, Confidence: model.ConfidenceExact,
+	}, "fixture.jsonl"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := st.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE meta SET value=value WHERE key='machine'`); err != nil {
+		t.Fatal(err)
+	}
+	readCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	summary, err := st.Summary(readCtx, model.Filter{})
+	if err != nil {
+		t.Fatalf("read query waited behind writer: %v", err)
+	}
+	if summary.GrandTotal != 10 {
+		t.Fatalf("unexpected committed view: %+v", summary)
+	}
+}
+
+func TestPricingAggregatesMatchRawEventsAndDimensions(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	base := time.Date(2026, 7, 30, 1, 0, 0, 0, time.UTC)
+	events := []model.UsageEvent{
+		{ID: "a", Timestamp: base, SessionID: "s1", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 80, CachedInput: 20, Output: 20, ReasoningOutput: 5, Total: 100}},
+		{ID: "b", Timestamp: base.Add(time.Hour), SessionID: "s2", Model: "gpt-5.4", Source: "cli", ProjectPath: "/p2", Usage: model.TokenUsage{Input: 40, CachedInput: 10, Output: 10, Total: 50}},
+		{ID: "missing", Timestamp: base.Add(time.Hour), SessionID: "s3", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Total: 12}},
+		{ID: "zero-total", Timestamp: base.Add(time.Hour), SessionID: "s3", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 3, Output: 2}},
+		{ID: "invalid", Timestamp: base.Add(25 * time.Hour), SessionID: "s3", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 8, CachedInput: 9, Output: 4, Total: 12}},
+		{ID: "internal", Timestamp: base.Add(24 * time.Hour), SessionID: "s4", Model: "internal", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 8, Output: 2, Total: 10}},
+	}
+	for _, event := range events {
+		event.Provenance = model.ProvenanceSessionJSONL
+		event.Confidence = model.ConfidenceExact
+		if _, err := st.InsertEvent(ctx, event, event.ID+".jsonl"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, _ := pricing.NewBuilder(nil)
+	if err := st.WalkPricingEvents(ctx, model.Filter{}, raw.Add); err != nil {
+		t.Fatal(err)
+	}
+	aggregated, _ := pricing.NewBuilder(nil)
+	if err := st.WalkPricingAggregates(ctx, model.Filter{}, aggregated.Add); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(raw.Report(), aggregated.Report()) {
+		t.Fatalf("aggregate pricing drifted\nraw=%#v\naggregated=%#v", raw.Report(), aggregated.Report())
+	}
+	dimensions, err := st.Dimensions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(dimensions.Models, []string{"gpt-5.4", "internal"}) ||
+		!reflect.DeepEqual(dimensions.Sources, []string{"cli", "desktop"}) ||
+		!reflect.DeepEqual(dimensions.Projects, []string{"/p1", "/p2"}) {
+		t.Fatalf("unexpected dimensions: %#v", dimensions)
 	}
 }
 
@@ -175,6 +312,66 @@ func TestV3MigrationAddsEventSegmentAndPurgesDerivedRows(t *testing.T) {
 	rows.Close()
 	if segmentColumns != 1 {
 		t.Fatalf("segment column count = %d", segmentColumns)
+	}
+}
+
+func TestV4MigrationForcesRebuildForSingleMetadataForkParser(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "usage.sqlite")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.InsertEvent(ctx, model.UsageEvent{
+		ID: "v4-derived", Timestamp: time.Now(), SessionID: "single-meta-fork",
+		Usage:      model.TokenUsage{Input: 8, Output: 2, Total: 10},
+		Provenance: model.ProvenanceSessionJSONL, Confidence: model.ConfidenceExact,
+	}, "single-meta-fork.jsonl"); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if err := st.PutCursor(ctx, FileCursor{
+		Path: "single-meta-fork.jsonl", SessionID: "single-meta-fork", ForkedFromID: "parent",
+		Cumulative: model.TokenUsage{Input: 8, Output: 2, Total: 10},
+	}); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE meta SET value='4' WHERE key='schema_version'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	summary, err := st.Summary(ctx, model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.EventCount != 0 || summary.GrandTotal != 0 {
+		t.Fatalf("v4 derived rows survived v5 migration: %+v", summary)
+	}
+	if _, ok, err := st.GetCursor(ctx, "single-meta-fork.jsonl"); err != nil || ok {
+		t.Fatalf("v4 cursor survived v5 migration: ok=%v err=%v", ok, err)
+	}
+	var version string
+	if err := st.db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != "5" {
+		t.Fatalf("schema version = %q, want 5", version)
 	}
 }
 

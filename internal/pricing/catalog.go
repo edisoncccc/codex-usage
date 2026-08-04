@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	CatalogAsOf = "2026-07-31"
+	CatalogAsOf = "2026-08-04"
 	Currency    = "USD"
 	Basis       = "current_standard_api_text_token_prices"
 )
@@ -30,9 +30,6 @@ type CatalogEntry struct {
 	CachedInputUSDPerMillion     string   `json:"cached_input_usd_per_million"`
 	CacheWriteInputUSDPerMillion string   `json:"cache_write_input_usd_per_million,omitempty"`
 	OutputUSDPerMillion          string   `json:"output_usd_per_million"`
-	LongContextThreshold         int64    `json:"long_context_threshold,omitempty"`
-	LongContextInputMultiplier   string   `json:"long_context_input_multiplier,omitempty"`
-	LongContextOutputMultiplier  string   `json:"long_context_output_multiplier,omitempty"`
 	Source                       string   `json:"source"`
 }
 
@@ -45,11 +42,6 @@ type ResolvedRate struct {
 	CachedNanoPerToken     int64
 	CacheWriteNanoPerToken *int64
 	OutputNanoPerToken     int64
-	LongContextThreshold   int64
-	LongInputNumerator     int64
-	LongInputDenominator   int64
-	LongOutputNumerator    int64
-	LongOutputDenominator  int64
 }
 
 var builtInCatalog = []CatalogEntry{
@@ -58,7 +50,6 @@ var builtInCatalog = []CatalogEntry{
 		SnapshotPatterns:   []string{"gpt-5.6-sol-YYYY-MM-DD", "gpt-5.6-YYYY-MM-DD"},
 		InputUSDPerMillion: "5.00", CachedInputUSDPerMillion: "0.50",
 		CacheWriteInputUSDPerMillion: "6.25", OutputUSDPerMillion: "30.00",
-		LongContextThreshold: 272000, LongContextInputMultiplier: "2", LongContextOutputMultiplier: "1.5",
 		Source: "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
 	},
 	{
@@ -66,7 +57,6 @@ var builtInCatalog = []CatalogEntry{
 		SnapshotPatterns:   []string{"gpt-5.6-terra-YYYY-MM-DD"},
 		InputUSDPerMillion: "2.00", CachedInputUSDPerMillion: "0.20",
 		CacheWriteInputUSDPerMillion: "2.50", OutputUSDPerMillion: "12.00",
-		LongContextThreshold: 272000, LongContextInputMultiplier: "2", LongContextOutputMultiplier: "1.5",
 		Source: "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
 	},
 	{
@@ -74,14 +64,12 @@ var builtInCatalog = []CatalogEntry{
 		SnapshotPatterns:   []string{"gpt-5.6-luna-YYYY-MM-DD"},
 		InputUSDPerMillion: "0.20", CachedInputUSDPerMillion: "0.02",
 		CacheWriteInputUSDPerMillion: "0.25", OutputUSDPerMillion: "1.20",
-		LongContextThreshold: 272000, LongContextInputMultiplier: "2", LongContextOutputMultiplier: "1.5",
 		Source: "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
 	},
 	{
 		Model: "gpt-5.5", DisplayName: "GPT-5.5",
 		SnapshotPatterns:   []string{"gpt-5.5-YYYY-MM-DD"},
 		InputUSDPerMillion: "5.00", CachedInputUSDPerMillion: "0.50", OutputUSDPerMillion: "30.00",
-		LongContextThreshold: 272000, LongContextInputMultiplier: "2", LongContextOutputMultiplier: "1.5",
 		Source: "https://developers.openai.com/api/docs/models/gpt-5.5",
 	},
 	{
@@ -94,7 +82,6 @@ var builtInCatalog = []CatalogEntry{
 		Model: "gpt-5.4", DisplayName: "GPT-5.4",
 		SnapshotPatterns:   []string{"gpt-5.4-YYYY-MM-DD"},
 		InputUSDPerMillion: "2.50", CachedInputUSDPerMillion: "0.25", OutputUSDPerMillion: "15.00",
-		LongContextThreshold: 272000, LongContextInputMultiplier: "2", LongContextOutputMultiplier: "1.5",
 		Source: "https://developers.openai.com/api/docs/models/gpt-5.4",
 	},
 	{
@@ -249,16 +236,6 @@ func resolvedFromEntry(requested string, entry CatalogEntry) (ResolvedRate, erro
 		RequestedModel: requested, CanonicalModel: entry.Model, Source: entry.Source,
 		InputNanoPerToken: input, CachedNanoPerToken: cached,
 		CacheWriteNanoPerToken: cacheWrite, OutputNanoPerToken: output,
-		LongContextThreshold: entry.LongContextThreshold,
-		LongInputNumerator:   1, LongInputDenominator: 1,
-		LongOutputNumerator: 1, LongOutputDenominator: 1,
-	}
-	if entry.LongContextInputMultiplier == "2" {
-		rate.LongInputNumerator = 2
-	}
-	if entry.LongContextOutputMultiplier == "1.5" {
-		rate.LongOutputNumerator = 3
-		rate.LongOutputDenominator = 2
 	}
 	return rate, nil
 }
@@ -288,8 +265,6 @@ func resolvedFromOverride(model string, override Override) (ResolvedRate, error)
 		RequestedModel: model, CanonicalModel: model, Source: "local_override", Custom: true,
 		InputNanoPerToken: input, CachedNanoPerToken: cached,
 		CacheWriteNanoPerToken: cacheWrite, OutputNanoPerToken: output,
-		LongInputNumerator: 1, LongInputDenominator: 1,
-		LongOutputNumerator: 1, LongOutputDenominator: 1,
 	}, nil
 }
 

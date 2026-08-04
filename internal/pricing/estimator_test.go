@@ -33,12 +33,12 @@ func TestEvaluateEventSeparatesOverlappingTokenCategories(t *testing.T) {
 	}
 }
 
-func TestEvaluateEventAppliesLongContextMultiplierOnlyToExactEvents(t *testing.T) {
-	exact := model.UsageEvent{
-		Model: "gpt-5.6-sol", Confidence: model.ConfidenceExact,
+func TestEvaluateEventAlwaysUsesStandardShortContextRates(t *testing.T) {
+	event := model.UsageEvent{
+		Model: "gpt-5.6-sol", Confidence: model.ConfidenceGapFallback,
 		Usage: model.TokenUsage{Input: 300000, Output: 1000, Total: 301000},
 	}
-	evaluated, err := evaluateEvent(exact, nil)
+	evaluated, err := evaluateEvent(event, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,18 +46,11 @@ func TestEvaluateEventAppliesLongContextMultiplierOnlyToExactEvents(t *testing.T
 	if err := aggregate.add(evaluated); err != nil {
 		t.Fatal(err)
 	}
-	if got := aggregate.estimate().USD; got != "3.045000000" {
-		t.Fatalf("unexpected long-context estimate %s", got)
+	if got := aggregate.estimate().USD; got != "1.530000000" {
+		t.Fatalf("unexpected short-context estimate %s", got)
 	}
-
-	nonExact := exact
-	nonExact.Confidence = model.ConfidenceGapFallback
-	evaluated, err = evaluateEvent(nonExact, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if evaluated.pricedTokens != 0 || evaluated.unpricedTokens != 301000 || evaluated.reasons[0].Kind != "long_context_uncertain" {
-		t.Fatalf("unexpected non-exact handling: %#v", evaluated)
+	if evaluated.pricedTokens != 301000 || evaluated.unpricedTokens != 0 || len(evaluated.reasons) != 0 {
+		t.Fatalf("unexpected short-context handling: %#v", evaluated)
 	}
 }
 

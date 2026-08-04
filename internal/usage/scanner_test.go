@@ -417,6 +417,179 @@ func TestForkReplayPrefixIsSkippedAndFileOwnerNeverChanges(t *testing.T) {
 	}
 }
 
+func TestSingleMetadataForkFixturesUseImplicitFirstSnapshotBaseline(t *testing.T) {
+	tests := []struct {
+		name        string
+		fixture     string
+		sessionID   string
+		want        model.TokenUsage
+		appendTotal string
+		appendLast  string
+		wantAfter   model.TokenUsage
+	}{
+		{
+			name:        "zero inherited baseline counts the complete child cumulative",
+			fixture:     "single-meta-fork-zero-baseline.jsonl",
+			sessionID:   "fork-child-zero-baseline",
+			want:        model.TokenUsage{Input: 370, CachedInput: 300, Output: 55, ReasoningOutput: 10, Total: 425},
+			appendTotal: usage(410, 330, 0, 65, 12, 475),
+			appendLast:  usage(40, 30, 0, 10, 2, 50),
+			wantAfter:   model.TokenUsage{Input: 410, CachedInput: 330, Output: 65, ReasoningOutput: 12, Total: 475},
+		},
+		{
+			name:        "inherited baseline is removed while first last usage remains",
+			fixture:     "single-meta-fork-inherited-baseline.jsonl",
+			sessionID:   "fork-child-inherited-baseline",
+			want:        model.TokenUsage{Input: 264, CachedInput: 230, Output: 32, ReasoningOutput: 7, Total: 296},
+			appendTotal: usage(630, 550, 0, 78, 16, 708),
+			appendLast:  usage(40, 30, 0, 10, 2, 50),
+			wantAfter:   model.TokenUsage{Input: 304, CachedInput: 260, Output: 42, ReasoningOutput: 9, Total: 346},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			home := filepath.Join(root, ".codex")
+			dir := filepath.Join(home, "sessions")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fixture, err := os.ReadFile(filepath.Join("testdata", test.fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, test.fixture)
+			if err := os.WriteFile(path, fixture, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			scanner := &Scanner{Store: st}
+			result, err := scanner.Scan(context.Background(), []string{home}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			summary, err := st.Summary(context.Background(), model.Filter{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.EventsInserted != 2 || result.Warnings != 0 || summary.Usage != test.want {
+				t.Fatalf("implicit fork baseline mismatch: scan=%+v want=%+v got=%+v", result, test.want, summary.Usage)
+			}
+			cursor, ok, err := st.GetCursor(context.Background(), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok || cursor.SessionID != test.sessionID || cursor.ReplayOffset != implicitForkReplayOffset {
+				t.Fatalf("implicit fork cursor mismatch: ok=%v cursor=%+v", ok, cursor)
+			}
+
+			file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, writeErr := file.WriteString(tokenLine("2026-08-01T00:00:00Z", test.appendTotal, test.appendLast) + "\n")
+			closeErr := file.Close()
+			if writeErr != nil {
+				t.Fatal(writeErr)
+			}
+			if closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			incremental, err := scanner.Scan(context.Background(), []string{home}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			summary, err = st.Summary(context.Background(), model.Filter{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if incremental.EventsInserted != 1 || incremental.Warnings != 0 || summary.Usage != test.wantAfter {
+				t.Fatalf("implicit fork incremental scan drifted: scan=%+v want=%+v got=%+v", incremental, test.wantAfter, summary.Usage)
+			}
+		})
+	}
+}
+
+func TestImplicitForkAutomaticallyRebuildsIfExplicitParentBoundaryArrivesLater(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	parent := strings.Join([]string{
+		`{"timestamp":"2026-07-30T01:00:00Z","type":"session_meta","payload":{"id":"staged-parent","cwd":"/parent"}}`,
+		tokenLine("2026-07-30T01:00:01Z", usage(120, 20, 0, 30, 3, 150), usage(120, 20, 0, 30, 3, 150)),
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "z-parent.jsonl"), []byte(parent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	childPath := filepath.Join(dir, "a-staged-child.jsonl")
+	staged := strings.Join([]string{
+		`{"timestamp":"2026-07-30T02:00:00Z","type":"session_meta","payload":{"id":"staged-child","forked_from_id":"staged-parent","cwd":"/child"}}`,
+		tokenLine("2026-07-30T01:00:01Z", usage(120, 20, 0, 30, 3, 150), usage(120, 20, 0, 30, 3, 150)),
+	}, "\n") + "\n"
+	if err := os.WriteFile(childPath, []byte(staged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	scanner := &Scanner{Store: st}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	provisional, _ := st.Summary(context.Background(), model.Filter{})
+	if provisional.GrandTotal != 300 {
+		t.Fatalf("staged prefix was not represented by the provisional implicit interpretation: %+v", provisional)
+	}
+
+	file, err := os.OpenFile(childPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation := strings.Join([]string{
+		`{"timestamp":"2026-07-30T01:00:00Z","type":"session_meta","payload":{"id":"staged-parent","cwd":"/parent"}}`,
+		`{"timestamp":"2026-07-30T02:00:01Z","type":"turn_context","payload":{"turn_id":"child-turn","cwd":"/child","model":"gpt-test"}}`,
+		tokenLine("2026-07-30T02:00:02Z", usage(145, 25, 0, 35, 4, 180), usage(25, 5, 0, 5, 1, 30)),
+	}, "\n") + "\n"
+	_, writeErr := file.WriteString(continuation)
+	closeErr := file.Close()
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	result, err := scanner.Scan(context.Background(), []string{home}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrected, err := st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if corrected.GrandTotal != 180 || result.Warnings == 0 {
+		t.Fatalf("late explicit boundary did not trigger a corrected rebuild: scan=%+v summary=%+v", result, corrected)
+	}
+	warnings, err := st.Warnings(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) == 0 || warnings[0].Kind != "fork_replay_detected" {
+		t.Fatalf("late explicit boundary rebuild was not visible: %+v", warnings)
+	}
+}
+
 func TestSameTotalClassificationCorrectionPersists(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, ".codex")

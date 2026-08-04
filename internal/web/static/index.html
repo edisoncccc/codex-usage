@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-font-size="comfortable" data-density="balanced">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -31,6 +31,7 @@
         </div>
         <button class="icon-button pressable locale-button" id="localeButton" type="button" aria-label="Switch to English" title="Switch to English" data-i18n-aria-label="action.language" data-i18n-title="action.language"><span data-i18n="action.languageShort">EN</span></button>
         <button class="icon-button pressable" id="themeButton" type="button" aria-label="切换明暗主题" title="切换明暗主题" data-i18n-aria-label="action.theme" data-i18n-title="action.theme"><span aria-hidden="true">◐</span></button>
+        <button class="icon-button pressable settings-button" id="settingsButton" type="button" aria-haspopup="dialog" aria-controls="settingsDialog" aria-label="打开显示设置" title="打开显示设置" data-i18n-aria-label="action.settings" data-i18n-title="action.settings"><span class="settings-glyph" aria-hidden="true"><i></i><i></i><i></i></span></button>
         <button class="action-button pressable" id="filterButton" type="button" aria-haspopup="dialog" aria-controls="filterSheet"><span data-i18n="action.filter">筛选</span><b class="count-badge hidden" id="filterCount">0</b></button>
         <button class="action-button quiet pressable" id="exportButton" type="button" aria-haspopup="dialog"><span data-i18n="action.export">导出</span></button>
         <button class="action-button primary pressable" id="scanButton" type="button"><span class="scan-icon" aria-hidden="true">↻</span><span data-i18n="action.scan">扫描</span></button>
@@ -202,6 +203,67 @@
         <label><span data-i18n="filter.confidence">置信度</span><select id="filterConfidence"><option value="" data-i18n="filter.allConfidence">全部置信度</option><option value="exact" data-i18n="confidence.exact">精确</option><option value="gap_fallback" data-i18n="confidence.gap_fallback">缺口补位</option><option value="aggregate_only" data-i18n="confidence.aggregate_only">仅累计</option></select></label>
       </form>
       <div class="dialog-actions split"><button class="action-button quiet pressable" id="resetFilters" type="button" data-i18n="filter.reset">清空</button><button class="action-button primary pressable" id="applyFilters" type="button" data-i18n="filter.apply">应用筛选</button></div>
+    </div>
+  </dialog>
+
+  <dialog class="sheet-dialog settings-dialog" id="settingsDialog" aria-labelledby="settingsTitle">
+    <div class="dialog-frame">
+      <div class="dialog-head"><div><p class="eyebrow">READING COMFORT</p><h2 id="settingsTitle" data-i18n="settings.title">显示设置</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭显示设置" data-i18n-aria-label="action.closeSettings">×</button></div>
+      <p class="dialog-intro" data-i18n="settings.intro">调整阅读体验，不改变统计数据。设置会即时生效，并只保存在当前浏览器。</p>
+
+      <div class="settings-preview" aria-hidden="true">
+        <div><span data-i18n="settings.previewLabel">字号预览</span><strong>1.24M</strong></div>
+        <p data-i18n="settings.previewCopy">Session、模型与费用信息仍保持完整，但更容易扫读。</p>
+      </div>
+
+      <form class="settings-form" id="settingsForm">
+        <fieldset class="settings-group">
+          <legend data-i18n="settings.fontSize">字体大小</legend>
+          <p data-i18n="settings.fontSizeHint">“舒适”是新的默认值；最小辅助文字也会随之缩放。</p>
+          <div class="setting-options three">
+            <label class="setting-option"><input type="radio" name="fontSize" value="compact" data-setting="fontSize"><span><strong data-i18n="settings.fontCompact">标准</strong><small>15 px</small></span></label>
+            <label class="setting-option"><input type="radio" name="fontSize" value="comfortable" data-setting="fontSize"><span><strong data-i18n="settings.fontComfortable">舒适</strong><small data-i18n="settings.defaultBadge">默认 · 16 px</small></span></label>
+            <label class="setting-option"><input type="radio" name="fontSize" value="large" data-setting="fontSize"><span><strong data-i18n="settings.fontLarge">大号</strong><small>18 px</small></span></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="settings-group">
+          <legend data-i18n="settings.density">显示密度</legend>
+          <p data-i18n="settings.densityHint">只改变留白和行高，不隐藏任何字段。</p>
+          <div class="setting-options three">
+            <label class="setting-option"><input type="radio" name="density" value="compact" data-setting="density"><span><strong data-i18n="settings.densityCompact">紧凑</strong><small data-i18n="settings.densityCompactHint">更多同屏内容</small></span></label>
+            <label class="setting-option"><input type="radio" name="density" value="balanced" data-setting="density"><span><strong data-i18n="settings.densityBalanced">均衡</strong><small data-i18n="settings.defaultShort">默认</small></span></label>
+            <label class="setting-option"><input type="radio" name="density" value="relaxed" data-setting="density"><span><strong data-i18n="settings.densityRelaxed">宽松</strong><small data-i18n="settings.densityRelaxedHint">更多呼吸空间</small></span></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="settings-group">
+          <legend data-i18n="settings.theme">颜色主题</legend>
+          <div class="setting-options three">
+            <label class="setting-option"><input type="radio" name="theme" value="system" data-setting="theme"><span><strong data-i18n="settings.themeSystem">跟随系统</strong></span></label>
+            <label class="setting-option"><input type="radio" name="theme" value="light" data-setting="theme"><span><strong data-i18n="settings.themeLight">浅色</strong></span></label>
+            <label class="setting-option"><input type="radio" name="theme" value="dark" data-setting="theme"><span><strong data-i18n="settings.themeDark">深色</strong></span></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="settings-group">
+          <legend data-i18n="settings.motion">界面动效</legend>
+          <div class="setting-options two">
+            <label class="setting-option"><input type="radio" name="motion" value="system" data-setting="motion"><span><strong data-i18n="settings.motionSystem">跟随系统</strong><small data-i18n="settings.motionSystemHint">尊重系统辅助功能</small></span></label>
+            <label class="setting-option"><input type="radio" name="motion" value="reduce" data-setting="motion"><span><strong data-i18n="settings.motionReduce">减少动态</strong><small data-i18n="settings.motionReduceHint">关闭视图过渡</small></span></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="settings-group">
+          <legend data-i18n="settings.language">界面语言</legend>
+          <div class="setting-options two">
+            <label class="setting-option"><input type="radio" name="locale" value="zh-CN" data-setting="locale"><span><strong>简体中文</strong></span></label>
+            <label class="setting-option"><input type="radio" name="locale" value="en" data-setting="locale"><span><strong>English</strong></span></label>
+          </div>
+        </fieldset>
+      </form>
+
+      <div class="dialog-actions split settings-actions"><button class="action-button quiet pressable" id="resetSettings" type="button" data-i18n="settings.reset">恢复默认</button><button class="action-button primary pressable" type="button" data-close data-i18n="settings.done">完成</button></div>
     </div>
   </dialog>
 

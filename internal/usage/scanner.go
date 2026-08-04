@@ -25,6 +25,10 @@ import (
 const (
 	defaultMaxRelevantRecord = 8 << 20
 	recordProbeLimit         = 16 << 10
+	// Explicit fork replay boundaries persist their positive byte offset.
+	// A negative value marks the alternate single-metadata format whose first
+	// token snapshot supplied an implicit inherited baseline.
+	implicitForkReplayOffset = -1
 )
 
 type Scanner struct {
@@ -139,17 +143,11 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, err
 
 		var files int64
 		for _, path := range discovery.Paths {
-			path, err = canonicalPath(path)
-			if err != nil {
-				result.Warnings++
-				_ = s.Store.AddWarning(ctx, "rollout_path", path, err.Error())
-				continue
-			}
-			info, err := os.Stat(path)
-			if err != nil || info.IsDir() {
-				if err != nil && !errors.Is(err, os.ErrNotExist) {
+			info, statErr := os.Stat(path)
+			if statErr != nil || info.IsDir() {
+				if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 					result.Warnings++
-					_ = s.Store.AddWarning(ctx, "rollout_stat", path, err.Error())
+					_ = s.Store.AddWarning(ctx, "rollout_stat", path, statErr.Error())
 				}
 				continue
 			}
@@ -158,7 +156,7 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, err
 			}
 			files++
 			result.Files++
-			fileResult, err := s.scanFile(ctx, home, path, metadata[pathKey(path)])
+			fileResult, err := s.scanFile(ctx, home, path, metadata[pathKey(path)], info)
 			result.Records += fileResult.Records
 			result.EventsInserted += fileResult.EventsInserted
 			result.Corrections += fileResult.Corrections
@@ -198,17 +196,25 @@ type historicalRewriteError struct {
 
 func (e *historicalRewriteError) Error() string { return e.Detail }
 
-func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.SessionInfo) (fileScanResult, error) {
+func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.SessionInfo, info os.FileInfo) (fileScanResult, error) {
 	var result fileScanResult
-	info, err := os.Stat(path)
-	if err != nil {
-		return result, err
-	}
 	cursor, exists, err := s.Store.GetCursor(ctx, path)
 	if err != nil {
 		return result, err
 	}
 	if exists {
+		if cursor.Offset >= info.Size() && cursor.Size == info.Size() &&
+			cursor.ModifiedNanos == info.ModTime().UnixNano() {
+			return result, nil
+		}
+		switch {
+		case cursor.Offset > info.Size() || cursor.Size > info.Size():
+			return result, &historicalRewriteError{Kind: "rollout_truncated", Path: path,
+				Detail: fmt.Sprintf("文件从 %d 缩短到 %d", cursor.Size, info.Size())}
+		case cursor.Size == info.Size() && cursor.ModifiedNanos != 0 && cursor.ModifiedNanos != info.ModTime().UnixNano():
+			return result, &historicalRewriteError{Kind: "rollout_rewritten", Path: path,
+				Detail: "文件大小未变但修改时间变化"}
+		}
 		probeBytes := cursor.Size
 		if probeBytes > 4096 {
 			probeBytes = 4096
@@ -217,16 +223,9 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 		if hashErr != nil {
 			return result, hashErr
 		}
-		switch {
-		case cursor.Offset > info.Size() || cursor.Size > info.Size():
-			return result, &historicalRewriteError{Kind: "rollout_truncated", Path: path,
-				Detail: fmt.Sprintf("文件从 %d 缩短到 %d", cursor.Size, info.Size())}
-		case cursor.PrefixHash != "" && prefix != cursor.PrefixHash:
+		if cursor.PrefixHash != "" && prefix != cursor.PrefixHash {
 			return result, &historicalRewriteError{Kind: "rollout_rewritten", Path: path,
 				Detail: "文件已在原有扫描范围内重写"}
-		case cursor.Size == info.Size() && cursor.ModifiedNanos != 0 && cursor.ModifiedNanos != info.ModTime().UnixNano():
-			return result, &historicalRewriteError{Kind: "rollout_rewritten", Path: path,
-				Detail: "文件大小未变但修改时间变化"}
 		}
 		if cursor.ForkedFromID != "" && cursor.ReplayOffset == 0 && info.Size() > cursor.Size {
 			inspection, inspectErr := s.inspectRollout(ctx, path)
@@ -239,7 +238,7 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 						Detail: "fork 文件补全了父线程历史重放边界"}
 				}
 				cursor.Offset = inspection.ReplayOffset
-				cursor.ReplayOffset = inspection.ReplayOffset
+				cursor.ReplayOffset = inspection.persistedReplayOffset()
 				cursor.Cumulative = inspection.Baseline
 			} else {
 				cursor.Size = info.Size()
@@ -280,7 +279,7 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 		}
 		if inspection.ReplayOffset > 0 {
 			cursor.Offset = inspection.ReplayOffset
-			cursor.ReplayOffset = inspection.ReplayOffset
+			cursor.ReplayOffset = inspection.persistedReplayOffset()
 			cursor.Cumulative = inspection.Baseline
 		} else if inspection.ForkedFromID != "" {
 			// A fork is written in stages. Do not expose its copied parent
@@ -302,11 +301,6 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 			return result, err
 		}
 	}
-	if cursor.Offset >= info.Size() && cursor.Size == info.Size() &&
-		cursor.ModifiedNanos == info.ModTime().UnixNano() {
-		return result, nil
-	}
-
 	file, err := os.Open(path)
 	if err != nil {
 		return result, err
@@ -349,6 +343,10 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 			continue
 		}
 		if parseErr := s.processRecord(ctx, record, recordStart, path, home, meta, &cursor, &result); parseErr != nil {
+			var changed *historicalRewriteError
+			if errors.As(parseErr, &changed) {
+				return result, parseErr
+			}
 			result.Warnings++
 			_ = s.Store.AddWarning(ctx, "jsonl_record", path,
 				fmt.Sprintf("offset=%d: %v", recordStart, parseErr))
@@ -487,6 +485,14 @@ func (s *Scanner) processRecord(
 		} else if candidateID != "" && candidateID != cursor.SessionID {
 			// Fork rollouts can embed a copied parent session_meta after the
 			// child's own metadata. Ownership is immutable per physical file.
+			// If an implicit single-metadata fork later grows such a boundary,
+			// discard its provisional interpretation and rebuild from the now
+			// explicit replay boundary.
+			if cursor.ReplayOffset == implicitForkReplayOffset &&
+				(cursor.ForkedFromID == "" || candidateID == cursor.ForkedFromID) {
+				return &historicalRewriteError{Kind: "fork_replay_detected", Path: path,
+					Detail: "单 metadata fork 后续补全了父线程历史重放边界"}
+			}
 			return nil
 		}
 		if err := s.inheritSessionProgress(ctx, cursor); err != nil {
@@ -685,12 +691,18 @@ type rolloutInspection struct {
 	ForkedFromID string
 	ReplayOffset int64
 	Baseline     model.TokenUsage
+	Implicit     bool
+
+	implicitCandidate bool
+	implicitOffset    int64
+	implicitBaseline  model.TokenUsage
 }
 
 // inspectRollout reads only metadata and token_count records. A fork file owns
 // the first session_meta; a later parent session_meta terminates the copied
-// history prefix. The prefix establishes a cumulative baseline but emits no
-// usage events for the child.
+// history prefix. Some fork writers omit that later parent metadata entirely;
+// for those files, the first total-last snapshot establishes an implicit
+// inherited baseline and the first last_token_usage remains child usage.
 func (s *Scanner) inspectRollout(ctx context.Context, path string) (rolloutInspection, error) {
 	var out rolloutInspection
 	file, err := os.Open(path)
@@ -709,11 +721,12 @@ func (s *Scanner) inspectRollout(ctx context.Context, path string) (rolloutInspe
 			return out, readErr
 		}
 		if consumed == 0 && errors.Is(readErr, io.EOF) {
-			return out, nil
+			return out.finalize(), nil
 		}
 		if !complete {
 			return out, nil
 		}
+		recordStart := offset
 		offset += consumed
 		if !tooLarge && len(record) > 0 {
 			var env envelope
@@ -744,6 +757,13 @@ func (s *Scanner) inspectRollout(ctx context.Context, path string) (rolloutInspe
 							if json.Unmarshal(payload.Info, &info) == nil {
 								current := info.Total.withMissingSubsets(out.Baseline)
 								if !current.IsZero() {
+									if !out.implicitCandidate {
+										if baseline, ok := implicitForkBaseline(current, info.Last.usage()); ok {
+											out.implicitCandidate = true
+											out.implicitOffset = recordStart
+											out.implicitBaseline = baseline
+										}
+									}
 									out.Baseline = current
 								}
 							}
@@ -753,9 +773,40 @@ func (s *Scanner) inspectRollout(ctx context.Context, path string) (rolloutInspe
 			}
 		}
 		if errors.Is(readErr, io.EOF) {
-			return out, nil
+			return out.finalize(), nil
 		}
 	}
+}
+
+func (in rolloutInspection) finalize() rolloutInspection {
+	if in.ReplayOffset == 0 && in.ForkedFromID != "" && in.implicitCandidate {
+		in.ReplayOffset = in.implicitOffset
+		in.Baseline = in.implicitBaseline
+		in.Implicit = true
+	}
+	return in
+}
+
+func (in rolloutInspection) persistedReplayOffset() int64 {
+	if in.Implicit {
+		return implicitForkReplayOffset
+	}
+	return in.ReplayOffset
+}
+
+func implicitForkBaseline(total, last model.TokenUsage) (model.TokenUsage, bool) {
+	if last.IsZero() || !validTokenUsage(total) || !validTokenUsage(last) || !total.MonotonicFrom(last) {
+		return model.TokenUsage{}, false
+	}
+	baseline := total.Sub(last)
+	return baseline, validTokenUsage(baseline)
+}
+
+func validTokenUsage(usage model.TokenUsage) bool {
+	return usage.NonNegative() &&
+		usage.CachedInput+usage.CacheWriteInput <= usage.Input &&
+		usage.ReasoningOutput <= usage.Output &&
+		usage.Input+usage.Output == usage.Total
 }
 
 func hashFilePrefix(path string, length int64) (string, error) {

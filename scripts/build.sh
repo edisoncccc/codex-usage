@@ -3,7 +3,7 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dist="$project_root/dist"
-version="${VERSION:-2.0.0}"
+version="${VERSION:-2.1.0}"
 build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 commit="$(git -C "$project_root" rev-parse --short HEAD 2>/dev/null || printf source)"
 if git -C "$project_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&

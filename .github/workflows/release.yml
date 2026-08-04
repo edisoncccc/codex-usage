@@ -39,12 +39,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           NOTES_FILE="docs/releases/${GITHUB_REF_NAME}.md"
+          ASSETS=(
+            dist/codex-usage-linux-amd64
+            dist/codex-usage-linux-arm64
+            dist/codex-usage-windows-amd64.exe
+            dist/codex-usage-windows-arm64.exe
+            dist/SHA256SUMS
+          )
           if [[ -f "$NOTES_FILE" ]]; then
-            gh release create "$GITHUB_REF_NAME" dist/* \
+            gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
               --title "codex-usage ${GITHUB_REF_NAME}" \
               --notes-file "$NOTES_FILE"
           else
-            gh release create "$GITHUB_REF_NAME" dist/* \
+            gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
               --title "codex-usage ${GITHUB_REF_NAME}" \
               --generate-notes
           fi

@@ -35,7 +35,7 @@ test.beforeAll(async () => {
   await writeFile(path.join(stateDir, "config.json"), JSON.stringify({
     listen_address: "127.0.0.1",
     port,
-    scan_interval_seconds: 60
+    scan_interval_seconds: 600
   }));
   baseURL = `http://127.0.0.1:${port}`;
   dashboardURL = `${baseURL}/?lang=zh-CN`;
@@ -94,14 +94,80 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   await expect(page.locator("#overviewCoverage")).toContainText("已定价 100.0% Token");
   const styleIntegrity = await page.evaluate(() => ({
     bodyFontSize: getComputedStyle(document.body).fontSize,
+    supportingFontSize: getComputedStyle(document.querySelector(".eyebrow")).fontSize,
     skipTop: getComputedStyle(document.querySelector(".skip-link")).top,
     topbarPosition: getComputedStyle(document.querySelector(".topbar")).position,
     heroDisplay: getComputedStyle(document.querySelector(".hero-metrics")).display
   }));
-  expect(styleIntegrity).toEqual({ bodyFontSize: "14px", skipTop: "-60px", topbarPosition: "sticky", heroDisplay: "grid" });
+  expect(styleIntegrity).toEqual({ bodyFontSize: "15px", supportingFontSize: "11px", skipTop: "-60px", topbarPosition: "sticky", heroDisplay: "grid" });
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1440);
   expect(externalRequests).toEqual([]);
   expect(consoleErrors).toEqual([]);
+});
+
+test("filter dimensions load lazily once instead of running startup breakdowns", async ({ page }) => {
+  const dimensionRequests = [];
+  const startupBreakdowns = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/dimensions") dimensionRequests.push(request.url());
+    if (url.pathname === "/api/v1/breakdown") startupBreakdowns.push(request.url());
+  });
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+  expect(dimensionRequests).toHaveLength(0);
+  expect(startupBreakdowns).toHaveLength(0);
+
+  await page.locator("#filterButton").click();
+  await expect.poll(() => dimensionRequests.length).toBe(1);
+  await expect(page.locator("#filterModel option")).toHaveCount(2);
+  await page.locator("#filterSheet [data-close]").click();
+  await page.locator("#filterButton").click();
+  await page.waitForTimeout(100);
+  expect(dimensionRequests).toHaveLength(1);
+});
+
+test("display settings improve the default scale and persist font, density, theme, and motion", async ({ page }) => {
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+
+  await expect(page.locator("html")).toHaveAttribute("data-font-size", "comfortable");
+  await expect(page.locator("html")).toHaveAttribute("data-density", "balanced");
+  await page.locator("#settingsButton").click();
+  await expect(page.getByRole("heading", { name: "显示设置" })).toBeVisible();
+  await expect(page.locator('input[name="fontSize"][value="comfortable"]')).toBeChecked();
+  await expect(page.locator('input[name="density"][value="balanced"]')).toBeChecked();
+
+  await page.locator('input[name="fontSize"][value="large"]').check({ force: true });
+  await page.locator('input[name="density"][value="compact"]').check({ force: true });
+  await page.locator('input[name="theme"][value="dark"]').check({ force: true });
+  await page.locator('input[name="motion"][value="reduce"]').check({ force: true });
+  await expect(page.locator("html")).toHaveAttribute("data-font-size", "large");
+  await expect(page.locator("html")).toHaveAttribute("data-density", "compact");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator("html")).toHaveAttribute("data-motion", "reduce");
+  expect(await page.evaluate(() => getComputedStyle(document.body).fontSize)).toBe("16.875px");
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("codex-usage-display-preferences")))).toEqual({
+    fontSize: "large",
+    density: "compact",
+    theme: "dark",
+    motion: "reduce"
+  });
+
+  await page.locator("#settingsDialog [data-close]").first().click();
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(page.locator("html")).toHaveAttribute("data-font-size", "large");
+  await expect(page.locator("html")).toHaveAttribute("data-density", "compact");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator("html")).toHaveAttribute("data-motion", "reduce");
+
+  await page.locator("#settingsButton").click();
+  await page.locator("#resetSettings").click();
+  await expect(page.locator("html")).toHaveAttribute("data-font-size", "comfortable");
+  await expect(page.locator("html")).toHaveAttribute("data-density", "balanced");
+  expect(await page.evaluate(() => ({
+    theme: document.documentElement.getAttribute("data-theme"),
+    motion: document.documentElement.getAttribute("data-motion"),
+    saved: localStorage.getItem("codex-usage-display-preferences")
+  }))).toEqual({ theme: null, motion: null, saved: null });
 });
 
 test("navigation, month drill-down, filter chips, pricing, and scan feedback work", async ({ page }) => {
@@ -195,6 +261,15 @@ test("mobile, tablet, themes, and reduced motion avoid page overflow", async ({ 
   expect(await page.locator(".session-row").count()).toBeGreaterThan(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await expect(page.locator("#exportButton")).toBeVisible();
+  await expect(page.locator("#settingsButton")).toBeVisible();
+  await page.locator("#settingsButton").click();
+  await expect(page.locator(".settings-preview strong")).toHaveText("1.24M");
+  expect(await page.locator(".settings-preview").evaluate((preview) => {
+    const content = preview.lastElementChild.getBoundingClientRect();
+    return content.bottom <= preview.getBoundingClientRect().bottom + 1;
+  })).toBe(true);
+  await page.locator("#settingsDialog [data-close]").first().click();
+  await expect(page.locator("#settingsDialog")).toBeHidden();
 
   await page.setViewportSize({ width: 1024, height: 900 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1024);
