@@ -4,7 +4,7 @@
 
 **同一个 Codex 账号：哪台电脑、哪个模型、哪个项目和会话用掉了 Token？**
 
-*在本地看清 Codex 用量：按电脑、模型、项目和会话拆分，并估算 API 等价费用。*
+*Which machine, model, project, or session used your Codex tokens?*
 
 [在线体验](https://zjay26.github.io/codex-usage/?lang=zh-CN) · [Windows x64 下载](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe) · [Linux x64 下载](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64) · [English](README.en.md) / 简体中文
 
