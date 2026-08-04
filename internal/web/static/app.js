@@ -10,7 +10,8 @@ const FILTER_FIELDS = {
   project: { selector: "#filterProject", labelKey: "filter.project" },
   confidence: { selector: "#filterConfidence", labelKey: "filter.confidence" }
 };
-const fieldLabel = (key) => t(FILTER_FIELDS[key]?.labelKey || `dimension.${key}`);
+const FILTER_LABEL_KEYS = { session_id: "filter.session" };
+const fieldLabel = (key) => t(FILTER_FIELDS[key]?.labelKey || FILTER_LABEL_KEYS[key] || `dimension.${key}`);
 const dimensionLabel = (key) => t(`dimension.${key}`);
 const rangeLabel = (key) => t(`range.${key}Long`);
 const DISPLAY_PREFERENCES_KEY = "codex-usage-display-preferences";
@@ -116,6 +117,7 @@ const state = {
   pendingDataRefresh: false,
   statusQualityNotes: [],
   dataQualityNotes: [],
+  sessionSearch: "",
   requestSerial: { overview: 0, daily: 0, day: 0, details: 0 }
 };
 
@@ -127,6 +129,7 @@ const HIDDEN_STATUS_POLL_MS = 10 * 60_000;
 let cacheGeneration = 0;
 let statusPollTimer = null;
 let statusPollRunning = false;
+let sessionSearchTimer = null;
 
 const reducedMotion = () => displayPreferences.motion === "reduce" || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const pad2 = (value) => String(value).padStart(2, "0");
@@ -362,8 +365,9 @@ function renderFilterChips() {
   $("#filterCount").classList.toggle("hidden", entries.length === 0);
   $("#filterCount").textContent = entries.length;
   $("#filterChips").innerHTML = entries.map(([key, value]) => {
-    const meta = FILTER_FIELDS[key];
-    const display = key === "project" ? shortPath(value) : key === "confidence" ? confidenceLabel(value) : value;
+    const display = key === "project" ? shortPath(value)
+      : key === "confidence" ? confidenceLabel(value)
+        : key === "session_id" ? shortId(value) : value;
     const label = fieldLabel(key);
     return `<span class="filter-chip" title="${escapeHTML(value)}"><span>${escapeHTML(label)} · ${escapeHTML(display)}</span><button class="pressable" type="button" data-remove-filter="${escapeHTML(key)}" aria-label="${escapeHTML(t("dynamic.removeFilter", { label }))}">×</button></span>`;
   }).join("");
@@ -473,7 +477,8 @@ function renderPulse(allPoints) {
   let points = allPoints;
   const limited = points.length > 90;
   if (limited) points = points.slice(-90);
-  $("#pulseCaption").textContent = limited ? t("dynamic.pulseLimited") : t("pulse.caption");
+  const caption = $("#pulseCaption");
+  if (caption) caption.textContent = limited ? t("dynamic.pulseLimited") : t("pulse.caption");
   const belt = $("#pulseBelt");
   if (!points.length) {
     belt.style.minWidth = "100%";
@@ -723,7 +728,7 @@ async function loadDetails({ preserve = false } = {}) {
   try {
     const [breakdown, sessions] = await Promise.all([
       api(apiURL("/api/v1/breakdown", { ...bounds, dimension, limit: 100 })),
-      api(apiURL("/api/v1/sessions", { ...bounds, limit: 100, compact: 1 }))
+      api(apiURL("/api/v1/sessions", { ...bounds, limit: 100, compact: 1, q: state.sessionSearch }))
     ]);
     if (serial !== state.requestSerial.details) return;
     renderBreakdown(breakdown.items || [], dimension);
@@ -747,10 +752,18 @@ function renderBreakdown(items, dimension) {
   const canFilter = dimension !== "thread";
   container.innerHTML = items.map((item) => {
     const totalTokens = usageTotal(item.usage);
-    return `<div class="breakdown-row"><span class="breakdown-name" title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><span class="breakdown-track" aria-hidden="true"><i style="width:${Math.max(1, totalTokens / max * 100)}%"></i></span><span class="breakdown-value" title="${fullToken(totalTokens)} Token">${formatToken(totalTokens)}</span>${canFilter ? `<button class="breakdown-filter pressable" type="button" data-drill-value="${escapeHTML(item.key)}" title="${escapeHTML(t("dynamic.drillTitle", { dimension: dimensionLabel(dimension) }))}" aria-label="${escapeHTML(t("dynamic.drillAria", { value: item.key }))}">＋</button>` : "<span></span>"}</div>`;
+    const active = state.filters[dimension] === item.key;
+    const title = active
+      ? t("dynamic.drillCancelTitle", { dimension: dimensionLabel(dimension) })
+      : t("dynamic.drillTitle", { dimension: dimensionLabel(dimension) });
+    const aria = active
+      ? t("dynamic.drillCancelAria", { value: item.key })
+      : t("dynamic.drillAria", { value: item.key });
+    return `<div class="breakdown-row"><span class="breakdown-name" title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><span class="breakdown-track" aria-hidden="true"><i style="width:${Math.max(1, totalTokens / max * 100)}%"></i></span><span class="breakdown-value" title="${fullToken(totalTokens)} Token">${formatToken(totalTokens)}</span>${canFilter ? `<button class="breakdown-filter pressable ${active ? "active" : ""}" type="button" data-drill-value="${escapeHTML(item.key)}" title="${escapeHTML(title)}" aria-label="${escapeHTML(aria)}" aria-pressed="${active}">${active ? "×" : "＋"}</button>` : "<span></span>"}</div>`;
   }).join("");
   $$('[data-drill-value]', container).forEach((button) => button.addEventListener("click", () => {
-    state.filters[dimension] = button.dataset.drillValue;
+    if (state.filters[dimension] === button.dataset.drillValue) delete state.filters[dimension];
+    else state.filters[dimension] = button.dataset.drillValue;
     renderFilterChips();
     syncFilterForm();
     resetDataSelections();
@@ -761,17 +774,47 @@ function renderBreakdown(items, dimension) {
 function renderSessions(items) {
   const container = $("#sessionRows");
   if (!items.length) {
-    container.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.sessionsEmpty"))}</div>`;
+    const key = state.sessionSearch ? "dynamic.sessionsSearchEmpty" : "dynamic.sessionsEmpty";
+    container.innerHTML = `<div class="empty-state">${escapeHTML(t(key))}</div>`;
     return;
   }
-  container.innerHTML = items.map((item) => `<article class="session-row">
+  container.innerHTML = items.map((item) => {
+    const estimate = item.estimate || {};
+    const totalEstimateTokens = estimateTokens(estimate);
+    const pricedTokens = Number(estimate.priced_tokens || 0);
+    const cost = totalEstimateTokens && !pricedTokens ? t("dynamic.unpriced") : estimateDisplay(estimate);
+    const partialCoverage = pricedTokens > 0 && Number(estimate.coverage_ratio || 0) < 1
+      ? formatPercent(estimate.coverage_ratio) : "";
+    const costTitle = [estimateLabel(estimate), reasonSummary(estimate)].filter(Boolean).join(" · ");
+    const active = state.filters.session_id === item.session_id;
+    return `<article class="session-row">
     <div class="session-cell"><strong title="${escapeHTML(item.title || item.session_id)}">${escapeHTML(item.title || t("dynamic.untitledThread"))}</strong><small title="${escapeHTML(item.session_id)}">${escapeHTML(shortId(item.session_id))}</small></div>
     <div class="session-cell"><span title="${escapeHTML(item.project_path || t("common.notRecorded"))}">${escapeHTML(shortPath(item.project_path))}</span><small title="${escapeHTML(item.project_path || "")}">${escapeHTML(item.project_path || t("common.notRecorded"))}</small></div>
     <div class="session-cell"><strong title="${escapeHTML(item.model || t("common.unknownModel"))}">${escapeHTML(item.model || t("common.unknownModel"))}</strong><span>${escapeHTML(item.source || t("common.unknownSource"))}</span></div>
     <div class="session-cell"><span class="agent-badge">${escapeHTML(item.agent_type || "main")}</span><span class="confidence-badge ${escapeHTML(item.confidence)}">${confidenceLabel(item.confidence)}</span></div>
-    <div class="session-token" title="${fullToken(usageTotal(item.usage))} Token">${formatToken(usageTotal(item.usage))}</div>
+    <div class="session-metric session-token" title="${fullToken(usageTotal(item.usage))} Token"><small class="session-mobile-label">Token</small><strong>${formatToken(usageTotal(item.usage))}</strong></div>
+    <div class="session-metric session-cost" title="${escapeHTML(costTitle)}"><small class="session-mobile-label">API</small><strong>${escapeHTML(cost)}</strong>${partialCoverage ? `<small>${escapeHTML(partialCoverage)}</small>` : ""}</div>
     <div class="session-cell"><span>${escapeHTML(localTime(item.last_usage))}</span></div>
-  </article>`).join("");
+    <button class="session-filter pressable ${active ? "active" : ""}" type="button" data-session-filter="${escapeHTML(item.session_id)}" aria-pressed="${active}">${escapeHTML(t(active ? "details.cancelSessionFilter" : "details.onlySession"))}</button>
+  </article>`;
+  }).join("");
+  $$('[data-session-filter]', container).forEach((button) => button.addEventListener("click", () => {
+    if (state.filters.session_id === button.dataset.sessionFilter) delete state.filters.session_id;
+    else state.filters.session_id = button.dataset.sessionFilter;
+    renderFilterChips();
+    syncFilterForm();
+    resetDataSelections();
+    loadDetails();
+  }));
+}
+
+function applySessionSearch() {
+  clearTimeout(sessionSearchTimer);
+  const value = $("#sessionSearch").value.trim();
+  $("#sessionSearchClear").classList.toggle("hidden", !value);
+  if (value === state.sessionSearch) return;
+  state.sessionSearch = value;
+  loadDetails();
 }
 
 async function loadCurrentView(options = {}) {
@@ -1060,6 +1103,24 @@ function setupEvents() {
     for (const meta of Object.values(FILTER_FIELDS)) $(meta.selector).value = "";
   });
   $("#clearFilters").addEventListener("click", clearAllFilters);
+  $("#sessionSearch").addEventListener("input", () => {
+    const value = $("#sessionSearch").value;
+    $("#sessionSearchClear").classList.toggle("hidden", !value);
+    clearTimeout(sessionSearchTimer);
+    sessionSearchTimer = setTimeout(applySessionSearch, 250);
+  });
+  $("#sessionSearch").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      applySessionSearch();
+    }
+  });
+  $("#sessionSearch").addEventListener("search", applySessionSearch);
+  $("#sessionSearchClear").addEventListener("click", () => {
+    $("#sessionSearch").value = "";
+    applySessionSearch();
+    $("#sessionSearch").focus();
+  });
   $("#settingsButton").addEventListener("click", () => { syncSettingsForm(); openDialog($("#settingsDialog")); });
   $("#settingsForm").addEventListener("change", (event) => {
     const input = event.target.closest('[data-setting]');

@@ -77,7 +77,7 @@ function costEstimate(url) {
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://127.0.0.1:${port}`);
   if (url.pathname === "/api/v1/status") return json(response, {
-    version: "2.1.0-preview", scanning: false,
+    version: "2.2.0-preview", scanning: false,
     status: {
       machine: { id: "62c0172d-36c4-4ec9-a074-02b9ec2b45e1", label: "WORKSTATION-19 · windows", hostname: "WORKSTATION-19", os: "windows", arch: "amd64" },
       last_scan: now.toISOString(), accounting_mode: "jsonl_only", otel_active: false,
@@ -127,11 +127,27 @@ const server = http.createServer(async (request, response) => {
     sources: ["codex_desktop", "codex_cli_rs"],
     projects: ["C:\\dev\\render-lab", "/srv/inference"]
   });
-  if (url.pathname === "/api/v1/sessions") return json(response, { items: [
-    { session_id: "019fb24a-f4dd-7673-9b7d-225d26f2b141", title: "实现逐电脑 Token 统计与可视化", project_path: "C:\\dev\\codex-usage", model: "gpt-5.4", source: "codex_desktop", agent_type: "main", usage: { ...usage, total: 2_920_000 }, confidence: "exact", last_usage: now.toISOString() },
-    { session_id: "019fa142-1051-72bd-aa0f-975efd2bf6c2", title: "Linux 渲染任务诊断", project_path: "/srv/inference/render", model: "gpt-5.5-codex", source: "codex_cli_rs", agent_type: "subagent", usage: { ...usage, total: 1_180_000 }, confidence: "gap_fallback", last_usage: new Date(now.getTime() - 3600000).toISOString() },
-    { session_id: "019f9821-d272-7812-814d-94cc02dc39a1", title: "本地数据管线检查", project_path: "C:\\dev\\private-data", model: "gpt-5.4", source: "codex_desktop", agent_type: "guardian", usage: { ...usage, total: 760_000 }, confidence: "exact", last_usage: new Date(now.getTime() - 7200000).toISOString() }
-  ] });
+  if (url.pathname === "/api/v1/sessions") {
+    const sessions = [
+      { session_id: "019fb24a-f4dd-7673-9b7d-225d26f2b141", title: "实现逐电脑 Token 统计与可视化", project_path: "C:\\dev\\codex-usage", model: "gpt-5.4", source: "codex_desktop", agent_type: "main", usage: { ...usage, total: 2_920_000 }, confidence: "exact", last_usage: now.toISOString() },
+      { session_id: "019fa142-1051-72bd-aa0f-975efd2bf6c2", title: "Linux 渲染任务诊断", project_path: "/srv/inference/render", model: "gpt-5.5-codex", source: "codex_cli_rs", agent_type: "subagent", usage: { ...usage, total: 1_180_000 }, confidence: "gap_fallback", last_usage: new Date(now.getTime() - 3600000).toISOString() },
+      { session_id: "019f9821-d272-7812-814d-94cc02dc39a1", title: "本地数据管线检查", project_path: "C:\\dev\\private-data", model: "gpt-5.4", source: "codex_desktop", agent_type: "guardian", usage: { ...usage, total: 760_000 }, confidence: "exact", last_usage: new Date(now.getTime() - 7200000).toISOString() }
+    ];
+    const query = (url.searchParams.get("q") || "").trim().toLocaleLowerCase();
+    const sessionID = url.searchParams.get("session_id");
+    return json(response, { items: sessions.filter((item) => {
+      if (sessionID && item.session_id !== sessionID) return false;
+      return !query || [item.title, item.session_id, item.project_path, item.model, item.source]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(query));
+    }).map((item) => ({
+      ...item,
+      estimate: {
+        usd: (item.usage.total / 1_000_000 * 3.18).toFixed(9),
+        regular_input_usd: "0.000000000", cached_input_usd: "0.000000000", cache_write_input_usd: "0.000000000", output_usd: "0.000000000",
+        priced_tokens: item.usage.total, unpriced_tokens: 0, coverage_ratio: 1, reasons: []
+      }
+    })) });
+  }
   if (url.pathname === "/api/v1/warnings") return json(response, { items: [
     { created_at: now.toISOString(), kind: "fork_replay_detected", path: "rollout-fork.jsonl", detail: "检测到复制的父线程历史前缀，已跳过并重建派生索引" },
     { created_at: now.toISOString(), kind: "cumulative_reset", path: "rollout-example.jsonl", detail: "累计向量回退，已使用 last_token_usage 补位" }

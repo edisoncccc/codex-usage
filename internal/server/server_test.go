@@ -147,6 +147,26 @@ func TestDashboardAPIAndExport(t *testing.T) {
 		t.Fatalf("unexpected initial cost estimate: %#v", initialCost.Summary)
 	}
 
+	response, err = http.Get(httpServer.URL + "/api/v1/sessions?limit=10&q=private-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sessionPayload struct {
+		Items []struct {
+			SessionID string           `json:"session_id"`
+			Estimate  pricing.Estimate `json:"estimate"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&sessionPayload); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(sessionPayload.Items) != 1 || sessionPayload.Items[0].SessionID != "session-1" ||
+		sessionPayload.Items[0].Estimate.PricedTokens != 100 || sessionPayload.Items[0].Estimate.USD != "0.000455000" {
+		t.Fatalf("unexpected searched session estimate: %#v", sessionPayload.Items)
+	}
+
 	request, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/api/v1/pricing/overrides", strings.NewReader(
 		`{"overrides":{"codex-auto-review":{"alias_of":"gpt-5.6-luna"}}}`,
 	))

@@ -15,7 +15,7 @@
     <div class="topbar-inner">
       <button class="brand pressable" id="brandButton" type="button" aria-label="返回概览" data-i18n-aria-label="brand.home">
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-        <span class="brand-copy"><strong>Codex Usage</strong><small>USAGE ANALYTICS</small></span>
+        <span class="brand-copy"><strong>Codex Usage</strong></span>
       </button>
 
       <nav class="primary-nav" role="tablist" aria-label="主要视图" data-i18n-aria-label="nav.label">
@@ -59,7 +59,6 @@
     <section class="view-panel active" id="view-overview" role="tabpanel" aria-labelledby="tab-overview" data-view-panel="overview">
       <div class="view-heading">
         <div>
-          <p class="eyebrow" data-i18n="overview.eyebrow">CURRENT MACHINE</p>
           <h1 data-i18n="overview.title">本机用量概览</h1>
           <p class="view-subtitle" id="overviewSubtitle">过去 7 个本地自然日</p>
         </div>
@@ -87,10 +86,7 @@
       </section>
 
       <section class="pulse-panel surface" aria-labelledby="pulseTitle">
-        <div class="section-head">
-          <div><p class="eyebrow">DAILY PULSE</p><h2 id="pulseTitle" data-i18n="pulse.title">每日脉冲带</h2></div>
-          <p id="pulseCaption" data-i18n="pulse.caption">连续本地自然日 · 零用量日保留位置</p>
-        </div>
+        <div class="section-head"><h2 id="pulseTitle" data-i18n="pulse.title">每日脉冲带</h2></div>
         <div class="pulse-scroll" id="pulseScroll">
           <div class="pulse-belt" id="pulseBelt" role="listbox" aria-label="每日 Token 用量" data-i18n-aria-label="pulse.aria"></div>
         </div>
@@ -104,16 +100,16 @@
 
       <div class="overview-lower">
         <section class="surface quiet-section" aria-labelledby="modelsTitle">
-          <div class="section-head compact"><div><p class="eyebrow">MODEL SIGNAL</p><h2 id="modelsTitle" data-i18n="models.title">主要模型</h2></div><span class="section-meta" id="modelCount">—</span></div>
+          <div class="section-head compact"><h2 id="modelsTitle" data-i18n="models.title">主要模型</h2><span class="section-meta" id="modelCount">—</span></div>
           <div class="rank-list" id="overviewModels"><div class="empty-state" data-i18n="models.loading">正在整理模型构成…</div></div>
         </section>
         <section class="surface quiet-section" aria-labelledby="sourceTitle">
-          <div class="section-head compact"><div><p class="eyebrow">DATA PROVENANCE</p><h2 id="sourceTitle" data-i18n="provenance.title">数据来源与归属</h2></div></div>
+          <div class="section-head compact"><h2 id="sourceTitle" data-i18n="provenance.title">数据来源与归属</h2></div>
           <dl class="provenance-list">
             <div><dt data-i18n="provenance.machineId">机器 ID</dt><dd><code id="machineId">—</code></dd></div>
             <div><dt data-i18n="provenance.lastScan">最后扫描</dt><dd id="lastScan">—</dd></div>
             <div><dt data-i18n="provenance.source">计数来源</dt><dd id="sourceStatus">—</dd></div>
-            <div><dt data-i18n="provenance.stateRole">状态库角色</dt><dd><strong data-i18n="provenance.metadataOnly">仅发现与 metadata</strong><small data-i18n="provenance.stateRoleHint">不使用 tokens_used 补总量</small></dd></div>
+            <div><dt data-i18n="provenance.stateRole">状态库角色</dt><dd><strong data-i18n="provenance.metadataOnly">仅发现与 metadata</strong></dd></div>
           </dl>
         </section>
       </div>
@@ -121,7 +117,7 @@
 
     <section class="view-panel" id="view-daily" role="tabpanel" aria-labelledby="tab-daily" data-view-panel="daily" hidden>
       <div class="view-heading daily-heading">
-        <div><p class="eyebrow">LOCAL CALENDAR</p><h1 data-i18n="daily.title">每日用量</h1><p class="view-subtitle" data-i18n="daily.subtitle">按本机时区查看自然日，点击日期下钻</p></div>
+        <div><h1 data-i18n="daily.title">每日用量</h1></div>
         <div class="month-nav" aria-label="月份切换" data-i18n-aria-label="daily.monthNav">
           <button class="icon-button pressable" id="previousMonth" type="button" aria-label="上个月" data-i18n-aria-label="daily.previousMonth">←</button>
           <strong id="monthLabel">—</strong>
@@ -131,14 +127,14 @@
 
       <div class="daily-layout">
         <section class="surface calendar-panel" aria-labelledby="calendarTitle">
-          <div class="section-head compact"><div><p class="eyebrow">MONTH VIEW</p><h2 id="calendarTitle" data-i18n="daily.calendarTitle">月历用量</h2></div><span class="section-meta" id="monthSummary">—</span></div>
+          <div class="section-head compact"><h2 id="calendarTitle" data-i18n="daily.calendarTitle">月历用量</h2><span class="section-meta" id="monthSummary">—</span></div>
           <div class="weekday-row" aria-hidden="true"><span data-i18n="daily.weekday.mon">一</span><span data-i18n="daily.weekday.tue">二</span><span data-i18n="daily.weekday.wed">三</span><span data-i18n="daily.weekday.thu">四</span><span data-i18n="daily.weekday.fri">五</span><span data-i18n="daily.weekday.sat">六</span><span data-i18n="daily.weekday.sun">日</span></div>
           <div class="calendar-grid" id="calendarGrid" role="grid" aria-label="每日用量月历" data-i18n-aria-label="daily.calendarAria"></div>
           <div class="calendar-legend"><span><i></i><b data-i18n="daily.legendIntensity">Token 强度</b></span><span><i class="cost-dot"></i><b data-i18n="daily.legendPriced">含已定价费用</b></span><span data-i18n="daily.legendZero">空白日期 = 0</span></div>
         </section>
 
         <aside class="surface day-detail" aria-labelledby="selectedDateTitle">
-          <div class="day-detail-head"><div><p class="eyebrow">SELECTED DAY</p><h2 id="selectedDateTitle" data-i18n="daily.selectDay">选择一天</h2></div><span class="day-status" id="selectedDayStatus">—</span></div>
+          <div class="day-detail-head"><h2 id="selectedDateTitle" data-i18n="daily.selectDay">选择一天</h2><span class="day-status" id="selectedDayStatus">—</span></div>
           <div class="day-total"><span>Total Token</span><strong id="dayTotal">—</strong></div>
           <div class="composition-bar" id="dayComposition" aria-label="Token 构成" data-i18n-aria-label="daily.compositionAria"></div>
           <dl class="token-ledger" id="dayLedger"></dl>
@@ -155,7 +151,7 @@
 
     <section class="view-panel" id="view-details" role="tabpanel" aria-labelledby="tab-details" data-view-panel="details" hidden>
       <div class="view-heading details-heading">
-        <div><p class="eyebrow">ATTRIBUTION VIEW</p><h1 data-i18n="details.title">明细与归属</h1><p class="view-subtitle" data-i18n="details.subtitle">一次聚焦一个维度，避免重复信息并排</p></div>
+        <div><h1 data-i18n="details.title">明细与归属</h1></div>
         <div class="segmented range-control" role="group" aria-label="明细时间范围" data-i18n-aria-label="details.rangeAria">
           <button class="pressable" type="button" data-detail-range="7d" aria-pressed="false" data-i18n="range.7d">7 日</button>
           <button class="pressable selected" type="button" data-detail-range="30d" aria-pressed="true" data-i18n="range.30d">30 日</button>
@@ -172,29 +168,30 @@
       </div>
 
       <section class="surface detail-breakdown" aria-labelledby="breakdownTitle">
-        <div class="section-head compact"><div><p class="eyebrow">DISTRIBUTION</p><h2 id="breakdownTitle" data-i18n="details.breakdownTitle">按模型</h2></div><span class="section-meta" id="breakdownMeta">—</span></div>
+        <div class="section-head compact"><h2 id="breakdownTitle" data-i18n="details.breakdownTitle">按模型</h2><span class="section-meta" id="breakdownMeta">—</span></div>
         <div class="breakdown-list" id="detailBreakdown"><div class="empty-state" data-i18n="details.breakdownLoading">正在读取归属数据…</div></div>
       </section>
 
       <section class="surface sessions-panel" aria-labelledby="sessionsTitle">
-        <div class="section-head"><div><p class="eyebrow">LOCAL SESSIONS</p><h2 id="sessionsTitle" data-i18n="details.sessionsTitle">Session 明细</h2></div><span class="privacy-chip" data-i18n="details.privacy">本机元数据 · 不含 prompt、回复或凭据</span></div>
-        <div class="session-head" aria-hidden="true"><span>Thread</span><span data-i18n="details.headerProject">项目</span><span data-i18n="details.headerModelSource">模型 / 来源</span><span>Agent</span><span>Token</span><span data-i18n="details.headerLastActive">最后活动</span></div>
+        <div class="section-head sessions-toolbar">
+          <h2 id="sessionsTitle" data-i18n="details.sessionsTitle">Session 明细</h2>
+          <div class="session-search" role="search">
+            <svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5.5"></circle><path d="m12.5 12.5 4 4"></path></svg>
+            <input id="sessionSearch" type="search" autocomplete="off" aria-label="搜索 Session" placeholder="搜索 Thread、Session ID、项目或模型" data-i18n-aria-label="details.searchAria" data-i18n-placeholder="details.searchPlaceholder">
+            <button class="session-search-clear pressable hidden" id="sessionSearchClear" type="button" aria-label="清空搜索" data-i18n-aria-label="details.clearSearch">×</button>
+          </div>
+        </div>
+        <div class="session-head" aria-hidden="true"><span>Thread</span><span data-i18n="details.headerProject">项目</span><span data-i18n="details.headerModelSource">模型 / 来源</span><span>Agent</span><span>Token</span><span data-i18n="details.headerCost">等价 API 价格</span><span data-i18n="details.headerLastActive">最后活动</span><span></span></div>
         <div class="session-list" id="sessionRows"><div class="empty-state" data-i18n="details.sessionsLoading">正在加载本机 Session…</div></div>
       </section>
     </section>
 
-    <footer>
-      <div><strong data-i18n="footer.scopeStrong">当前电脑，不是账号用量。</strong> <span data-i18n="footer.scopeBody">Total 沿用 Codex 原始值；Cached Input 包含在 Input 中，Reasoning 包含在 Output 中。</span></div>
-      <div data-i18n="footer.cost">不读取真实账单或账号配额；费用仅按当前内置 Standard API 文本 Token 价格重新折算本机历史数据，未知部分不会当作零费用。</div>
-      <div data-i18n="footer.dedup">Token 总量只来自本机 session JSONL；项目、Thread 与 Session 是同一批 Token 的归属视图，不能相加。</div>
-      <div class="footer-last"><span data-i18n="footer.runtime">资源完全嵌入 · 仅监听 127.0.0.1 · 无运行时外部请求</span><span id="versionLabel"></span></div>
-    </footer>
+    <footer><span data-i18n="footer.summary">本机 Session JSONL · API 等价成本并非账单 · 仅监听 127.0.0.1</span><span id="versionLabel"></span></footer>
   </main>
 
   <dialog class="sheet-dialog" id="filterSheet" aria-labelledby="filterTitle">
     <div class="dialog-frame">
-      <div class="dialog-head"><div><p class="eyebrow">LOCAL FILTERS</p><h2 id="filterTitle" data-i18n="filter.title">筛选当前电脑的数据</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭筛选" data-i18n-aria-label="action.closeFilter">×</button></div>
-      <p class="dialog-intro" data-i18n="filter.intro">筛选会同步应用到当前视图的 Token、费用、归属与 Session。</p>
+      <div class="dialog-head"><h2 id="filterTitle" data-i18n="filter.title">筛选当前电脑的数据</h2><button class="dialog-close pressable" type="button" data-close aria-label="关闭筛选" data-i18n-aria-label="action.closeFilter">×</button></div>
       <form class="filter-form" id="filterForm">
         <label><span data-i18n="filter.model">模型</span><select id="filterModel"><option value="" data-i18n="filter.allModels">全部模型</option></select></label>
         <label><span data-i18n="filter.source">来源</span><select id="filterSource"><option value="" data-i18n="filter.allSources">全部来源</option></select></label>
@@ -208,18 +205,11 @@
 
   <dialog class="sheet-dialog settings-dialog" id="settingsDialog" aria-labelledby="settingsTitle">
     <div class="dialog-frame">
-      <div class="dialog-head"><div><p class="eyebrow">READING COMFORT</p><h2 id="settingsTitle" data-i18n="settings.title">显示设置</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭显示设置" data-i18n-aria-label="action.closeSettings">×</button></div>
-      <p class="dialog-intro" data-i18n="settings.intro">调整阅读体验，不改变统计数据。设置会即时生效，并只保存在当前浏览器。</p>
-
-      <div class="settings-preview" aria-hidden="true">
-        <div><span data-i18n="settings.previewLabel">字号预览</span><strong>1.24M</strong></div>
-        <p data-i18n="settings.previewCopy">Session、模型与费用信息仍保持完整，但更容易扫读。</p>
-      </div>
+      <div class="dialog-head"><h2 id="settingsTitle" data-i18n="settings.title">显示设置</h2><button class="dialog-close pressable" type="button" data-close aria-label="关闭显示设置" data-i18n-aria-label="action.closeSettings">×</button></div>
 
       <form class="settings-form" id="settingsForm">
         <fieldset class="settings-group">
           <legend data-i18n="settings.fontSize">字体大小</legend>
-          <p data-i18n="settings.fontSizeHint">“舒适”是新的默认值；最小辅助文字也会随之缩放。</p>
           <div class="setting-options three">
             <label class="setting-option"><input type="radio" name="fontSize" value="compact" data-setting="fontSize"><span><strong data-i18n="settings.fontCompact">标准</strong><small>15 px</small></span></label>
             <label class="setting-option"><input type="radio" name="fontSize" value="comfortable" data-setting="fontSize"><span><strong data-i18n="settings.fontComfortable">舒适</strong><small data-i18n="settings.defaultBadge">默认 · 16 px</small></span></label>
@@ -229,7 +219,6 @@
 
         <fieldset class="settings-group">
           <legend data-i18n="settings.density">显示密度</legend>
-          <p data-i18n="settings.densityHint">只改变留白和行高，不隐藏任何字段。</p>
           <div class="setting-options three">
             <label class="setting-option"><input type="radio" name="density" value="compact" data-setting="density"><span><strong data-i18n="settings.densityCompact">紧凑</strong><small data-i18n="settings.densityCompactHint">更多同屏内容</small></span></label>
             <label class="setting-option"><input type="radio" name="density" value="balanced" data-setting="density"><span><strong data-i18n="settings.densityBalanced">均衡</strong><small data-i18n="settings.defaultShort">默认</small></span></label>
@@ -269,7 +258,7 @@
 
   <dialog class="modal-dialog pricing-dialog" id="pricingDialog" aria-labelledby="pricingTitle">
     <div class="dialog-frame">
-      <div class="dialog-head"><div><p class="eyebrow">LOCAL PRICING</p><h2 id="pricingTitle" data-i18n="pricing.title">API 等价成本定价</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭定价设置" data-i18n-aria-label="action.closePricing">×</button></div>
+      <div class="dialog-head"><h2 id="pricingTitle" data-i18n="pricing.title">API 等价成本定价</h2><button class="dialog-close pressable" type="button" data-close aria-label="关闭定价设置" data-i18n-aria-label="action.closePricing">×</button></div>
       <p class="dialog-intro" data-i18n="pricing.intro">内置价格随程序版本保存，运行时不联网。内部模型保持未定价，除非你明确映射或填写单价。</p>
       <div class="pricing-meta" id="pricingMeta" data-i18n="pricing.loading">正在读取本机定价…</div>
       <div class="override-toolbar"><label for="newOverrideModel" data-i18n="pricing.addOverride">新增模型覆写</label><div><input id="newOverrideModel" autocomplete="off" placeholder="例如 internal-model" data-i18n-placeholder="pricing.placeholder"><button class="action-button quiet pressable" id="addOverride" type="button" data-i18n="action.add">添加</button></div></div>
@@ -281,7 +270,7 @@
 
   <dialog class="modal-dialog" id="exportDialog" aria-labelledby="exportTitle">
     <div class="dialog-frame">
-      <div class="dialog-head"><div><p class="eyebrow">LOCAL EXPORT</p><h2 id="exportTitle" data-i18n="export.title">导出当前筛选</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭导出" data-i18n-aria-label="action.closeExport">×</button></div>
+      <div class="dialog-head"><h2 id="exportTitle" data-i18n="export.title">导出当前筛选</h2><button class="dialog-close pressable" type="button" data-close aria-label="关闭导出" data-i18n-aria-label="action.closeExport">×</button></div>
       <p class="dialog-intro" data-i18n="export.intro">逐事件导出包含本机项目路径与 Thread 标题，不包含任何对话内容。费用估算不会写入导出文件。</p>
       <div class="dialog-actions"><a class="action-button quiet pressable" id="exportJson" download data-i18n="export.json">下载 JSON</a><a class="action-button primary pressable" id="exportCsv" download data-i18n="export.csv">下载 CSV</a></div>
     </div>
@@ -289,7 +278,7 @@
 
   <dialog class="modal-dialog warnings-dialog" id="warningsDialog" aria-labelledby="warningsTitle">
     <div class="dialog-frame">
-      <div class="dialog-head"><div><p class="eyebrow">AUDIT TRAIL</p><h2 id="warningsTitle" data-i18n="warnings.title">数据质量与去重记录</h2></div><button class="dialog-close pressable" type="button" data-close aria-label="关闭数据质量详情" data-i18n-aria-label="action.closeWarnings">×</button></div>
+      <div class="dialog-head"><h2 id="warningsTitle" data-i18n="warnings.title">数据质量与去重记录</h2><button class="dialog-close pressable" type="button" data-close aria-label="关闭数据质量详情" data-i18n-aria-label="action.closeWarnings">×</button></div>
       <div class="warning-list" id="warningList"><div class="empty-state" data-i18n="common.loading">正在读取…</div></div>
     </div>
   </dialog>

@@ -185,6 +185,29 @@ test("navigation, month drill-down, filter chips, pricing, and scan feedback wor
   await page.getByRole("tab", { name: "明细" }).click();
   await expect(page.getByRole("heading", { name: "明细与归属" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Session 明细" })).toBeVisible();
+  await expect(page.getByText("等价 API 价格", { exact: true })).toBeVisible();
+  await expect(page.locator(".session-cost strong").first()).not.toHaveText("—");
+
+  const modelDrill = page.locator('[data-drill-value="gpt-5.4"]');
+  await modelDrill.click();
+  await expect(page.locator('[data-drill-value="gpt-5.4"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".filter-chip")).toContainText("模型 · gpt-5.4");
+  await page.locator('[data-drill-value="gpt-5.4"]').click();
+  await expect(page.locator(".filter-chip")).toHaveCount(0);
+
+  await page.locator("#sessionSearch").fill("codex-usage-e2e");
+  await expect(page.locator(".session-row")).toHaveCount(1);
+  await page.locator("#sessionSearch").fill("no-such-session");
+  await expect(page.getByText("没有匹配的 Session")).toBeVisible();
+  await page.locator("#sessionSearchClear").click();
+  await expect(page.locator(".session-row")).toHaveCount(1);
+
+  await page.locator(".session-filter").click();
+  await expect(page.locator(".filter-chip")).toContainText("Session · e2e-session");
+  await expect(page.locator(".session-filter")).toHaveText("取消");
+  await page.locator(".session-filter").click();
+  await expect(page.locator(".filter-chip")).toHaveCount(0);
+
   await page.getByRole("tab", { name: "项目" }).click();
   await expect(page.getByRole("heading", { name: "按项目" })).toBeVisible();
 
@@ -263,11 +286,8 @@ test("mobile, tablet, themes, and reduced motion avoid page overflow", async ({ 
   await expect(page.locator("#exportButton")).toBeVisible();
   await expect(page.locator("#settingsButton")).toBeVisible();
   await page.locator("#settingsButton").click();
-  await expect(page.locator(".settings-preview strong")).toHaveText("1.24M");
-  expect(await page.locator(".settings-preview").evaluate((preview) => {
-    const content = preview.lastElementChild.getBoundingClientRect();
-    return content.bottom <= preview.getBoundingClientRect().bottom + 1;
-  })).toBe(true);
+  await expect(page.locator(".settings-group")).toHaveCount(5);
+  expect(await page.locator("#settingsDialog .dialog-frame").evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth)).toBe(true);
   await page.locator("#settingsDialog [data-close]").first().click();
   await expect(page.locator("#settingsDialog")).toBeHidden();
 

@@ -155,8 +155,25 @@
         const actual = key === "project" ? item.project_path : item[key];
         if (expected && actual !== expected) return false;
       }
+      const sessionID = url.searchParams.get("session_id");
+      if (sessionID && item.session_id !== sessionID) return false;
+      const query = (url.searchParams.get("q") || "").trim().toLocaleLowerCase();
+      if (query && ![item.title, item.session_id, item.project_path, item.model, item.source]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(query))) return false;
       return true;
-    }).map(({ share, hoursAgo, ...item }) => ({ ...item, usage: scaledUsage(baseUsage, share), last_usage: new Date(now.getTime() - hoursAgo * 3_600_000).toISOString() })) };
+    }).map(({ share, hoursAgo, ...item }) => {
+      const usage = scaledUsage(baseUsage, share);
+      const usd = (usage.total / 1_000_000 * 3.18).toFixed(9);
+      return {
+        ...item,
+        usage,
+        estimate: {
+          usd, regular_input_usd: usd, cached_input_usd: "0.000000000", cache_write_input_usd: "0.000000000", output_usd: "0.000000000",
+          priced_tokens: usage.total, unpriced_tokens: 0, coverage_ratio: 1, reasons: []
+        },
+        last_usage: new Date(now.getTime() - hoursAgo * 3_600_000).toISOString()
+      };
+    }) };
   }
 
   function pricingPayload() {
@@ -177,7 +194,7 @@
     const endpoint = url.pathname.slice(url.pathname.indexOf("/api/v1/"));
     const method = String(init.method || (typeof input !== "string" && input.method) || "GET").toUpperCase();
     if (endpoint === "/api/v1/status") return jsonResponse({
-      version: "2.1.0-demo", scanning: false,
+      version: "2.2.0-demo", scanning: false,
       status: {
         machine: { id: "synthetic-machine", label: "Synthetic Windows · demo", hostname: "synthetic-host", os: "windows", arch: "amd64" },
         last_scan: now.toISOString(), accounting_mode: "jsonl_only", otel_active: false,

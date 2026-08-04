@@ -1119,6 +1119,23 @@ func (s *Store) Sessions(ctx context.Context, filter model.Filter, limit, offset
 		offset = 0
 	}
 	where, args := attributionWhere(filter, "e", true)
+	if filter.Search != "" {
+		pattern := "%" + strings.NewReplacer("~", "~~", "%", "~%", "_", "~_").Replace(filter.Search) + "%"
+		where += ` AND (e.session_id LIKE ? ESCAPE '~'
+			OR e.thread_title LIKE ? ESCAPE '~'
+			OR e.project_path LIKE ? ESCAPE '~'
+			OR e.model LIKE ? ESCAPE '~'
+			OR e.source LIKE ? ESCAPE '~'
+			OR EXISTS (SELECT 1 FROM sessions search_session
+				WHERE search_session.session_id=e.session_id AND (
+					search_session.title LIKE ? ESCAPE '~'
+					OR search_session.project_path LIKE ? ESCAPE '~'
+					OR search_session.model LIKE ? ESCAPE '~'
+					OR search_session.source LIKE ? ESCAPE '~')))`
+		for range 9 {
+			args = append(args, pattern)
+		}
+	}
 	args = append(args, limit, offset)
 	query := `SELECT COALESCE(NULLIF(e.session_id,''),'jsonl-unknown') sid,
 		COALESCE(MAX(s.rollout_path),''),COALESCE(MAX(s.codex_home),MAX(e.codex_home),''),
@@ -1163,6 +1180,90 @@ func (s *Store) Sessions(ctx context.Context, filter model.Filter, limit, offset
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+// WalkSessionPricingAggregates emits the pricing view for a bounded set of
+// sessions in one query. It preserves model boundaries so sessions that switch
+// models receive the same estimate as their underlying events.
+func (s *Store) WalkSessionPricingAggregates(ctx context.Context, filter model.Filter, sessionIDs []string, fn func(model.UsageEvent) error) error {
+	if len(sessionIDs) == 0 {
+		return nil
+	}
+	if len(sessionIDs) > 500 {
+		return fmt.Errorf("Session 费用估算最多支持 500 项")
+	}
+	where, args := attributionWhere(filter, "e", true)
+	sessionExpr := "COALESCE(NULLIF(e.session_id,''),'jsonl-unknown')"
+	placeholders := make([]string, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, sessionID)
+	}
+	where += " AND " + sessionExpr + " IN (" + strings.Join(placeholders, ",") + ")"
+	valid := `e.input_tokens>=0 AND e.cached_input_tokens>=0 AND e.cache_write_input_tokens>=0
+		AND e.output_tokens>=0 AND e.reasoning_output_tokens>=0 AND e.total_tokens>=0
+		AND e.cached_input_tokens+e.cache_write_input_tokens<=e.input_tokens
+		AND e.reasoning_output_tokens<=e.output_tokens`
+	pricingClass := `CASE
+		WHEN e.input_tokens=0 AND e.output_tokens=0 AND e.total_tokens>0 THEN 1
+		WHEN e.total_tokens=0 AND e.input_tokens+e.output_tokens>0 THEN 2
+		ELSE 0 END`
+	rows, err := s.reader().QueryContext(ctx, `SELECT `+sessionExpr+`,e.model,
+		COALESCE(MIN(NULLIF(e.usage_at,0)),0),
+		COALESCE(SUM(e.input_tokens),0),COALESCE(SUM(e.cached_input_tokens),0),
+		COALESCE(SUM(e.cache_write_input_tokens),0),COALESCE(SUM(e.output_tokens),0),
+		COALESCE(SUM(e.reasoning_output_tokens),0),COALESCE(SUM(e.total_tokens),0)
+		FROM usage_events e WHERE `+where+` AND `+valid+`
+		GROUP BY `+sessionExpr+`,e.model,`+pricingClass, args...)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var event model.UsageEvent
+		var usageAt int64
+		if err := rows.Scan(&event.SessionID, &event.Model, &usageAt,
+			&event.Usage.Input, &event.Usage.CachedInput, &event.Usage.CacheWriteInput,
+			&event.Usage.Output, &event.Usage.ReasoningOutput, &event.Usage.Total); err != nil {
+			rows.Close()
+			return err
+		}
+		event.Timestamp = timeFromUnix(usageAt)
+		if err := fn(event); err != nil {
+			rows.Close()
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	invalidArgs := append([]any{}, args...)
+	invalidRows, err := s.reader().QueryContext(ctx, `SELECT `+sessionExpr+`,usage_at,model,
+		input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,
+		reasoning_output_tokens,total_tokens
+		FROM usage_events e WHERE `+where+` AND NOT (`+valid+`)`, invalidArgs...)
+	if err != nil {
+		return err
+	}
+	defer invalidRows.Close()
+	for invalidRows.Next() {
+		var event model.UsageEvent
+		var usageAt int64
+		if err := invalidRows.Scan(&event.SessionID, &usageAt, &event.Model,
+			&event.Usage.Input, &event.Usage.CachedInput, &event.Usage.CacheWriteInput,
+			&event.Usage.Output, &event.Usage.ReasoningOutput, &event.Usage.Total); err != nil {
+			return err
+		}
+		event.Timestamp = timeFromUnix(usageAt)
+		if err := fn(event); err != nil {
+			return err
+		}
+	}
+	return invalidRows.Err()
 }
 
 func (s *Store) Events(ctx context.Context, query EventQuery) ([]model.UsageEvent, error) {
