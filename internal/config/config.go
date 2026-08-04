@@ -45,7 +45,7 @@ func Default() Config {
 	return Config{
 		ListenAddress:       "127.0.0.1",
 		Port:                DefaultPort,
-		ScanIntervalSeconds: 60,
+		ScanIntervalSeconds: 600,
 	}
 }
 
@@ -192,8 +192,8 @@ func Load(paths Paths) (Config, error) {
 	if cfg.Port <= 0 || cfg.Port > 65535 {
 		return Config{}, fmt.Errorf("无效端口 %d", cfg.Port)
 	}
-	if cfg.ScanIntervalSeconds < 15 {
-		cfg.ScanIntervalSeconds = 60
+	if cfg.ScanIntervalSeconds < 600 {
+		cfg.ScanIntervalSeconds = 600
 	}
 	cfg.ExtraCodexHomes = cleanHomes(cfg.ExtraCodexHomes)
 	cfg.PricingOverrides, err = pricing.NormalizeOverrides(cfg.PricingOverrides)
@@ -208,6 +208,9 @@ func Save(paths Paths, cfg Config) error {
 		return err
 	}
 	cfg.ExtraCodexHomes = cleanHomes(cfg.ExtraCodexHomes)
+	if cfg.ScanIntervalSeconds < 600 {
+		cfg.ScanIntervalSeconds = 600
+	}
 	var err error
 	cfg.PricingOverrides, err = pricing.NormalizeOverrides(cfg.PricingOverrides)
 	if err != nil {

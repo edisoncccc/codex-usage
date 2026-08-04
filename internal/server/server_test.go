@@ -81,6 +81,7 @@ func TestDashboardAPIAndExport(t *testing.T) {
 		"/api/v1/summary?since=7d",
 		"/api/v1/timeseries?since=7d&bucket=hour",
 		"/api/v1/breakdown?dimension=model",
+		"/api/v1/dimensions",
 		"/api/v1/sessions?limit=10",
 		"/api/v1/cost-estimate?bucket=day",
 		"/api/v1/pricing",

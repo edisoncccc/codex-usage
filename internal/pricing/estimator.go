@@ -281,30 +281,16 @@ func evaluateEvent(event model.UsageEvent, overrides map[string]Override) (evalu
 		})
 		return out, nil
 	}
-	longInputNumerator, longInputDenominator := int64(1), int64(1)
-	longOutputNumerator, longOutputDenominator := int64(1), int64(1)
-	if rate.LongContextThreshold > 0 && usage.Input > rate.LongContextThreshold {
-		if event.Confidence != model.ConfidenceExact {
-			out.unpricedTokens = total
-			out.reasons = append(out.reasons, UnpricedReason{
-				Kind: "long_context_uncertain", Model: modelName, Tokens: total,
-				Detail: "超过长上下文阈值，但该事件不是精确请求增量",
-			})
-			return out, nil
-		}
-		longInputNumerator, longInputDenominator = rate.LongInputNumerator, rate.LongInputDenominator
-		longOutputNumerator, longOutputDenominator = rate.LongOutputNumerator, rate.LongOutputDenominator
-	}
 	regularTokens := usage.Input - usage.CachedInput - usage.CacheWriteInput
-	regularCost, err := tokenCost(regularTokens, rate.InputNanoPerToken, longInputNumerator, longInputDenominator)
+	regularCost, err := tokenCost(regularTokens, rate.InputNanoPerToken, 1, 1)
 	if err != nil {
 		return out, err
 	}
-	cachedCost, err := tokenCost(usage.CachedInput, rate.CachedNanoPerToken, longInputNumerator, longInputDenominator)
+	cachedCost, err := tokenCost(usage.CachedInput, rate.CachedNanoPerToken, 1, 1)
 	if err != nil {
 		return out, err
 	}
-	outputCost, err := tokenCost(usage.Output, rate.OutputNanoPerToken, longOutputNumerator, longOutputDenominator)
+	outputCost, err := tokenCost(usage.Output, rate.OutputNanoPerToken, 1, 1)
 	if err != nil {
 		return out, err
 	}
@@ -320,7 +306,7 @@ func evaluateEvent(event model.UsageEvent, overrides map[string]Override) (evalu
 				Detail: "官方模型页未公开 Cache Write 单价",
 			})
 		} else {
-			writeCost, writeErr := tokenCost(usage.CacheWriteInput, *rate.CacheWriteNanoPerToken, longInputNumerator, longInputDenominator)
+			writeCost, writeErr := tokenCost(usage.CacheWriteInput, *rate.CacheWriteNanoPerToken, 1, 1)
 			if writeErr != nil {
 				return out, writeErr
 			}

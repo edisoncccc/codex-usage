@@ -33,9 +33,12 @@ type Server struct {
 	LoadPricingOverrides func() (map[string]pricing.Override, error)
 	SavePricingOverrides func(map[string]pricing.Override) error
 
-	scanMu    sync.Mutex
-	pricingMu sync.Mutex
-	scanning  atomic.Bool
+	scanMu            sync.Mutex
+	pricingMu         sync.Mutex
+	dimensionMu       sync.Mutex
+	dimensionRevision uint64
+	dimensionCache    store.DimensionValues
+	scanning          atomic.Bool
 }
 
 func (s *Server) URL() string {
@@ -55,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/summary", s.handleSummary)
 	mux.HandleFunc("/api/v1/timeseries", s.handleTimeseries)
 	mux.HandleFunc("/api/v1/breakdown", s.handleBreakdown)
+	mux.HandleFunc("/api/v1/dimensions", s.handleDimensions)
 	mux.HandleFunc("/api/v1/sessions", s.handleSessions)
 	mux.HandleFunc("/api/v1/warnings", s.handleWarnings)
 	mux.HandleFunc("/api/v1/cost-estimate", s.handleCostEstimate)
@@ -210,6 +214,28 @@ func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"dimension": dimension, "items": items})
+}
+
+func (s *Server) handleDimensions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	revision := s.Store.Revision()
+	s.dimensionMu.Lock()
+	if s.dimensionRevision != revision {
+		values, err := s.Store.Dimensions(r.Context())
+		if err != nil {
+			s.dimensionMu.Unlock()
+			writeError(w, err)
+			return
+		}
+		s.dimensionCache = values
+		s.dimensionRevision = revision
+	}
+	values := s.dimensionCache
+	s.dimensionMu.Unlock()
+	writeJSON(w, http.StatusOK, values)
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -520,7 +546,7 @@ func (s *Server) forEachEvent(ctx context.Context, filter model.Filter, fn func(
 }
 
 func (s *Server) forEachPricingEvent(ctx context.Context, filter model.Filter, fn func(model.UsageEvent) error) error {
-	return s.Store.WalkPricingEvents(ctx, filter, fn)
+	return s.Store.WalkPricingAggregates(ctx, filter, fn)
 }
 
 func compactText(value string, limit int) string {

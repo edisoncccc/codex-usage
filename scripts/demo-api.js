@@ -131,7 +131,7 @@
       reasons: unpricedTokens ? [{ kind: "unknown_model", model: "codex-auto-review", tokens: unpricedTokens, detail: "Synthetic model has no public API rate or local override." }] : []
     };
     return {
-      basis: "current_standard_api_text_token_prices", currency: "USD", catalog_as_of: "2026-08-01", bucket: "day", summary: estimate, points,
+      basis: "current_standard_api_text_token_prices", currency: "USD", catalog_as_of: "2026-08-04", bucket: "day", summary: estimate, points,
       models: models.map((item) => {
         const itemUsage = scaledUsage(usage, item.share);
         const unknown = item.key === "codex-auto-review" && !pricingOverrides[item.key];
@@ -163,7 +163,7 @@
     return {
       basis: "current_standard_api_text_token_prices",
       currency: "USD",
-      catalog_as_of: "2026-08-01",
+      catalog_as_of: "2026-08-04",
       catalog,
       overrides: pricingOverrides,
       unpriced_models: pricingOverrides["codex-auto-review"] ? [] : [{ key: "codex-auto-review", usage: scaledUsage(baseUsage, .12), events: 9, sessions: 3 }]
@@ -177,7 +177,7 @@
     const endpoint = url.pathname.slice(url.pathname.indexOf("/api/v1/"));
     const method = String(init.method || (typeof input !== "string" && input.method) || "GET").toUpperCase();
     if (endpoint === "/api/v1/status") return jsonResponse({
-      version: "2.0.0-demo", scanning: false,
+      version: "2.1.0-demo", scanning: false,
       status: {
         machine: { id: "synthetic-machine", label: "Synthetic Windows · demo", hostname: "synthetic-host", os: "windows", arch: "amd64" },
         last_scan: now.toISOString(), accounting_mode: "jsonl_only", otel_active: false,
@@ -189,6 +189,11 @@
     if (endpoint === "/api/v1/cost-estimate") return jsonResponse(costEstimate(url));
     if (endpoint === "/api/v1/timeseries") return jsonResponse({ bucket: "day", points: dailyPoints(url).map((point) => ({ time: point.time, date: point.date, usage: point.usage })) });
     if (endpoint === "/api/v1/breakdown") return jsonResponse(breakdown(url));
+    if (endpoint === "/api/v1/dimensions") return jsonResponse({
+      models: models.map((item) => item.key),
+      sources: sources.map((item) => item.key),
+      projects: projects.map((item) => item.key)
+    });
     if (endpoint === "/api/v1/sessions") return jsonResponse(sessionPayload(url));
     if (endpoint === "/api/v1/warnings") return jsonResponse({ items: [
       { created_at: now.toISOString(), first_seen: new Date(now.getTime() - 86_400_000).toISOString(), occurrences: 1, kind: "fork_replay_detected", path: "synthetic://rollout", detail: "Synthetic copied parent history was skipped and the JSONL index was rebuilt." },

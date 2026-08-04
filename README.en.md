@@ -21,7 +21,7 @@
 
 ## Understand it in 30 seconds
 
-Run one single-file binary on each Windows, WSL, or Linux host. It uses Codex session JSONL as the sole accounting source and incrementally reads newly appended `token_count` records every 60 seconds by default. The result stays in that machine's SQLite database, so the Dashboard answers **how much this computer used**, not how much the whole account used.
+Run one single-file binary on each Windows, WSL, or Linux host. It uses Codex session JSONL as the sole accounting source. The background service performs a lightweight file-metadata probe every 30 seconds, incrementally reads appended `token_count` records only after JSONL changes, and keeps a 10-minute fallback scan. The result stays in that machine's SQLite database, so the Dashboard answers **how much this computer used**, not how much the whole account used.
 
 Per-machine attribution is codex-usage's most distinctive entry point, but it is not the endpoint. It breaks the local total down by model and token category, project, Thread, Session, Agent, and local calendar day, then adds Standard API-equivalent cost, pricing coverage, and data-quality records.
 
@@ -79,7 +79,7 @@ On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it fro
 | Capability | What you get |
 |---|---|
 | Signature per-machine attribution | A separate `machine_id` and SQLite database on every host |
-| Historical + continuous incremental | Scan existing JSONL first, then read newly appended records every 60 seconds |
+| Historical + continuous incremental | Scan existing JSONL first, then read changes incrementally with a 10-minute fallback scan |
 | Explainable deduplication | Fix one owner session per physical file, recognize copied fork history, and difference cumulative vectors |
 | Daily drill-down | Continuous daily pulse, calendar, zero-usage days, and per-day model mix |
 | Multi-dimensional usage analytics | Understand usage by model, token category, source, project, Thread, Session, main task, Subagent, Guardian, or Memory |
@@ -136,15 +136,17 @@ Each event stores its local date and hour at ingestion, so changing the system t
 
 ### Local service
 
-The service scans once on startup and then incrementally every 60 seconds by default. The Dashboard and CLI query the same local SQLite database. There is no central server or cross-machine sync.
+The service scans once on startup, then checks only JSONL size and modification time every 30 seconds. It runs an incremental scan after a change and a fallback scan every 10 minutes. Dashboard reads use a separate read-only SQLite pool, so ingestion no longer queues every page query behind one connection. There is no central server or cross-machine sync.
 
 The Dashboard has three first-level views: Overview, Daily, and Details. Overview defaults to the last seven local calendar days. Daily fills zero-usage dates and supports calendar drill-down. Details shows one attribution dimension—model, source, agent, project, or thread—at a time.
+
+Display settings in the header use a more comfortable type scale by default and let you adjust font size, display density, color theme, interface motion, and language with an immediate preview. These preferences stay in the current browser and never change usage data or exports.
 
 ### Standard API-equivalent cost
 
 The estimator streams the normalized events that already passed source de-duplication and attribution filtering. It runs at query time, writes no cost data to SQLite, and leaves existing token totals unchanged. Arithmetic uses fixed-point nano-USD. Cached Input and Cache Write are removed from regular Input, and Reasoning is already included in Output, so neither is charged twice.
 
-Bundled Standard text prices were checked on **2026-07-31**. All values are USD / 1M tokens:
+Bundled Standard text prices were checked on **2026-08-04**. All values are USD / 1M tokens:
 
 | Model | Input | Cached | Cache Write | Output |
 |---|---:|---:|---:|---:|
@@ -157,7 +159,7 @@ Bundled Standard text prices were checked on **2026-07-31**. All values are USD 
 | [GPT-5.3-Codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex) | 1.75 | 0.175 | not published | 14.00 |
 | [GPT-5.2-Codex](https://developers.openai.com/api/docs/models/gpt-5.2-codex) | 1.75 | 0.175 | not published | 14.00 |
 
-GPT-5.6 Cache Write uses the official 1.25× regular Input rule. Exact GPT-5.4, GPT-5.5, and GPT-5.6 events apply the long-context multipliers when Input exceeds 272K. Aggregate-only records and events whose request boundary cannot be established remain unpriced. The UI always shows estimated cost together with token pricing coverage; unknown models are never treated as zero-cost.
+GPT-5.6 Cache Write uses the official 1.25× regular Input rule. To match Codex's current effective context limit of roughly 258K, every recognized model uses the Standard short-context rates shown above and no long-context multiplier is applied. The UI always shows estimated cost together with token pricing coverage; unknown models are never treated as zero-cost.
 
 Internal models can be explicitly mapped to one built-in public model or assigned custom rates in the Dashboard. Overrides take effect without restarting:
 

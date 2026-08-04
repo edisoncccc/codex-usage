@@ -290,7 +290,7 @@ func TestPricingOverridesRoundTripWithoutChangingOtherSettings(t *testing.T) {
 	stateDir := t.TempDir()
 	paths := Paths{StateDir: stateDir, ConfigPath: filepath.Join(stateDir, "config.json")}
 	cfg := Config{
-		ListenAddress: "127.0.0.1", Port: 45678, ScanIntervalSeconds: 75,
+		ListenAddress: "127.0.0.1", Port: 45678, ScanIntervalSeconds: 900,
 		ExtraCodexHomes: []string{filepath.Join(stateDir, "codex-home")},
 		PricingOverrides: map[string]pricing.Override{
 			"CODEX-AUTO-REVIEW": {AliasOf: "GPT-5.6-LUNA"},
@@ -303,7 +303,7 @@ func TestPricingOverridesRoundTripWithoutChangingOtherSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Port != 45678 || loaded.ScanIntervalSeconds != 75 || loaded.ListenAddress != "127.0.0.1" || len(loaded.ExtraCodexHomes) != 1 {
+	if loaded.Port != 45678 || loaded.ScanIntervalSeconds != 900 || loaded.ListenAddress != "127.0.0.1" || len(loaded.ExtraCodexHomes) != 1 {
 		t.Fatalf("unrelated settings changed: %#v", loaded)
 	}
 	if got := loaded.PricingOverrides["codex-auto-review"].AliasOf; got != "gpt-5.6-luna" {
@@ -317,8 +317,26 @@ func TestPricingOverridesRoundTripWithoutChangingOtherSettings(t *testing.T) {
 	if err := json.Unmarshal(data, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if persisted["port"] != float64(45678) || persisted["scan_interval_seconds"] != float64(75) {
+	if persisted["port"] != float64(45678) || persisted["scan_interval_seconds"] != float64(900) {
 		t.Fatalf("persisted settings were overwritten: %#v", persisted)
+	}
+}
+
+func TestFallbackScanIntervalDefaultsAndNormalizesToTenMinutes(t *testing.T) {
+	if got := Default().ScanIntervalSeconds; got != 600 {
+		t.Fatalf("default fallback interval=%d want 600", got)
+	}
+	stateDir := t.TempDir()
+	paths := Paths{StateDir: stateDir, ConfigPath: filepath.Join(stateDir, "config.json")}
+	if err := os.WriteFile(paths.ConfigPath, []byte(`{"listen_address":"127.0.0.1","port":43189,"scan_interval_seconds":60}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ScanIntervalSeconds != 600 {
+		t.Fatalf("legacy fallback interval=%d want 600", loaded.ScanIntervalSeconds)
 	}
 }
 

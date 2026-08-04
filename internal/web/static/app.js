@@ -13,6 +13,90 @@ const FILTER_FIELDS = {
 const fieldLabel = (key) => t(FILTER_FIELDS[key]?.labelKey || `dimension.${key}`);
 const dimensionLabel = (key) => t(`dimension.${key}`);
 const rangeLabel = (key) => t(`range.${key}Long`);
+const DISPLAY_PREFERENCES_KEY = "codex-usage-display-preferences";
+const DISPLAY_PREFERENCE_DEFAULTS = Object.freeze({
+  fontSize: "comfortable",
+  density: "balanced",
+  theme: "system",
+  motion: "system"
+});
+const DISPLAY_PREFERENCE_VALUES = Object.freeze({
+  fontSize: ["compact", "comfortable", "large"],
+  density: ["compact", "balanced", "relaxed"],
+  theme: ["system", "light", "dark"],
+  motion: ["system", "reduce"]
+});
+
+function readStorage(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function writeStorage(key, value) {
+  try { localStorage.setItem(key, value); } catch {}
+}
+
+function removeStorage(key) {
+  try { localStorage.removeItem(key); } catch {}
+}
+
+function normalizeDisplayPreferences(value = {}) {
+  const normalized = { ...DISPLAY_PREFERENCE_DEFAULTS };
+  for (const [key, allowed] of Object.entries(DISPLAY_PREFERENCE_VALUES)) {
+    if (allowed.includes(value?.[key])) normalized[key] = value[key];
+  }
+  return normalized;
+}
+
+function loadDisplayPreferences() {
+  let saved = {};
+  try { saved = JSON.parse(readStorage(DISPLAY_PREFERENCES_KEY) || "{}"); } catch {}
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) saved = {};
+  const legacyTheme = readStorage("codex-usage-theme");
+  if (!DISPLAY_PREFERENCE_VALUES.theme.includes(saved?.theme) && ["light", "dark"].includes(legacyTheme)) saved.theme = legacyTheme;
+  return normalizeDisplayPreferences(saved);
+}
+
+let displayPreferences = loadDisplayPreferences();
+
+function syncSettingsForm() {
+  $$('[data-setting]').forEach((input) => {
+    const key = input.dataset.setting;
+    const value = key === "locale" ? i18n.getLocale() : displayPreferences[key];
+    input.checked = input.value === value;
+  });
+}
+
+function applyDisplayPreferences({ persist = false } = {}) {
+  const root = document.documentElement;
+  root.dataset.fontSize = displayPreferences.fontSize;
+  root.dataset.density = displayPreferences.density;
+  if (displayPreferences.theme === "system") root.removeAttribute("data-theme");
+  else root.dataset.theme = displayPreferences.theme;
+  if (displayPreferences.motion === "system") root.removeAttribute("data-motion");
+  else root.dataset.motion = displayPreferences.motion;
+
+  if (persist) {
+    writeStorage(DISPLAY_PREFERENCES_KEY, JSON.stringify(displayPreferences));
+    if (displayPreferences.theme === "system") removeStorage("codex-usage-theme");
+    else writeStorage("codex-usage-theme", displayPreferences.theme);
+  }
+  syncSettingsForm();
+}
+
+function updateDisplayPreference(key, value) {
+  if (!DISPLAY_PREFERENCE_VALUES[key]?.includes(value)) return;
+  displayPreferences = normalizeDisplayPreferences({ ...displayPreferences, [key]: value });
+  applyDisplayPreferences({ persist: true });
+}
+
+function resetDisplayPreferences() {
+  displayPreferences = { ...DISPLAY_PREFERENCE_DEFAULTS };
+  removeStorage(DISPLAY_PREFERENCES_KEY);
+  removeStorage("codex-usage-theme");
+  applyDisplayPreferences();
+  toast(t("settings.resetComplete"));
+}
+
 const state = {
   view: "overview",
   overviewRange: "7d",
@@ -27,7 +111,9 @@ const state = {
   monthReport: null,
   dailyInitialSelection: true,
   pricing: null,
+  filterOptions: null,
   dataRevision: null,
+  pendingDataRefresh: false,
   statusQualityNotes: [],
   dataQualityNotes: [],
   requestSerial: { overview: 0, daily: 0, day: 0, details: 0 }
@@ -36,9 +122,13 @@ const state = {
 const responseCache = new Map();
 const inflightRequests = new Map();
 const DATA_CACHE_TTL = 5 * 60_000;
+const VISIBLE_STATUS_POLL_MS = 30_000;
+const HIDDEN_STATUS_POLL_MS = 10 * 60_000;
 let cacheGeneration = 0;
+let statusPollTimer = null;
+let statusPollRunning = false;
 
-const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const reducedMotion = () => displayPreferences.motion === "reduce" || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const pad2 = (value) => String(value).padStart(2, "0");
 const dateKey = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 const dateFromKey = (value) => {
@@ -209,7 +299,10 @@ async function loadStatus() {
   const status = payload.status || {};
   const revision = status.data_revision == null ? null : String(status.data_revision);
   const changed = state.dataRevision !== null && revision !== null && revision !== state.dataRevision;
-  if (changed) invalidateDataCache();
+  if (changed) {
+    invalidateDataCache();
+    state.filterOptions = null;
+  }
   state.dataRevision = revision;
   const machine = status.machine || {};
   const machineName = machine.label || machine.hostname || t("common.localMachine");
@@ -238,21 +331,26 @@ async function loadStatus() {
 function hydrateSelect(selector, items, placeholder) {
   const select = $(selector);
   const selected = select.value || state.filters[Object.entries(FILTER_FIELDS).find(([, item]) => item.selector === selector)?.[0]] || "";
-  const values = [...new Set((items || []).map((item) => item.key).filter((key) => key && key !== "未知" && key !== "Unknown"))];
+  const values = [...new Set((items || []).map((item) => typeof item === "string" ? item : item.key).filter((key) => key && key !== "未知" && key !== "Unknown"))];
   select.innerHTML = `<option value="">${escapeHTML(placeholder)}</option>${values.map((value) => `<option value="${escapeHTML(value)}">${escapeHTML(value)}</option>`).join("")}`;
   if (values.includes(selected)) select.value = selected;
 }
 
-async function loadFilterOptions() {
+function renderFilterOptions() {
+  if (!state.filterOptions) return;
+  hydrateSelect("#filterModel", state.filterOptions.models, t("filter.allModels"));
+  hydrateSelect("#filterSource", state.filterOptions.sources, t("filter.allSources"));
+  hydrateSelect("#filterProject", state.filterOptions.projects, t("filter.allProjects"));
+}
+
+async function loadFilterOptions({ force = false } = {}) {
+  if (state.filterOptions && !force) {
+    renderFilterOptions();
+    return;
+  }
   try {
-    const [models, sources, projects] = await Promise.all([
-      api(apiURL("/api/v1/breakdown", { dimension: "model", limit: 500 }, {})),
-      api(apiURL("/api/v1/breakdown", { dimension: "source", limit: 500 }, {})),
-      api(apiURL("/api/v1/breakdown", { dimension: "project", limit: 500 }, {}))
-    ]);
-    hydrateSelect("#filterModel", models.items, t("filter.allModels"));
-    hydrateSelect("#filterSource", sources.items, t("filter.allSources"));
-    hydrateSelect("#filterProject", projects.items, t("filter.allProjects"));
+    state.filterOptions = await api("/api/v1/dimensions");
+    renderFilterOptions();
   } catch (error) {
     toast(t("dynamic.filterLoadError", { error: error.message }), true);
   }
@@ -951,13 +1049,28 @@ function setupEvents() {
     state.selectedDate = "";
     loadDaily();
   });
-  $("#filterButton").addEventListener("click", () => { syncFilterForm(); openDialog($("#filterSheet")); });
+  $("#filterButton").addEventListener("click", () => {
+    syncFilterForm();
+    openDialog($("#filterSheet"));
+    loadFilterOptions();
+  });
   $("#applyFilters").addEventListener("click", applyFiltersFromForm);
   $("#filterForm").addEventListener("submit", (event) => { event.preventDefault(); applyFiltersFromForm(); });
   $("#resetFilters").addEventListener("click", () => {
     for (const meta of Object.values(FILTER_FIELDS)) $(meta.selector).value = "";
   });
   $("#clearFilters").addEventListener("click", clearAllFilters);
+  $("#settingsButton").addEventListener("click", () => { syncSettingsForm(); openDialog($("#settingsDialog")); });
+  $("#settingsForm").addEventListener("change", (event) => {
+    const input = event.target.closest('[data-setting]');
+    if (!input?.checked) return;
+    if (input.dataset.setting === "locale") {
+      i18n.setLocale(input.value);
+      return;
+    }
+    updateDisplayPreference(input.dataset.setting, input.value);
+  });
+  $("#resetSettings").addEventListener("click", resetDisplayPreferences);
   $("#warningButton").addEventListener("click", () => { openDialog($("#warningsDialog")); loadWarnings(); });
   $("#pricingButton").addEventListener("click", openPricingDialog);
   $("#addOverride").addEventListener("click", () => {
@@ -977,11 +1090,13 @@ function setupEvents() {
     button.disabled = true;
     $(".scan-icon").classList.add("spin");
     try {
+      const refreshFilterOptions = Boolean(state.filterOptions);
       const result = await api("/api/v1/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
       invalidateDataCache();
+      state.filterOptions = null;
       toast(t("scan.complete", { inserted: i18n.formatNumber(result.events_inserted || 0), duplicates: i18n.formatNumber(result.duplicates || 0) }));
       await loadStatus();
-      await Promise.all([loadFilterOptions(), loadCurrentView()]);
+      await Promise.all([refreshFilterOptions ? loadFilterOptions({ force: true }) : Promise.resolve(), loadCurrentView()]);
     } catch (error) {
       toast(error.message, true);
     } finally {
@@ -990,30 +1105,59 @@ function setupEvents() {
     }
   });
   $("#themeButton").addEventListener("click", () => {
-    const explicit = document.documentElement.dataset.theme;
-    const dark = explicit ? explicit === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const dark = displayPreferences.theme === "system"
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches
+      : displayPreferences.theme === "dark";
     const next = dark ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem("codex-usage-theme", next);
+    updateDisplayPreference("theme", next);
   });
   $("#localeButton").addEventListener("click", () => {
     i18n.setLocale(i18n.getLocale() === "en" ? "zh-CN" : "en");
   });
   window.addEventListener("codex-usage-locale-change", async () => {
+    syncSettingsForm();
+    renderFilterOptions();
     renderFilterChips();
     try {
-      await Promise.all([loadStatus(), loadFilterOptions(), loadCurrentView({ preserve: false })]);
+      await Promise.all([loadStatus(), loadCurrentView({ preserve: false })]);
     } catch (error) {
       toast(error.message, true);
     }
   });
 }
 
+function scheduleStatusPoll(delay = document.visibilityState === "visible" ? VISIBLE_STATUS_POLL_MS : HIDDEN_STATUS_POLL_MS) {
+  clearTimeout(statusPollTimer);
+  statusPollTimer = setTimeout(pollStatus, delay);
+}
+
+async function pollStatus() {
+  if (statusPollRunning) return scheduleStatusPoll();
+  statusPollRunning = true;
+  try {
+    const changed = await loadStatus();
+    if (changed && document.visibilityState !== "visible") state.pendingDataRefresh = true;
+    if (document.visibilityState === "visible" && (changed || state.pendingDataRefresh)) {
+      state.pendingDataRefresh = false;
+      await loadCurrentView({ preserve: true });
+    }
+  } catch {} finally {
+    statusPollRunning = false;
+    scheduleStatusPoll();
+  }
+}
+
+function startStatusPolling() {
+  document.addEventListener("visibilitychange", () => {
+    scheduleStatusPoll(document.visibilityState === "visible" ? 0 : HIDDEN_STATUS_POLL_MS);
+  });
+  scheduleStatusPoll();
+}
+
 async function boot() {
+  applyDisplayPreferences();
   i18n.applyStatic();
   if (window.CODEX_USAGE_DEMO || window.CodexUsageDemo) $("#demoBanner").classList.remove("hidden");
-  const savedTheme = localStorage.getItem("codex-usage-theme");
-  if (savedTheme === "light" || savedTheme === "dark") document.documentElement.dataset.theme = savedTheme;
   setupEvents();
   renderFilterChips();
   const requestedView = location.hash.slice(1);
@@ -1031,15 +1175,9 @@ async function boot() {
   }
   await Promise.all([
     loadStatus().catch((error) => toast(error.message, true)),
-    loadFilterOptions(),
     loadCurrentView()
   ]);
-  setInterval(async () => {
-    try {
-      const changed = await loadStatus();
-      if (changed && document.visibilityState === "visible") await loadCurrentView({ preserve: true });
-    } catch {}
-  }, 30_000);
+  startStatusPolling();
 }
 
 boot();

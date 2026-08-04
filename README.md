@@ -21,7 +21,7 @@
 
 ## 30 秒理解
 
-在每台 Windows、WSL 或 Linux 主机分别运行一个单文件程序。它只扫描该机的 Codex session JSONL，并默认每 60 秒增量读取新追加的 `token_count`；结果只写入该机的 SQLite。Dashboard 因而回答的是**这台电脑用了多少**，不是整个账号用了多少。
+在每台 Windows、WSL 或 Linux 主机分别运行一个单文件程序。它只扫描该机的 Codex session JSONL：后台每 30 秒做一次轻量文件 metadata 检查，仅在 JSONL 变化时增量读取新追加的 `token_count`，并每 10 分钟执行一次兜底扫描；结果只写入该机的 SQLite。Dashboard 因而回答的是**这台电脑用了多少**，不是整个账号用了多少。
 
 逐电脑归属是 codex-usage 最鲜明的入口，但不是终点。它把本机总量继续拆到模型与 Token 类型、项目、Thread、Session、Agent 和本地自然日，并给出 Standard API 等价成本、定价覆盖率与数据质量记录。
 
@@ -83,7 +83,7 @@ Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自
 | 功能 | 你得到什么 |
 |---|---|
 | 标志性的逐电脑归属 | 每台机器生成独立 `machine_id` 和 SQLite 数据库，不把账号其他电脑混进来 |
-| 历史 + 持续增量 | 首次扫描已有 JSONL，后台默认每 60 秒读取新增记录 |
+| 历史 + 持续增量 | 首次扫描已有 JSONL；变化时增量读取，并每 10 分钟兜底扫描 |
 | 可解释防重 | 固定物理文件 owner session，识别 fork 复制的父历史，并按累计向量差分 |
 | 每日下钻 | 连续自然日脉冲带、月历、零用量日与单日模型构成 |
 | 多维使用分析 | 按模型、Token 类型、来源、项目、Thread、Session、主任务/Subagent/Guardian/Memory 理解用量 |
@@ -140,15 +140,17 @@ Codex 状态库只用于发现 rollout 路径并补充标题、项目等 metadat
 
 ### 4. 展示与服务
 
-后台服务启动时先扫描一次，之后默认每 60 秒增量扫描。Dashboard 和 CLI 都查询同一个本机 SQLite。没有任何中心服务器，也没有跨电脑同步；要看两台电脑，就分别打开两台电脑的 Dashboard。
+后台服务启动时先扫描一次，之后每 30 秒只检查 JSONL 的文件大小与修改时间；检测到变化才执行增量扫描，无变化时每 10 分钟兜底扫描。Dashboard 使用独立只读连接查询同一个本机 SQLite，扫描写入不会再把页面查询堵在单一连接后。没有任何中心服务器，也没有跨电脑同步；要看两台电脑，就分别打开两台电脑的 Dashboard。
 
 Dashboard 固定为“概览 / 每日 / 明细”三个一级视图。概览默认显示最近 7 个本地自然日；每日视图补齐零用量日期并支持月历下钻；明细视图一次只展开模型、来源、Agent、项目或 Thread 中的一个维度。
+
+页头“显示设置”默认采用更舒适的字号层级，并可即时调整字体大小、显示密度、颜色主题、界面动效和语言。所有显示偏好只保存在当前浏览器，不会影响统计数据或导出结果。
 
 ### 5. Standard API 等价成本
 
 费用在查询时流式读取已经过去重、归属规则筛选后的规范事件，不写入 SQLite，也不会改变原有 Token 统计。计算使用定点 nano-USD：Cached Input 与 Cache Write 从 Input 中扣除，Reasoning 已包含在 Output 中，不会重复收费。
 
-内置 Standard 文本价格核对日期为 **2026-07-31**，单位均为 USD / 1M Token：
+内置 Standard 文本价格核对日期为 **2026-08-04**，单位均为 USD / 1M Token：
 
 | 模型 | Input | Cached | Cache Write | Output |
 |---|---:|---:|---:|---:|
@@ -161,7 +163,7 @@ Dashboard 固定为“概览 / 每日 / 明细”三个一级视图。概览默�
 | [GPT-5.3-Codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex) | 1.75 | 0.175 | 未公开 | 14.00 |
 | [GPT-5.2-Codex](https://developers.openai.com/api/docs/models/gpt-5.2-codex) | 1.75 | 0.175 | 未公开 | 14.00 |
 
-GPT-5.6 的 Cache Write 使用官方“普通 Input 的 1.25 倍”规则。GPT-5.4、GPT-5.5 和 GPT-5.6 的单个精确事件在 Input 超过 272K 时应用长上下文倍率；只有累计总量或无法确认请求边界的部分保持未定价。页面始终同时展示费用和 Token 定价覆盖率，未知模型不会被当成零费用。
+GPT-5.6 的 Cache Write 使用官方“普通 Input 的 1.25 倍”规则。为了匹配 Codex 当前约 258K 的有效上下文上限，所有已识别模型统一使用上表的 Standard 短上下文单价，不应用长上下文倍率。页面始终同时展示费用和 Token 定价覆盖率，未知模型不会被当成零费用。
 
 内部模型可以在 Dashboard 的“定价设置”中映射到一个明确的内置公开模型，或填写自定义单价。等价配置如下，保存后无需重启：
 

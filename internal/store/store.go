@@ -23,10 +23,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 4
+const schemaVersion = 5
 
 type Store struct {
+	// db is the single writer used by ingestion and migrations. readDB is a
+	// small read-only pool so dashboard queries do not queue behind a scan.
 	db       *sql.DB
+	readDB   *sql.DB
 	path     string
 	machine  model.Machine
 	revision atomic.Uint64
@@ -101,6 +104,12 @@ type EventQuery struct {
 	Offset int
 }
 
+type DimensionValues struct {
+	Models   []string `json:"models"`
+	Sources  []string `json:"sources"`
+	Projects []string `json:"projects"`
+}
+
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -133,14 +142,42 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	readDB, err := sql.Open("sqlite", sqliteURI(path,
+		"mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)"))
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	readDB.SetMaxOpenConns(2)
+	readDB.SetMaxIdleConns(2)
+	if err := readDB.PingContext(ctx); err != nil {
+		readDB.Close()
+		db.Close()
+		return nil, fmt.Errorf("打开只读查询池: %w", err)
+	}
+	s.readDB = readDB
 	s.revision.Store(1)
 	_ = os.Chmod(path, 0o600)
 	return s, nil
 }
 
-func (s *Store) Close() error           { return s.db.Close() }
+func (s *Store) Close() error {
+	var readErr error
+	if s.readDB != nil {
+		readErr = s.readDB.Close()
+	}
+	return errors.Join(readErr, s.db.Close())
+}
 func (s *Store) DBPath() string         { return s.path }
 func (s *Store) Machine() model.Machine { return s.machine }
+func (s *Store) Revision() uint64       { return s.revision.Load() }
+
+func (s *Store) reader() *sql.DB {
+	if s.readDB != nil {
+		return s.readDB
+	}
+	return s.db
+}
 
 func (s *Store) migrate(ctx context.Context) error {
 	stmts := []string{
@@ -193,6 +230,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_events_usage_at ON usage_events(usage_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_session ON usage_events(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_provenance ON usage_events(provenance)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_provenance_local_date ON usage_events(provenance,local_date)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_provenance_usage_at ON usage_events(provenance,usage_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_provenance_session_usage ON usage_events(provenance,session_id,usage_at)`,
 		`CREATE TABLE IF NOT EXISTS file_cursors (
 			path TEXT PRIMARY KEY,
 			codex_home TEXT NOT NULL,
@@ -294,6 +334,21 @@ func (s *Store) migrate(ctx context.Context) error {
 		// changes fork/replay ownership, category corrections, and date
 		// attribution, so carrying old derived rows forward would preserve known
 		// accounting errors.
+		for _, stmt := range []string{
+			`DELETE FROM usage_events`, `DELETE FROM file_cursors`,
+			`DELETE FROM session_cursors`, `DELETE FROM sessions`,
+			`DELETE FROM scan_state`, `DELETE FROM warnings`,
+		} {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return err
+			}
+		}
+	}
+	if databaseVersion < 5 {
+		// Parser v5 recognizes the single-session_meta fork format and derives
+		// its inherited baseline from the first total-last snapshot. Existing
+		// events and cursors cannot be repaired reliably in place, so force one
+		// complete JSONL rebuild when a v4 database is next opened.
 		for _, stmt := range []string{
 			`DELETE FROM usage_events`, `DELETE FROM file_cursors`,
 			`DELETE FROM session_cursors`, `DELETE FROM sessions`,
@@ -442,7 +497,20 @@ func (s *Store) UpsertSession(ctx context.Context, in model.SessionInfo) error {
 			tokens_used=CASE WHEN excluded.tokens_used>0 THEN excluded.tokens_used ELSE sessions.tokens_used END,
 			created_at=CASE WHEN excluded.created_at>0 THEN excluded.created_at ELSE sessions.created_at END,
 			updated_at=CASE WHEN excluded.updated_at>sessions.updated_at THEN excluded.updated_at ELSE sessions.updated_at END,
-			archived=excluded.archived`,
+			archived=excluded.archived
+		WHERE (excluded.rollout_path<>'' AND excluded.rollout_path<>sessions.rollout_path)
+			OR (excluded.codex_home<>'' AND excluded.codex_home<>sessions.codex_home)
+			OR (excluded.title<>'' AND excluded.title<>sessions.title)
+			OR (excluded.project_path<>'' AND excluded.project_path<>sessions.project_path)
+			OR (excluded.model<>'' AND excluded.model<>sessions.model)
+			OR (excluded.source<>'' AND excluded.source<>sessions.source)
+			OR (excluded.thread_source<>'' AND excluded.thread_source<>sessions.thread_source)
+			OR (excluded.agent_type<>'' AND excluded.agent_type<>sessions.agent_type)
+			OR (excluded.cli_version<>'' AND excluded.cli_version<>sessions.cli_version)
+			OR (excluded.tokens_used>0 AND excluded.tokens_used<>sessions.tokens_used)
+			OR (excluded.created_at>0 AND excluded.created_at<>sessions.created_at)
+			OR excluded.updated_at>sessions.updated_at
+			OR excluded.archived<>sessions.archived`,
 		in.SessionID, in.RolloutPath, in.CodexHome, in.Title, in.ProjectPath, in.Model,
 		in.Source, in.ThreadSource, defaultAgent(in.AgentType), in.CLIValue, in.TokensUsed,
 		unixOrZero(in.CreatedAt), unixOrZero(in.UpdatedAt), boolInt(in.Archived))
@@ -855,7 +923,7 @@ func (s *Store) Warnings(ctx context.Context, limit int) ([]model.Warning, error
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,created_at,first_seen,occurrences,kind,path,detail
+	rows, err := s.reader().QueryContext(ctx, `SELECT id,created_at,first_seen,occurrences,kind,path,detail
 		FROM warnings ORDER BY created_at DESC,id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -897,7 +965,7 @@ func (s *Store) Summary(ctx context.Context, filter model.Filter) (model.Summary
 		COALESCE(MAX(e.usage_at),0) FROM usage_events e WHERE ` + where
 	var out model.Summary
 	var first, last int64
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(
+	err := s.reader().QueryRowContext(ctx, query, args...).Scan(
 		&out.Usage.Input, &out.Usage.CachedInput, &out.Usage.CacheWriteInput,
 		&out.Usage.Output, &out.Usage.ReasoningOutput, &out.Usage.Total,
 		&out.EventCount, &out.SessionCount, &first, &last)
@@ -908,7 +976,7 @@ func (s *Store) Summary(ctx context.Context, filter model.Filter) (model.Summary
 	out.LastEvent = timeFromUnix(last)
 	out.GrandTotal = out.Usage.Total
 	var warnings int64
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM warnings`).Scan(&warnings)
+	_ = s.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM warnings`).Scan(&warnings)
 	out.CoverageIncomplete = warnings > 0
 	return out, nil
 }
@@ -922,15 +990,17 @@ func (s *Store) Timeseries(ctx context.Context, filter model.Filter, bucket stri
 	if bucket == "hour" {
 		bucketColumn = "e.local_hour"
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+bucketColumn+`,e.input_tokens,
-		e.cached_input_tokens,e.cache_write_input_tokens,e.output_tokens,
-		e.reasoning_output_tokens,e.total_tokens
-		FROM usage_events e WHERE `+where+` AND e.usage_at>0 ORDER BY e.usage_at`, args...)
+	rows, err := s.reader().QueryContext(ctx, `SELECT `+bucketColumn+`,
+		COALESCE(SUM(e.input_tokens),0),COALESCE(SUM(e.cached_input_tokens),0),
+		COALESCE(SUM(e.cache_write_input_tokens),0),COALESCE(SUM(e.output_tokens),0),
+		COALESCE(SUM(e.reasoning_output_tokens),0),COALESCE(SUM(e.total_tokens),0)
+		FROM usage_events e WHERE `+where+` AND e.usage_at>0 AND `+bucketColumn+`<>''
+		GROUP BY `+bucketColumn+` ORDER BY `+bucketColumn, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	points := map[string]model.TokenUsage{}
+	var out []model.Point
 	for rows.Next() {
 		var key string
 		var usage model.TokenUsage
@@ -939,27 +1009,15 @@ func (s *Store) Timeseries(ctx context.Context, filter model.Filter, bucket stri
 			&usage.Total); err != nil {
 			return nil, err
 		}
-		if key == "" {
-			continue
-		}
-		points[key] = points[key].Add(usage)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	keys := make([]string, 0, len(points))
-	for key := range points {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	out := make([]model.Point, 0, len(keys))
-	for _, key := range keys {
 		layout := "2006-01-02"
 		if bucket == "hour" {
 			layout = "2006-01-02T15"
 		}
 		parsed, _ := time.ParseInLocation(layout, key, time.UTC)
-		out = append(out, model.Point{Time: parsed, Date: key, Usage: points[key]})
+		out = append(out, model.Point{Time: parsed, Date: key, Usage: usage})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -992,7 +1050,7 @@ func (s *Store) Breakdown(ctx context.Context, filter model.Filter, dimension st
 		COALESCE(SUM(e.reasoning_output_tokens),0),COALESCE(SUM(e.total_tokens),0),
 		COUNT(*),COUNT(DISTINCT NULLIF(e.session_id,''))
 		FROM usage_events e WHERE %s GROUP BY item ORDER BY SUM(e.total_tokens) DESC LIMIT ?`, column, where)
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1006,6 +1064,49 @@ func (s *Store) Breakdown(ctx context.Context, filter model.Filter, dimension st
 			return nil, err
 		}
 		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// Dimensions returns only distinct filter values. The dashboard uses this
+// lightweight query lazily instead of running three full token breakdowns at
+// startup merely to populate select controls.
+func (s *Store) Dimensions(ctx context.Context) (DimensionValues, error) {
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT 'model' AS kind,model AS value FROM usage_events
+			WHERE provenance=? AND model<>'' GROUP BY model
+		UNION ALL
+		SELECT 'source' AS kind,source AS value FROM usage_events
+			WHERE provenance=? AND source<>'' GROUP BY source
+		UNION ALL
+		SELECT 'project' AS kind,project_path AS value FROM usage_events
+			WHERE provenance=? AND project_path<>'' GROUP BY project_path
+		ORDER BY kind,value COLLATE NOCASE`,
+		model.ProvenanceSessionJSONL, model.ProvenanceSessionJSONL, model.ProvenanceSessionJSONL)
+	if err != nil {
+		return DimensionValues{}, err
+	}
+	defer rows.Close()
+	var out DimensionValues
+	for rows.Next() {
+		var kind, value string
+		if err := rows.Scan(&kind, &value); err != nil {
+			return DimensionValues{}, err
+		}
+		switch kind {
+		case "model":
+			if len(out.Models) < 500 {
+				out.Models = append(out.Models, value)
+			}
+		case "source":
+			if len(out.Sources) < 500 {
+				out.Sources = append(out.Sources, value)
+			}
+		case "project":
+			if len(out.Projects) < 500 {
+				out.Projects = append(out.Projects, value)
+			}
+		}
 	}
 	return out, rows.Err()
 }
@@ -1037,7 +1138,7 @@ func (s *Store) Sessions(ctx context.Context, filter model.Filter, limit, offset
 		END,COALESCE(MAX(e.usage_at),0)
 		FROM usage_events e LEFT JOIN sessions s ON s.session_id=e.session_id
 		WHERE ` + where + ` GROUP BY sid ORDER BY MAX(e.usage_at) DESC LIMIT ? OFFSET ?`
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1082,7 +1183,7 @@ func (s *Store) WalkPricingEvents(ctx context.Context, filter model.Filter, fn f
 	if requiresAttribution(filter) {
 		where, args = attributionWhere(filter, "e", true)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,usage_at,local_date,local_hour,observed_at,machine_id,
+	rows, err := s.reader().QueryContext(ctx, `SELECT id,usage_at,local_date,local_hour,observed_at,machine_id,
 		session_id,turn_id,model,source,agent_type,project_path,thread_title,
 		input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,
 		reasoning_output_tokens,total_tokens,provenance,confidence,codex_home
@@ -1111,6 +1212,80 @@ func (s *Store) WalkPricingEvents(ctx context.Context, filter model.Filter, fn f
 	return rows.Err()
 }
 
+// WalkPricingAggregates emits one valid aggregate per local day and model.
+// Rows with invalid token subset relationships remain individual so pricing
+// diagnostics are byte-for-byte equivalent to evaluating raw events.
+func (s *Store) WalkPricingAggregates(ctx context.Context, filter model.Filter, fn func(model.UsageEvent) error) error {
+	where, args := canonicalWithFallbackWhere(filter, "e")
+	if requiresAttribution(filter) {
+		where, args = attributionWhere(filter, "e", true)
+	}
+	valid := `e.input_tokens>=0 AND e.cached_input_tokens>=0 AND e.cache_write_input_tokens>=0
+		AND e.output_tokens>=0 AND e.reasoning_output_tokens>=0 AND e.total_tokens>=0
+		AND e.cached_input_tokens+e.cache_write_input_tokens<=e.input_tokens
+		AND e.reasoning_output_tokens<=e.output_tokens`
+	pricingClass := `CASE
+		WHEN e.input_tokens=0 AND e.output_tokens=0 AND e.total_tokens>0 THEN 1
+		WHEN e.total_tokens=0 AND e.input_tokens+e.output_tokens>0 THEN 2
+		ELSE 0 END`
+	rows, err := s.reader().QueryContext(ctx, `SELECT e.local_date,e.model,
+		COALESCE(MIN(NULLIF(e.usage_at,0)),0),
+		COALESCE(SUM(e.input_tokens),0),COALESCE(SUM(e.cached_input_tokens),0),
+		COALESCE(SUM(e.cache_write_input_tokens),0),COALESCE(SUM(e.output_tokens),0),
+		COALESCE(SUM(e.reasoning_output_tokens),0),COALESCE(SUM(e.total_tokens),0)
+		FROM usage_events e WHERE `+where+` AND `+valid+`
+		GROUP BY e.local_date,e.model,`+pricingClass, args...)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var event model.UsageEvent
+		var usageAt int64
+		if err := rows.Scan(&event.LocalDate, &event.Model, &usageAt,
+			&event.Usage.Input, &event.Usage.CachedInput, &event.Usage.CacheWriteInput,
+			&event.Usage.Output, &event.Usage.ReasoningOutput, &event.Usage.Total); err != nil {
+			rows.Close()
+			return err
+		}
+		event.Timestamp = timeFromUnix(usageAt)
+		if err := fn(event); err != nil {
+			rows.Close()
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	invalidArgs := append([]any{}, args...)
+	invalidRows, err := s.reader().QueryContext(ctx, `SELECT usage_at,local_date,model,
+		input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,
+		reasoning_output_tokens,total_tokens
+		FROM usage_events e WHERE `+where+` AND NOT (`+valid+`)`, invalidArgs...)
+	if err != nil {
+		return err
+	}
+	defer invalidRows.Close()
+	for invalidRows.Next() {
+		var event model.UsageEvent
+		var usageAt int64
+		if err := invalidRows.Scan(&usageAt, &event.LocalDate, &event.Model,
+			&event.Usage.Input, &event.Usage.CachedInput, &event.Usage.CacheWriteInput,
+			&event.Usage.Output, &event.Usage.ReasoningOutput, &event.Usage.Total); err != nil {
+			return err
+		}
+		event.Timestamp = timeFromUnix(usageAt)
+		if err := fn(event); err != nil {
+			return err
+		}
+	}
+	return invalidRows.Err()
+}
+
 func (s *Store) queryEvents(ctx context.Context, query EventQuery, pricingView bool) ([]model.UsageEvent, error) {
 	if query.Limit <= 0 || query.Limit > 10000 {
 		query.Limit = 1000
@@ -1123,7 +1298,7 @@ func (s *Store) queryEvents(ctx context.Context, query EventQuery, pricingView b
 		where, args = attributionWhere(query.Filter, "e", true)
 	}
 	args = append(args, query.Limit, query.Offset)
-	rows, err := s.db.QueryContext(ctx, `SELECT id,usage_at,local_date,local_hour,observed_at,machine_id,
+	rows, err := s.reader().QueryContext(ctx, `SELECT id,usage_at,local_date,local_hour,observed_at,machine_id,
 		session_id,turn_id,model,source,agent_type,project_path,thread_title,
 		input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,
 		reasoning_output_tokens,total_tokens,provenance,confidence,codex_home
@@ -1153,22 +1328,23 @@ func (s *Store) queryEvents(ctx context.Context, query EventQuery, pricingView b
 
 func (s *Store) Status(ctx context.Context) (Status, error) {
 	out := Status{Machine: s.machine, DatabasePath: s.path, AccountingMode: "jsonl_only", DataRevision: s.revision.Load()}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_events`).Scan(&out.EventCount); err != nil {
+	reader := s.reader()
+	if err := reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_events`).Scan(&out.EventCount); err != nil {
 		return out, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&out.SessionCount); err != nil {
+	if err := reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&out.SessionCount); err != nil {
 		return out, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM warnings`).Scan(&out.WarningCount); err != nil {
+	if err := reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM warnings`).Scan(&out.WarningCount); err != nil {
 		return out, err
 	}
 	var scan int64
-	_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(last_scan),0) FROM scan_state`).Scan(&scan)
+	_ = reader.QueryRowContext(ctx, `SELECT COALESCE(MAX(last_scan),0) FROM scan_state`).Scan(&scan)
 	if scan > 0 {
 		value := timeFromUnix(scan)
 		out.LastScan = &value
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT codex_home,last_scan,state_db,files_scanned,warning
+	rows, err := reader.QueryContext(ctx, `SELECT codex_home,last_scan,state_db,files_scanned,warning
 		FROM scan_state ORDER BY codex_home`)
 	if err != nil {
 		return out, err

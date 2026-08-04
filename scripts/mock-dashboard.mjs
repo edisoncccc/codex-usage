@@ -65,7 +65,7 @@ function costEstimate(url) {
   const totalCost = points.reduce((sum, point) => sum + Number(point.estimate.usd), 0);
   const estimate = { usd: totalCost.toFixed(9), regular_input_usd: totalCost.toFixed(9), cached_input_usd: "0.000000000", cache_write_input_usd: "0.000000000", output_usd: "0.000000000", priced_tokens: pricedTokens, unpriced_tokens: unpricedTokens, coverage_ratio: pricedTokens + unpricedTokens ? pricedTokens / (pricedTokens + unpricedTokens) : 0, reasons: unpricedTokens ? [{ kind: "unknown_model", model: "codex-auto-review", tokens: unpricedTokens, detail: "没有公开 API 单价或本机定价覆写" }] : [] };
   return {
-    basis: "current_standard_api_text_token_prices", currency: "USD", catalog_as_of: "2026-07-31", bucket: "day", summary: estimate, points,
+    basis: "current_standard_api_text_token_prices", currency: "USD", catalog_as_of: "2026-08-04", bucket: "day", summary: estimate, points,
     models: [
       { key: "gpt-5.4", usage: { ...totalUsage, total: Math.round(totalUsage.total * .63) }, estimate: { ...estimate, usd: (totalCost * .71).toFixed(9), priced_tokens: Math.round(totalUsage.total * .63), unpriced_tokens: 0, coverage_ratio: 1, reasons: [] } },
       { key: "gpt-5.6-terra", usage: { ...totalUsage, total: Math.round(totalUsage.total * .26) }, estimate: { ...estimate, usd: (totalCost * .25).toFixed(9), priced_tokens: Math.round(totalUsage.total * .26), unpriced_tokens: 0, coverage_ratio: 1, reasons: [] } },
@@ -77,7 +77,7 @@ function costEstimate(url) {
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://127.0.0.1:${port}`);
   if (url.pathname === "/api/v1/status") return json(response, {
-    version: "2.0.0-preview", scanning: false,
+    version: "2.1.0-preview", scanning: false,
     status: {
       machine: { id: "62c0172d-36c4-4ec9-a074-02b9ec2b45e1", label: "WORKSTATION-19 · windows", hostname: "WORKSTATION-19", os: "windows", arch: "amd64" },
       last_scan: now.toISOString(), accounting_mode: "jsonl_only", otel_active: false,
@@ -93,7 +93,7 @@ const server = http.createServer(async (request, response) => {
   }
   if (url.pathname === "/api/v1/cost-estimate") return json(response, costEstimate(url));
   if (url.pathname === "/api/v1/pricing" && request.method === "GET") return json(response, {
-    basis: "current_standard_api_text_token_prices", currency: "USD", catalog_as_of: "2026-07-31", catalog, overrides: pricingOverrides,
+    basis: "current_standard_api_text_token_prices", currency: "USD", catalog_as_of: "2026-08-04", catalog, overrides: pricingOverrides,
     unpriced_models: pricingOverrides["codex-auto-review"] ? [] : [{ key: "codex-auto-review", usage: { ...usage, total: 438_000 }, events: 9, sessions: 3 }]
   });
   if (url.pathname === "/api/v1/pricing/overrides" && request.method === "PUT") {
@@ -101,7 +101,7 @@ const server = http.createServer(async (request, response) => {
     for await (const chunk of request) body += chunk;
     try {
       pricingOverrides = JSON.parse(body).overrides || {};
-      return json(response, { basis: "current_standard_api_text_token_prices", currency: "USD", catalog_as_of: "2026-07-31", catalog, overrides: pricingOverrides, unpriced_models: pricingOverrides["codex-auto-review"] ? [] : [{ key: "codex-auto-review", usage: { ...usage, total: 438_000 }, events: 9, sessions: 3 }] });
+      return json(response, { basis: "current_standard_api_text_token_prices", currency: "USD", catalog_as_of: "2026-08-04", catalog, overrides: pricingOverrides, unpriced_models: pricingOverrides["codex-auto-review"] ? [] : [{ key: "codex-auto-review", usage: { ...usage, total: 438_000 }, events: 9, sessions: 3 }] });
     } catch {
       return json(response, { error: "无效请求体" }, 400);
     }
@@ -122,6 +122,11 @@ const server = http.createServer(async (request, response) => {
     if (dimension === "thread") return json(response, { dimension, items: [{ key: "Turntable occlusion refinement", usage, events: 12, sessions: 1 }, { key: "Linux batch migration", usage: { ...usage, total: 2_100_000 }, events: 9, sessions: 1 }] });
     return json(response, { dimension: "model", items });
   }
+  if (url.pathname === "/api/v1/dimensions") return json(response, {
+    models: items.map((item) => item.key),
+    sources: ["codex_desktop", "codex_cli_rs"],
+    projects: ["C:\\dev\\render-lab", "/srv/inference"]
+  });
   if (url.pathname === "/api/v1/sessions") return json(response, { items: [
     { session_id: "019fb24a-f4dd-7673-9b7d-225d26f2b141", title: "实现逐电脑 Token 统计与可视化", project_path: "C:\\dev\\codex-usage", model: "gpt-5.4", source: "codex_desktop", agent_type: "main", usage: { ...usage, total: 2_920_000 }, confidence: "exact", last_usage: now.toISOString() },
     { session_id: "019fa142-1051-72bd-aa0f-975efd2bf6c2", title: "Linux 渲染任务诊断", project_path: "/srv/inference/render", model: "gpt-5.5-codex", source: "codex_cli_rs", agent_type: "subagent", usage: { ...usage, total: 1_180_000 }, confidence: "gap_fallback", last_usage: new Date(now.getTime() - 3600000).toISOString() },
