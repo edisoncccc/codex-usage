@@ -161,6 +161,29 @@ func TestPricingAggregatesMatchRawEventsAndDimensions(t *testing.T) {
 	if !reflect.DeepEqual(raw.Report(), aggregated.Report()) {
 		t.Fatalf("aggregate pricing drifted\nraw=%#v\naggregated=%#v", raw.Report(), aggregated.Report())
 	}
+	rawSessions := map[string]*pricing.Builder{}
+	for _, sessionID := range []string{"s1", "s2", "s3", "s4"} {
+		rawSessions[sessionID], _ = pricing.NewBuilder(nil)
+	}
+	if err := st.WalkPricingEvents(ctx, model.Filter{}, func(event model.UsageEvent) error {
+		return rawSessions[event.SessionID].Add(event)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	aggregatedSessions := map[string]*pricing.Builder{}
+	for sessionID := range rawSessions {
+		aggregatedSessions[sessionID], _ = pricing.NewBuilder(nil)
+	}
+	if err := st.WalkSessionPricingAggregates(ctx, model.Filter{}, []string{"s1", "s2", "s3", "s4"}, func(event model.UsageEvent) error {
+		return aggregatedSessions[event.SessionID].Add(event)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for sessionID, rawBuilder := range rawSessions {
+		if !reflect.DeepEqual(rawBuilder.Report().Summary, aggregatedSessions[sessionID].Report().Summary) {
+			t.Fatalf("session %s pricing drifted\nraw=%#v\naggregated=%#v", sessionID, rawBuilder.Report().Summary, aggregatedSessions[sessionID].Report().Summary)
+		}
+	}
 	dimensions, err := st.Dimensions(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +192,13 @@ func TestPricingAggregatesMatchRawEventsAndDimensions(t *testing.T) {
 		!reflect.DeepEqual(dimensions.Sources, []string{"cli", "desktop"}) ||
 		!reflect.DeepEqual(dimensions.Projects, []string{"/p1", "/p2"}) {
 		t.Fatalf("unexpected dimensions: %#v", dimensions)
+	}
+	sessions, err := st.Sessions(ctx, model.Filter{Search: "p2"}, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "s2" {
+		t.Fatalf("session search mismatch: %#v", sessions)
 	}
 }
 

@@ -4,7 +4,7 @@
 
 **Which machine, model, project, or session used your Codex tokens?**
 
-*本地优先的 Codex 使用分析：从逐电脑归属，到模型、项目、会话与 API 等价成本。*
+*See local Codex usage by machine, model, project, and session—with API-equivalent cost estimates.*
 
 [Live Demo](https://zjay26.github.io/codex-usage/?lang=en) · [Windows x64](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe) · [Linux x64](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64) · English / [简体中文](README.md)
 
@@ -21,35 +21,11 @@
 
 ## Understand it in 30 seconds
 
-Run one single-file binary on each Windows, WSL, or Linux host. It uses Codex session JSONL as the sole accounting source. The background service performs a lightweight file-metadata probe every 30 seconds, incrementally reads appended `token_count` records only after JSONL changes, and keeps a 10-minute fallback scan. The result stays in that machine's SQLite database, so the Dashboard answers **how much this computer used**, not how much the whole account used.
+If you use Codex on more than one computer, an account total cannot tell you **which machine, project, model, or Session used the tokens**. codex-usage fills in that local detail.
 
-Per-machine attribution is codex-usage's most distinctive entry point, but it is not the endpoint. It breaks the local total down by model and token category, project, Thread, Session, Agent, and local calendar day, then adds Standard API-equivalent cost, pricing coverage, and data-quality records.
+Install it once on each computer, then open the Dashboard in your browser to see totals, daily trends, models, projects, and Sessions. Session details are searchable and include an API-equivalent cost estimate. New local usage appears automatically.
 
-Codex's official [`/usage`](https://learn.chatgpt.com/docs/developer-commands.md?surface=cli) is useful for daily, weekly, and cumulative account token activity. codex-usage complements that account view with an explainable local attribution layer: **where these machine-local tokens came from and what drove them**.
-
-The analysis stays local-first: one binary, loopback-only services, local SQLite, and **no access to `auth.json` or conversation content**.
-
-## From totals to explainable usage analytics
-
-| Question | What codex-usage shows |
-|---|---|
-| Which machine used the tokens? | An independent ledger for each Windows, WSL, or Linux host |
-| Which models and token categories drove usage? | Model plus Input, Cached, Cache Write, Output, and Reasoning composition |
-| Which work drove it? | Project, Thread, Session, and main task / Subagent / Guardian / Memory attribution |
-| When did it happen? | Today, 7 days, 30 days, all time, local calendar days, and single-day drill-down |
-| What would it roughly cost at API rates? | Standard API-equivalent cost with explicit token pricing coverage |
-| Can the number be audited? | One JSONL source, cumulative differencing, fork-replay deduplication, and data-quality records |
-
-## What it counts / what it does not count
-
-| Counts | Does not count or read |
-|---|---|
-| Tokens, models, sources, projects, Threads, Sessions, Agents, and local calendar days on this machine | Usage from other machines on the account |
-| Existing and newly appended `token_count` records in session JSONL | Account quota, subscription balance, or real bills |
-| Standard API text-token equivalent cost and pricing coverage | Prompts, replies, reasoning, tool output, or `auth.json` |
-| Audits for fork replay, cumulative resets, malformed records, and rewritten files | State-database `tokens_used`, cloud sync, remote telemetry, or third-party analytics |
-
-> “Machine” means the host running the Codex client and codex-usage, not a remote target used by a shell or tool. Cost is an equivalent estimate, never an OpenAI bill.
+All statistics stay on the current computer. codex-usage does not read prompts, replies, tool output, or `auth.json`. Cost is an estimate based on public API rates, not an OpenAI bill or account quota.
 
 ## Install directly
 
@@ -70,24 +46,45 @@ chmod +x codex-usage
 
 Need arm64? Download `windows-arm64.exe` or `linux-arm64` from the [latest Release](https://github.com/zJay26/codex-usage/releases/latest). Verify the file against `SHA256SUMS` on the same page.
 
-The installer creates the local database, scans historical sessions, and starts a user-level background service. It does not configure a Codex telemetry exporter, and Codex does not need to restart. During an upgrade, it removes only the legacy OTel exporter enclosed by codex-usage's own markers and never changes a third-party exporter. Then run `codex-usage` to open the Dashboard.
+The installer finds existing Codex usage on this computer and keeps the Dashboard updated in the background. Run `codex-usage` to open it. To upgrade, run `install` again; existing statistics are kept.
 
 On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it from your own computer, then open `http://127.0.0.1:43189`.
+
+## What you can see
+
+| Question | What codex-usage shows |
+|---|---|
+| Which machine used the tokens? | Separate statistics for each Windows, WSL, or Linux host, without mixing in other computers on the account |
+| Which models and token categories drove usage? | Model plus Input, Cached, Cache Write, Output, and Reasoning composition |
+| Which work drove it? | Project, Thread, Session, and main task, Subagent, Guardian, or Memory attribution |
+| When did it happen? | Today, 7 days, 30 days, all time, and single-day details |
+| What did one Session use? | Session-level tokens and API-equivalent cost, with search and a one-click “Only this Session” filter |
+| What would all of this roughly cost at API rates? | Overall and itemized API-equivalent cost, plus explicit pricing coverage |
 
 ## Highlights
 
 | Capability | What you get |
 |---|---|
-| Signature per-machine attribution | A separate `machine_id` and SQLite database on every host |
-| Historical + continuous incremental | Scan existing JSONL first, then read changes incrementally with a 10-minute fallback scan |
-| Explainable deduplication | Fix one owner session per physical file, recognize copied fork history, and difference cumulative vectors |
-| Daily drill-down | Continuous daily pulse, calendar, zero-usage days, and per-day model mix |
-| Multi-dimensional usage analytics | Understand usage by model, token category, source, project, Thread, Session, main task, Subagent, Guardian, or Memory |
-| Cost insight | Query-time Standard API-equivalent estimate with visible token pricing coverage; unknown usage never looks free |
-| Auditable quality | Visible sole source, fork replay, cumulative resets, malformed records, and file rebuilds |
-| Local-first | Loopback-only at `127.0.0.1`, embedded assets, and no runtime external requests |
-| Single binary | Windows/Linux, amd64/arm64, no CGO or external database service |
-| Bilingual | Dashboard and CLI support `zh-CN` / `en` through URL, button, flag, and environment |
+| Per-machine attribution | Keep work, home, Windows, WSL, and Linux usage clearly separated |
+| History and automatic updates | Find existing records after installation and add new local usage automatically |
+| Session search and filters | Search by Thread, Session ID, project, model, or source; click an active quick filter again to clear it |
+| Daily drill-down | Explore trends, calendar days, zero-usage days, and any day's model mix |
+| Multi-dimensional details | Understand usage by model, token category, source, project, Thread, Session, and Agent |
+| Equivalent cost | See API-equivalent cost overall and per Session; unpriced usage is clearly marked instead of looking free |
+| Local and private | Keep data on the current computer, with no conversation uploads or central server |
+| Lightweight install | One file for Windows / Linux and amd64 / arm64, with no separate database to install |
+| Bilingual | Switch the Dashboard and CLI between English and Simplified Chinese |
+
+## Scope and boundaries
+
+| Counts | Does not count or read |
+|---|---|
+| Tokens, models, sources, projects, Threads, Sessions, Agents, and calendar days on this machine | Usage from other machines on the account |
+| Existing and newly added local Codex session usage | Account quota, subscription balance, or real bills |
+| Standard API text-token equivalent cost and pricing coverage | Prompts, replies, reasoning content, tool output, or `auth.json` |
+| Data-quality notices for duplicates, resets, malformed records, and rebuilds | Cloud sync, remote telemetry, or third-party analytics |
+
+> “Machine” means the host running Codex and codex-usage, not a remote target used by a shell or tool. Codex's official `/usage` shows account-level activity; codex-usage adds detailed attribution for the current computer.
 
 <details><summary>View static desktop and 390 × 844 mobile screenshots</summary>
 
@@ -97,9 +94,11 @@ On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it fro
 
 </details>
 
-## How it works
+## How it works: technical details
 
 `codex-usage` is one Go binary containing the JSONL scanner, SQLite store, local API, and Web Dashboard.
+
+During an upgrade, the installer removes only a legacy OTel exporter marked by codex-usage itself. It never rewrites third-party exporters, and Codex does not need to restart.
 
 ```mermaid
 flowchart LR

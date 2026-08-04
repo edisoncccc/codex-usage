@@ -156,6 +156,7 @@ type Filter struct {
 	AgentType  string
 	Project    string
 	SessionID  string
+	Search     string
 	Confidence string
 }
 

@@ -259,7 +259,44 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			items[index].Title = compactText(items[index].Title, 240)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	overrides, err := s.pricingOverrides()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	builders := make(map[string]*pricing.Builder, len(items))
+	sessionIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		builder, buildErr := pricing.NewBuilder(overrides)
+		if buildErr != nil {
+			writeError(w, buildErr)
+			return
+		}
+		builders[item.SessionID] = builder
+		sessionIDs = append(sessionIDs, item.SessionID)
+	}
+	if err := s.Store.WalkSessionPricingAggregates(r.Context(), filter, sessionIDs, func(event model.UsageEvent) error {
+		builder := builders[event.SessionID]
+		if builder == nil {
+			return nil
+		}
+		return builder.Add(event)
+	}); err != nil {
+		writeError(w, err)
+		return
+	}
+	type sessionResponseItem struct {
+		store.SessionRow
+		Estimate pricing.Estimate `json:"estimate"`
+	}
+	responseItems := make([]sessionResponseItem, 0, len(items))
+	for _, item := range items {
+		responseItems = append(responseItems, sessionResponseItem{
+			SessionRow: item,
+			Estimate:   builders[item.SessionID].Report().Summary,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": responseItems})
 }
 
 func (s *Server) handleWarnings(w http.ResponseWriter, r *http.Request) {
@@ -599,6 +636,10 @@ func parseFilter(query url.Values) (model.Filter, error) {
 	filter.AgentType = query.Get("agent_type")
 	filter.Project = query.Get("project")
 	filter.SessionID = query.Get("session_id")
+	filter.Search = strings.TrimSpace(query.Get("q"))
+	if len([]rune(filter.Search)) > 200 {
+		return filter, fmt.Errorf("q: 搜索词最多 200 个字符")
+	}
 	filter.Confidence = query.Get("confidence")
 	return filter, nil
 }

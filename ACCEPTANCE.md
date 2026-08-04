@@ -2,15 +2,15 @@
 
 执行日期：2026-08-04
 执行主机：Windows amd64
-候选版本：v2.1.0 · performance, display controls, and short-context pricing
+候选版本：v2.2.0 · Session search, per-Session cost, and public-first documentation
 
 ## 自动化检查
 
 - `go test -mod=readonly ./...`：通过。
 - `go vet -mod=readonly ./...`：通过。
-- Playwright：11/11 通过，覆盖真实编译二进制、筛选项懒加载与 GitHub Pages synthetic Demo。
+- Playwright：11/11 通过，覆盖真实编译二进制、Session 前端搜索、快捷筛选再次点击取消、筛选项懒加载与 GitHub Pages synthetic Demo。
 - 定价：已识别模型统一按 Standard 短上下文单价计算；300K Input 的非 `exact` 回归样例仍完整计价，不再生成 `long_context_uncertain`。
-- Dashboard：概览、每日、明细、筛选、日期下钻、定价覆写、扫描、导出、主题、中英切换和移动端无溢出均通过。
+- Dashboard：概览、每日、明细、Session 等价费用、搜索、筛选、日期下钻、定价覆写、扫描、导出、主题、中英切换和移动端无溢出均通过。
 - Demo：正式前端下的所有 `/api/v1/*` 均由 synthetic adapter 接管；无 Cookie、无外部请求，不读取或导出本机数据。
 
 ## JSONL-only 统计回归
@@ -45,7 +45,7 @@
 
 ## 当前电脑隔离实扫
 
-使用 v2.1.0 Windows amd64 候选二进制、独立临时 `CODEX_USAGE_HOME` 对当前电脑源 JSONL 执行 `scan --rebuild`：
+以下为 v2.1.0 发布前保留的扫描器回归证据；v2.2.0 未修改 JSONL 扫描与入账规则。使用 v2.1.0 Windows amd64 候选二进制、独立临时 `CODEX_USAGE_HOME` 对当前电脑源 JSONL 执行 `scan --rebuild`：
 
 - 508 个 JSONL，59,269 个规范增量事件。
 - 487 个有用量 Session；14,283 个重复累计快照被忽略。
@@ -53,18 +53,18 @@
 - 该结果与正式服务同一 JSONL 源口径一致；源历史在检查期间仍会继续增长。
 - 扫描只读取源 JSONL；正式数据库和已安装服务未改动。
 
-## v2.1.0 构建产物
+## v2.2.0 构建产物
 
-`scripts/build.ps1 -Version 2.1.0` 成功生成四个无 CGO 单文件二进制与四项 `SHA256SUMS`：
+`scripts/build.ps1 -Version 2.2.0` 成功生成四个无 CGO 单文件二进制与四项 `SHA256SUMS`：
 
 | 平台 | SHA-256 |
 |---|---|
-| Windows amd64 | `a16fdbda70ee4df4a4095c63f1a522c71f56dbc7b20a7c52e442252e7bb65cd2` |
-| Windows arm64 | `11e11de4fae75ac5be5db91e18f4e9adc0dc8a20b7fff4e607480f7025c2763d` |
-| Linux amd64 | `db8ec9f9b68623fcb7316fb32db150638980e454038ed2ef0bd6910b3b391c58` |
-| Linux arm64 | `a72be55751c06aebf73f99e92387a4ab5e6a0b223771dabf148e235849b3eaef` |
+| Windows amd64 | `1febb81c24640c1114f16704d766a540a24ea7f2929191ab705af2bb397ab332` |
+| Windows arm64 | `ffba31a95bb25bb0605bb678ab4666aef2fd2b7b76b0da94ec2b1ad179d0de18` |
+| Linux amd64 | `77515e4a1ce7fcd5ffff8104e6e196e11da9402b0503628da459c35c1003cfba` |
+| Linux arm64 | `b1fcaf28112ec79bf2ed44eddeb4c746ec0442f4da4f5f178bdb8f635c6b4e17` |
 
-Windows amd64 二进制已原生实跑并报告 `codex-usage 2.1.0 (0ac749c-dirty, …)`；本地候选的 `-dirty` 标记表示它在提交前构建，干净 tag 的 CI 构建会记录实际发布提交。Linux 与 arm64 目标完成交叉构建；对应平台的原生启动仍由 GitHub Actions runner / 实机继续验证。
+Windows amd64 二进制已原生实跑并报告 `codex-usage 2.2.0 (d2774bf-dirty, …)`；本地候选的 `-dirty` 标记表示它在提交前构建，干净 tag 的 CI 构建会记录实际发布提交。四项本地校验和已重新计算并逐项验证。Linux 与 arm64 目标完成交叉构建；对应平台的原生启动仍由 GitHub Actions runner / 实机继续验证。
 
 ## 公开素材
 
