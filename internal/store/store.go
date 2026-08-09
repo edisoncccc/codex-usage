@@ -23,7 +23,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 5
+const (
+	schemaVersion              = 5
+	historicalRebuildReasonKey = "historical_rebuild_required"
+)
 
 type Store struct {
 	// db is the single writer used by ingestion and migrations. readDB is a
@@ -330,37 +333,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 			return err
 		}
-		// Every row in these tables is a reproducible local index. Parser v4
-		// changes fork/replay ownership, category corrections, and date
-		// attribution, so carrying old derived rows forward would preserve known
-		// accounting errors.
-		for _, stmt := range []string{
-			`DELETE FROM usage_events`, `DELETE FROM file_cursors`,
-			`DELETE FROM session_cursors`, `DELETE FROM sessions`,
-			`DELETE FROM scan_state`, `DELETE FROM warnings`,
-		} {
-			if _, err := tx.ExecContext(ctx, stmt); err != nil {
-				return err
-			}
-		}
 	}
-	if databaseVersion < 5 {
-		// Parser v5 recognizes the single-session_meta fork format and derives
-		// its inherited baseline from the first total-last snapshot. Existing
-		// events and cursors cannot be repaired reliably in place, so force one
-		// complete JSONL rebuild when a v4 database is next opened.
-		for _, stmt := range []string{
-			`DELETE FROM usage_events`, `DELETE FROM file_cursors`,
-			`DELETE FROM session_cursors`, `DELETE FROM sessions`,
-			`DELETE FROM scan_state`, `DELETE FROM warnings`,
-		} {
-			if _, err := tx.ExecContext(ctx, stmt); err != nil {
-				return err
-			}
-		}
-	}
-	for _, stmt := range []string{`DROP TABLE IF EXISTS otel_series`, `DROP TABLE IF EXISTS otel_coverage`} {
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+	if databaseVersion > 0 && databaseVersion < schemaVersion {
+		// Parser migrations can invalidate every derived event. Preserve the old
+		// ledger until the user explicitly approves a rebuild instead of deleting
+		// it while merely opening the database.
+		reason := fmt.Sprintf("统计库已从 schema v%d 升级到 v%d，解析规则变化需要全量重建", databaseVersion, schemaVersion)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES(?,?)
+			ON CONFLICT(key) DO UPDATE SET value=excluded.value`, historicalRebuildReasonKey, reason); err != nil {
 			return err
 		}
 	}
@@ -895,6 +875,9 @@ func (s *Store) ResetHistorical(ctx context.Context) error {
 		`DELETE FROM sessions`,
 		`DELETE FROM scan_state`,
 		`DELETE FROM warnings`,
+		`DELETE FROM meta WHERE key='historical_rebuild_required'`,
+		`DROP TABLE IF EXISTS otel_series`,
+		`DROP TABLE IF EXISTS otel_coverage`,
 	} {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return err
@@ -905,6 +888,20 @@ func (s *Store) ResetHistorical(ctx context.Context) error {
 	}
 	s.revision.Add(1)
 	return nil
+}
+
+// HistoricalRebuildReason reports a pending parser migration without changing
+// or discarding the existing derived ledger.
+func (s *Store) HistoricalRebuildReason(ctx context.Context) (string, bool, error) {
+	var reason string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key=?`, historicalRebuildReasonKey).Scan(&reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return reason, true, nil
 }
 
 func (s *Store) AddWarning(ctx context.Context, kind, path, detail string) error {

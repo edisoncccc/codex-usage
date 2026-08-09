@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -216,6 +217,68 @@ func TestDashboardAPIAndExport(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin pricing update was not blocked: %d", response.StatusCode)
+	}
+}
+
+func TestRescanRequiresExplicitRebuildApproval(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "approval.jsonl")
+	meta := `{"timestamp":"2026-08-09T01:00:00Z","type":"session_meta","payload":{"id":"approval-session","cwd":"C:\\work"}}` + "\n"
+	tokens := `{"timestamp":"2026-08-09T01:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":80,"output_tokens":20,"total_tokens":100},"last_token_usage":{"input_tokens":80,"output_tokens":20,"total_tokens":100}}}}` + "\n"
+	if err := os.WriteFile(path, []byte(meta+tokens), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	scanner := &usage.Scanner{Store: st}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Store: st, Scanner: scanner, Homes: func() ([]string, error) { return []string{home}, nil }}
+	httpServer := httptest.NewServer(srv.Handler())
+	defer httpServer.Close()
+
+	response, err := http.Post(httpServer.URL+"/api/v1/rescan", "application/json", strings.NewReader(`{"rebuild":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conflict map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&conflict); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusConflict || conflict["rebuild_required"] != true {
+		t.Fatalf("rescan did not request approval: status=%d payload=%#v", response.StatusCode, conflict)
+	}
+	summary, _ := st.Summary(context.Background(), model.Filter{})
+	if summary.GrandTotal != 100 {
+		t.Fatalf("history changed before approval: %+v", summary)
+	}
+
+	response, err = http.Post(httpServer.URL+"/api/v1/rescan", "application/json", strings.NewReader(`{"rebuild":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("approved rebuild failed: status=%d", response.StatusCode)
+	}
+	summary, _ = st.Summary(context.Background(), model.Filter{})
+	if summary.GrandTotal != 0 {
+		t.Fatalf("approved rebuild did not use current JSONL: %+v", summary)
 	}
 }
 

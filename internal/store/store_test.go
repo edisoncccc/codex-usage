@@ -230,7 +230,7 @@ func TestWarningsAreGroupedByKindAndPath(t *testing.T) {
 	}
 }
 
-func TestV2MigrationPurgesDerivedRowsAndDropsOTelTables(t *testing.T) {
+func TestV2MigrationPreservesDerivedRowsUntilApprovedRebuild(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
 	st, err := Open(path)
@@ -269,19 +269,32 @@ func TestV2MigrationPurgesDerivedRowsAndDropsOTelTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.GrandTotal != 0 || summary.EventCount != 0 {
-		t.Fatalf("legacy derived rows survived migration: %+v", summary)
+	if summary.GrandTotal != 10 || summary.EventCount != 1 {
+		t.Fatalf("legacy derived rows were changed before approval: %+v", summary)
+	}
+	if reason, pending, err := st.HistoricalRebuildReason(ctx); err != nil || !pending || reason == "" {
+		t.Fatalf("migration did not request an approved rebuild: pending=%v reason=%q err=%v", pending, reason, err)
 	}
 	var count int
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'otel_%'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
-		t.Fatalf("legacy OTel tables remain: %d", count)
+	if count != 2 {
+		t.Fatalf("legacy tables were removed before approval: %d", count)
+	}
+	if err := st.ResetHistorical(ctx); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ = st.Summary(ctx, model.Filter{})
+	if summary.GrandTotal != 0 || summary.EventCount != 0 {
+		t.Fatalf("approved rebuild did not clear derived rows: %+v", summary)
+	}
+	if _, pending, err := st.HistoricalRebuildReason(ctx); err != nil || pending {
+		t.Fatalf("approved rebuild left pending marker: pending=%v err=%v", pending, err)
 	}
 }
 
-func TestV3MigrationAddsEventSegmentAndPurgesDerivedRows(t *testing.T) {
+func TestV3MigrationAddsEventSegmentAndWaitsForApproval(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
 	st, err := Open(path)
@@ -319,8 +332,11 @@ func TestV3MigrationAddsEventSegmentAndPurgesDerivedRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.EventCount != 0 || summary.GrandTotal != 0 {
-		t.Fatalf("v3 derived rows survived v4 migration: %+v", summary)
+	if summary.EventCount != 1 || summary.GrandTotal != 10 {
+		t.Fatalf("v3 derived rows were changed before approval: %+v", summary)
+	}
+	if reason, pending, err := st.HistoricalRebuildReason(ctx); err != nil || !pending || reason == "" {
+		t.Fatalf("migration did not request an approved rebuild: pending=%v reason=%q err=%v", pending, reason, err)
 	}
 	var segmentColumns int
 	rows, err := st.db.Query(`PRAGMA table_info(usage_events)`)
@@ -345,7 +361,7 @@ func TestV3MigrationAddsEventSegmentAndPurgesDerivedRows(t *testing.T) {
 	}
 }
 
-func TestV4MigrationForcesRebuildForSingleMetadataForkParser(t *testing.T) {
+func TestV4MigrationPreservesHistoryUntilSingleMetadataRebuildApproved(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
 	st, err := Open(path)
@@ -390,11 +406,14 @@ func TestV4MigrationForcesRebuildForSingleMetadataForkParser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.EventCount != 0 || summary.GrandTotal != 0 {
-		t.Fatalf("v4 derived rows survived v5 migration: %+v", summary)
+	if summary.EventCount != 1 || summary.GrandTotal != 10 {
+		t.Fatalf("v4 derived rows were changed before approval: %+v", summary)
 	}
-	if _, ok, err := st.GetCursor(ctx, "single-meta-fork.jsonl"); err != nil || ok {
-		t.Fatalf("v4 cursor survived v5 migration: ok=%v err=%v", ok, err)
+	if _, ok, err := st.GetCursor(ctx, "single-meta-fork.jsonl"); err != nil || !ok {
+		t.Fatalf("v4 cursor was removed before approval: ok=%v err=%v", ok, err)
+	}
+	if reason, pending, err := st.HistoricalRebuildReason(ctx); err != nil || !pending || reason == "" {
+		t.Fatalf("migration did not request an approved rebuild: pending=%v reason=%q err=%v", pending, reason, err)
 	}
 	var version string
 	if err := st.db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version); err != nil {
@@ -402,6 +421,12 @@ func TestV4MigrationForcesRebuildForSingleMetadataForkParser(t *testing.T) {
 	}
 	if version != "5" {
 		t.Fatalf("schema version = %q, want 5", version)
+	}
+	if err := st.ResetHistorical(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := st.GetCursor(ctx, "single-meta-fork.jsonl"); err != nil || ok {
+		t.Fatalf("approved rebuild did not clear v4 cursor: ok=%v err=%v", ok, err)
 	}
 }
 

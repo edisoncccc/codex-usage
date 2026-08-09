@@ -479,13 +479,35 @@ func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
 	}
 	s.scanning.Store(true)
 	defer s.scanning.Store(false)
+	var payload struct {
+		Rebuild bool `json:"rebuild"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效扫描请求: " + err.Error()})
+		return
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无效扫描请求: " + err.Error()})
+		return
+	}
 	homes, err := s.Homes()
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	result, err := s.Scanner.Scan(r.Context(), homes, false)
+	result, err := s.Scanner.Scan(r.Context(), homes, payload.Rebuild)
 	if err != nil {
+		var rebuildErr *usage.RebuildRequiredError
+		if errors.As(err, &rebuildErr) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": err.Error(), "rebuild_required": true,
+				"kind": rebuildErr.Kind, "path": rebuildErr.Path, "detail": rebuildErr.Detail,
+			})
+			return
+		}
 		writeError(w, err)
 		return
 	}

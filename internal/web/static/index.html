@@ -276,6 +276,15 @@
     </div>
   </dialog>
 
+  <dialog class="modal-dialog" id="rebuildDialog" aria-labelledby="rebuildTitle">
+    <div class="dialog-frame">
+      <div class="dialog-head"><h2 id="rebuildTitle" data-i18n="rebuild.title">需要重建统计数据</h2><button class="dialog-close pressable" type="button" data-close aria-label="关闭重建确认" data-i18n-aria-label="action.closeRebuild">×</button></div>
+      <p class="dialog-intro" data-i18n="rebuild.intro">检测到本地 JSONL 历史发生变化。重建会先清空当前派生统计，再仅从当前仍存在的 JSONL 重新计算；已删除的 JSONL 数据可能从统计中消失。</p>
+      <p class="dialog-intro" id="rebuildDetail"></p>
+      <div class="dialog-actions"><button class="action-button quiet pressable" type="button" data-close data-i18n="rebuild.keep">保留现有统计</button><button class="action-button primary pressable" id="confirmRebuild" type="button" data-i18n="rebuild.confirm">同意并重建</button></div>
+    </div>
+  </dialog>
+
   <dialog class="modal-dialog warnings-dialog" id="warningsDialog" aria-labelledby="warningsTitle">
     <div class="dialog-frame">
       <div class="dialog-head"><h2 id="warningsTitle" data-i18n="warnings.title">数据质量与去重记录</h2><button class="dialog-close pressable" type="button" data-close aria-label="关闭数据质量详情" data-i18n-aria-label="action.closeWarnings">×</button></div>

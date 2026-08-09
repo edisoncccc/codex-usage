@@ -276,6 +276,45 @@ test("revisiting a range or view reuses the current data revision", async ({ pag
   expect(dataRequests.filter((item) => item === monthCostKey).length).toBe(firstMonthCount);
 });
 
+test("historical rebuild requires explicit dashboard approval", async ({ page }) => {
+  const requests = [];
+  await page.route("**/api/v1/rescan", async (route) => {
+    const payload = route.request().postDataJSON();
+    requests.push(payload);
+    if (!payload.rebuild) {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "现有统计已保留，需要用户确认后才能重建",
+          rebuild_required: true,
+          kind: "rollout_truncated",
+          detail: "文件从 1024 缩短到 512"
+        })
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ homes: 1, files: 1, events_inserted: 1, duplicates: 0, warnings: 0 })
+    });
+  });
+  await page.goto(dashboardURL);
+
+  await page.locator("#scanButton").click();
+  await expect(page.locator("#rebuildDialog")).toBeVisible();
+  await expect(page.locator("#rebuildDetail")).toHaveText("文件从 1024 缩短到 512");
+  await page.getByRole("button", { name: "保留现有统计" }).click();
+  await expect(page.locator("#rebuildDialog")).toBeHidden();
+  expect(requests).toEqual([{ rebuild: false }]);
+
+  await page.locator("#scanButton").click();
+  await page.locator("#confirmRebuild").click();
+  await expect(page.getByText(/扫描完成：新增/)).toBeVisible();
+  expect(requests).toEqual([{ rebuild: false }, { rebuild: false }, { rebuild: true }]);
+});
+
 test("mobile, tablet, themes, and reduced motion avoid page overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(dashboardURL, { waitUntil: "networkidle" });

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -516,7 +517,7 @@ func TestSingleMetadataForkFixturesUseImplicitFirstSnapshotBaseline(t *testing.T
 	}
 }
 
-func TestImplicitForkAutomaticallyRebuildsIfExplicitParentBoundaryArrivesLater(t *testing.T) {
+func TestImplicitForkWaitsForApprovalIfExplicitParentBoundaryArrivesLater(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, ".codex")
 	dir := filepath.Join(home, "sessions")
@@ -571,6 +572,25 @@ func TestImplicitForkAutomaticallyRebuildsIfExplicitParentBoundaryArrivesLater(t
 		t.Fatal(closeErr)
 	}
 	result, err := scanner.Scan(context.Background(), []string{home}, false)
+	var rebuildErr *RebuildRequiredError
+	if !errors.As(err, &rebuildErr) || rebuildErr.Kind != "fork_replay_detected" {
+		t.Fatalf("late explicit boundary did not request approval: result=%+v err=%v", result, err)
+	}
+	preserved, err := st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.GrandTotal != 300 || result.Warnings == 0 {
+		t.Fatalf("history changed before rebuild approval: scan=%+v summary=%+v", result, preserved)
+	}
+	warnings, err := st.Warnings(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) == 0 || warnings[0].Kind != "fork_replay_detected" {
+		t.Fatalf("pending rebuild was not visible: %+v", warnings)
+	}
+	approved, err := scanner.Scan(context.Background(), []string{home}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,15 +598,8 @@ func TestImplicitForkAutomaticallyRebuildsIfExplicitParentBoundaryArrivesLater(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if corrected.GrandTotal != 180 || result.Warnings == 0 {
-		t.Fatalf("late explicit boundary did not trigger a corrected rebuild: scan=%+v summary=%+v", result, corrected)
-	}
-	warnings, err := st.Warnings(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(warnings) == 0 || warnings[0].Kind != "fork_replay_detected" {
-		t.Fatalf("late explicit boundary rebuild was not visible: %+v", warnings)
+	if corrected.GrandTotal != 180 || approved.EventsInserted == 0 {
+		t.Fatalf("approved rebuild did not correct history: scan=%+v summary=%+v", approved, corrected)
 	}
 }
 
@@ -680,7 +693,7 @@ func TestSameTotalClassificationCorrectionCanReachEarlierEvents(t *testing.T) {
 	}
 }
 
-func TestRewriteAndTruncationRebuildWithoutStaleEvents(t *testing.T) {
+func TestRewriteAndTruncationWaitForApprovalBeforeReplacingHistory(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, ".codex")
 	dir := filepath.Join(home, "sessions")
@@ -709,22 +722,36 @@ func TestRewriteAndTruncationRebuildWithoutStaleEvents(t *testing.T) {
 	if err := os.Chtimes(path, changed, changed); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
-		t.Fatal(err)
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err == nil {
+		t.Fatal("same-size rewrite did not request rebuild approval")
 	}
 	summary, _ := st.Summary(context.Background(), model.Filter{})
+	if summary.GrandTotal != 900 {
+		t.Fatalf("same-size rewrite changed history before approval: %+v", summary)
+	}
+	if _, err := scanner.Scan(context.Background(), []string{home}, true); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ = st.Summary(context.Background(), model.Filter{})
 	if summary.GrandTotal != 800 {
-		t.Fatalf("same-size rewrite left stale usage: %+v", summary)
+		t.Fatalf("approved same-size rewrite left stale usage: %+v", summary)
 	}
 	if err := os.WriteFile(path, []byte(makeContent(40, 10, 50)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err == nil {
+		t.Fatal("truncation did not request rebuild approval")
+	}
+	summary, _ = st.Summary(context.Background(), model.Filter{})
+	if summary.GrandTotal != 800 {
+		t.Fatalf("truncation changed history before approval: %+v", summary)
+	}
+	if _, err := scanner.Scan(context.Background(), []string{home}, true); err != nil {
 		t.Fatal(err)
 	}
 	summary, _ = st.Summary(context.Background(), model.Filter{})
 	if summary.GrandTotal != 50 {
-		t.Fatalf("truncation left stale usage: %+v", summary)
+		t.Fatalf("approved truncation left stale usage: %+v", summary)
 	}
 }
 

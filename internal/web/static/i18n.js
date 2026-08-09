@@ -37,6 +37,7 @@
       "action.closePricing": "关闭定价设置",
       "action.closeExport": "关闭导出",
       "action.closeWarnings": "关闭数据质量详情",
+      "action.closeRebuild": "关闭重建确认",
       "action.cancel": "取消",
       "action.add": "添加",
       "action.remove": "从设置中移除",
@@ -235,9 +236,10 @@
       "dynamic.sessionsEmpty": "当前范围没有 Session 数据",
       "dynamic.sessionsSearchEmpty": "没有匹配的 Session",
       "dynamic.untitledThread": "无标题 Thread",
-      "warning.fork_replay_detected": "已重建 fork 历史前缀",
-      "warning.rollout_rewritten": "JSONL 已重写并重建",
-      "warning.rollout_truncated": "JSONL 已截断并重建",
+      "warning.fork_replay_detected": "fork 历史边界变化，等待确认重建",
+      "warning.rollout_rewritten": "JSONL 已重写，等待确认重建",
+      "warning.rollout_truncated": "JSONL 已截断，等待确认重建",
+      "warning.schema_upgrade_rebuild": "解析规则已升级，等待确认重建",
       "warning.cumulative_reset": "累计快照回退补位",
       "warning.timestamp": "时间戳无法归属",
       "warning.jsonl_record": "JSONL 记录无法解析",
@@ -266,7 +268,11 @@
       "pricing.rateInvalid": "{model} 的单价必须是非负十进制，最多三位小数",
       "pricing.saved": "本机定价已保存，费用已重新估算",
       "pricing.modelRequired": "请输入要覆写的模型名",
-      "scan.complete": "扫描完成：新增 {inserted} 个事件，忽略 {duplicates} 个重复"
+      "scan.complete": "扫描完成：新增 {inserted} 个事件，忽略 {duplicates} 个重复",
+      "rebuild.title": "需要重建统计数据",
+      "rebuild.intro": "检测到本地 JSONL 历史发生变化。重建会先清空当前派生统计，再仅从当前仍存在的 JSONL 重新计算；已删除的 JSONL 数据可能从统计中消失。",
+      "rebuild.keep": "保留现有统计",
+      "rebuild.confirm": "同意并重建"
     },
     en: {
       "app.title": "Codex Usage · Local usage analytics",
@@ -302,6 +308,7 @@
       "action.closePricing": "Close pricing settings",
       "action.closeExport": "Close export",
       "action.closeWarnings": "Close data-quality details",
+      "action.closeRebuild": "Close rebuild confirmation",
       "action.cancel": "Cancel",
       "action.add": "Add",
       "action.remove": "Remove from settings",
@@ -500,9 +507,10 @@
       "dynamic.sessionsEmpty": "No Session data in this range",
       "dynamic.sessionsSearchEmpty": "No matching sessions",
       "dynamic.untitledThread": "Untitled Thread",
-      "warning.fork_replay_detected": "Rebuilt fork history prefix",
-      "warning.rollout_rewritten": "Rebuilt rewritten JSONL",
-      "warning.rollout_truncated": "Rebuilt truncated JSONL",
+      "warning.fork_replay_detected": "Fork history change awaiting rebuild approval",
+      "warning.rollout_rewritten": "Rewritten JSONL awaiting rebuild approval",
+      "warning.rollout_truncated": "Truncated JSONL awaiting rebuild approval",
+      "warning.schema_upgrade_rebuild": "Parser upgrade awaiting rebuild approval",
       "warning.cumulative_reset": "Cumulative snapshot reset fallback",
       "warning.timestamp": "Timestamp could not be attributed",
       "warning.jsonl_record": "JSONL record could not be parsed",
@@ -531,7 +539,11 @@
       "pricing.rateInvalid": "{model} rates must be non-negative decimals with up to three decimal places",
       "pricing.saved": "Local pricing saved; costs were recalculated",
       "pricing.modelRequired": "Enter a model name to override",
-      "scan.complete": "Scan complete: {inserted} events added, {duplicates} duplicates ignored"
+      "scan.complete": "Scan complete: {inserted} events added, {duplicates} duplicates ignored",
+      "rebuild.title": "Usage history rebuild required",
+      "rebuild.intro": "Local JSONL history has changed. Rebuilding first clears the current derived statistics, then recalculates only from JSONL files that still exist. Data from deleted JSONL files may disappear.",
+      "rebuild.keep": "Keep current statistics",
+      "rebuild.confirm": "Approve and rebuild"
     }
   };
 

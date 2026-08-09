@@ -222,7 +222,10 @@ async function api(path, options = {}) {
     }
     if (!response.ok) {
       const message = payload && typeof payload === "object" ? payload.error : payload;
-      throw new Error(message || `${response.status} ${response.statusText}`);
+      const error = new Error(message || `${response.status} ${response.statusText}`);
+      error.status = response.status;
+      error.payload = payload;
+      throw error;
     }
     if (cacheable && requestGeneration === cacheGeneration) responseCache.set(key, { payload, expires: Date.now() + DATA_CACHE_TTL });
     return payload;
@@ -1146,24 +1149,41 @@ function setupEvents() {
   });
   $("#savePricing").addEventListener("click", savePricing);
   $("#exportButton").addEventListener("click", () => { setExportLinks(); openDialog($("#exportDialog")); });
-  $("#scanButton").addEventListener("click", async () => {
+  const runScan = async (rebuild = false) => {
     const button = $("#scanButton");
+    const rebuildButton = $("#confirmRebuild");
     button.disabled = true;
+    rebuildButton.disabled = true;
     $(".scan-icon").classList.add("spin");
     try {
       const refreshFilterOptions = Boolean(state.filterOptions);
-      const result = await api("/api/v1/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const result = await api("/api/v1/rescan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rebuild })
+      });
       invalidateDataCache();
       state.filterOptions = null;
       toast(t("scan.complete", { inserted: i18n.formatNumber(result.events_inserted || 0), duplicates: i18n.formatNumber(result.duplicates || 0) }));
       await loadStatus();
       await Promise.all([refreshFilterOptions ? loadFilterOptions({ force: true }) : Promise.resolve(), loadCurrentView()]);
     } catch (error) {
-      toast(error.message, true);
+      if (!rebuild && error.payload?.rebuild_required) {
+        $("#rebuildDetail").textContent = error.payload.detail || error.message;
+        openDialog($("#rebuildDialog"));
+      } else {
+        toast(error.message, true);
+      }
     } finally {
       button.disabled = false;
+      rebuildButton.disabled = false;
       $(".scan-icon").classList.remove("spin");
     }
+  };
+  $("#scanButton").addEventListener("click", () => runScan(false));
+  $("#confirmRebuild").addEventListener("click", async () => {
+    closeDialog($("#rebuildDialog"));
+    await runScan(true);
   });
   $("#themeButton").addEventListener("click", () => {
     const dark = displayPreferences.theme === "system"
