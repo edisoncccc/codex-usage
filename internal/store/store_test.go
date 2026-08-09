@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,50 @@ import (
 	"github.com/zJay26/codex-usage/internal/model"
 	"github.com/zJay26/codex-usage/internal/pricing"
 )
+
+func BenchmarkEventExportTraversal(b *testing.B) {
+	path := os.Getenv("CODEX_USAGE_BENCH_DB")
+	if path == "" {
+		b.Skip("set CODEX_USAGE_BENCH_DB to a disposable database copy")
+	}
+	st, err := Open(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.Close()
+	b.Run("offset-pages", func(b *testing.B) {
+		for range b.N {
+			count := 0
+			for offset := 0; ; offset += 5000 {
+				items, err := st.Events(context.Background(), EventQuery{Limit: 5000, Offset: offset})
+				if err != nil {
+					b.Fatal(err)
+				}
+				count += len(items)
+				if len(items) < 5000 {
+					break
+				}
+			}
+			if count == 0 {
+				b.Fatal("no export events")
+			}
+		}
+	})
+	b.Run("single-snapshot", func(b *testing.B) {
+		for range b.N {
+			count := 0
+			if err := st.WalkEvents(context.Background(), model.Filter{}, func(model.UsageEvent) error {
+				count++
+				return nil
+			}); err != nil {
+				b.Fatal(err)
+			}
+			if count == 0 {
+				b.Fatal("no export events")
+			}
+		}
+	})
+}
 
 func BenchmarkPricingEventTraversal(b *testing.B) {
 	path := os.Getenv("CODEX_USAGE_BENCH_DB")
@@ -142,6 +187,10 @@ func TestPricingAggregatesMatchRawEventsAndDimensions(t *testing.T) {
 		{ID: "zero-total", Timestamp: base.Add(time.Hour), SessionID: "s3", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 3, Output: 2}},
 		{ID: "invalid", Timestamp: base.Add(25 * time.Hour), SessionID: "s3", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 8, CachedInput: 9, Output: 4, Total: 12}},
 		{ID: "internal", Timestamp: base.Add(24 * time.Hour), SessionID: "s4", Model: "internal", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 8, Output: 2, Total: 10}},
+		// Individually invalid totals whose opposite errors cancel after SUM. They
+		// must remain separate or aggregate pricing would incorrectly accept both.
+		{ID: "mismatch-high", Timestamp: base.Add(2 * time.Hour), SessionID: "s5", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 10, Total: 12}},
+		{ID: "mismatch-low", Timestamp: base.Add(3 * time.Hour), SessionID: "s5", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 10, Total: 8}},
 	}
 	for _, event := range events {
 		event.Provenance = model.ProvenanceSessionJSONL
@@ -162,7 +211,7 @@ func TestPricingAggregatesMatchRawEventsAndDimensions(t *testing.T) {
 		t.Fatalf("aggregate pricing drifted\nraw=%#v\naggregated=%#v", raw.Report(), aggregated.Report())
 	}
 	rawSessions := map[string]*pricing.Builder{}
-	for _, sessionID := range []string{"s1", "s2", "s3", "s4"} {
+	for _, sessionID := range []string{"s1", "s2", "s3", "s4", "s5"} {
 		rawSessions[sessionID], _ = pricing.NewBuilder(nil)
 	}
 	if err := st.WalkPricingEvents(ctx, model.Filter{}, func(event model.UsageEvent) error {
@@ -174,7 +223,7 @@ func TestPricingAggregatesMatchRawEventsAndDimensions(t *testing.T) {
 	for sessionID := range rawSessions {
 		aggregatedSessions[sessionID], _ = pricing.NewBuilder(nil)
 	}
-	if err := st.WalkSessionPricingAggregates(ctx, model.Filter{}, []string{"s1", "s2", "s3", "s4"}, func(event model.UsageEvent) error {
+	if err := st.WalkSessionPricingAggregates(ctx, model.Filter{}, []string{"s1", "s2", "s3", "s4", "s5"}, func(event model.UsageEvent) error {
 		return aggregatedSessions[event.SessionID].Add(event)
 	}); err != nil {
 		t.Fatal(err)
@@ -199,6 +248,74 @@ func TestPricingAggregatesMatchRawEventsAndDimensions(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].SessionID != "s2" {
 		t.Fatalf("session search mismatch: %#v", sessions)
+	}
+}
+
+func TestWalkEventsUsesStableOrderAndPropagatesCallbackErrors(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	at := time.Date(2026, 8, 10, 1, 2, 3, 0, time.UTC)
+	for _, event := range []model.UsageEvent{
+		{ID: "b", Timestamp: at, ObservedAt: at, Model: "gpt-5.4"},
+		{ID: "a", Timestamp: at, ObservedAt: at, Model: "gpt-5.4"},
+		{ID: "ignored", Timestamp: at.Add(time.Hour), ObservedAt: at.Add(time.Hour), Model: "internal"},
+		{ID: "c", Timestamp: at, ObservedAt: at, Model: "gpt-5.4"},
+	} {
+		event.Provenance = model.ProvenanceSessionJSONL
+		event.Confidence = model.ConfidenceExact
+		event.Usage = model.TokenUsage{Input: 8, Output: 2, Total: 10}
+		if _, err := st.InsertEvent(ctx, event, event.ID+".jsonl"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ids []string
+	if err := st.WalkEvents(ctx, model.Filter{Model: "gpt-5.4"}, func(event model.UsageEvent) error {
+		ids = append(ids, event.ID)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ids, []string{"c", "b", "a"}) {
+		t.Fatalf("unstable event order: %v", ids)
+	}
+	sentinel := errors.New("stop export")
+	if err := st.WalkEvents(ctx, model.Filter{}, func(model.UsageEvent) error { return sentinel }); !errors.Is(err, sentinel) {
+		t.Fatalf("callback error was not propagated: %v", err)
+	}
+}
+
+func TestSessionMetadataAdvancesRevisionOnlyWhenChanged(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	info := model.SessionInfo{SessionID: "session", Title: "before", UpdatedAt: time.Unix(10, 0)}
+	before := st.Revision()
+	if err := st.UpsertSession(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	afterInsert := st.Revision()
+	if afterInsert <= before {
+		t.Fatalf("session insert did not advance revision: before=%d after=%d", before, afterInsert)
+	}
+	if err := st.UpsertSession(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Revision(); got != afterInsert {
+		t.Fatalf("no-op session upsert advanced revision: before=%d after=%d", afterInsert, got)
+	}
+	info.Title = "after"
+	if err := st.UpsertSession(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Revision(); got <= afterInsert {
+		t.Fatalf("session metadata update did not advance revision: before=%d after=%d", afterInsert, got)
 	}
 }
 

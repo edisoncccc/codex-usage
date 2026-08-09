@@ -449,7 +449,7 @@ select:focus, input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px col
 .warning-list { display: grid; gap: 8px; margin-top: 18px; }
 .warning-row { display: grid; grid-template-columns: 125px minmax(0, 1fr); gap: 4px 14px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
 .warning-row time { color: var(--text-faint); font-family: var(--mono); font-size: var(--type-micro); }
-.warning-row time small { display: block; margin-top: 3px; color: var(--text-muted); font: inherit; line-height: 1.35; }
+.warning-row time small { display: block; margin-top: 3px; color: var(--text-faint); font: inherit; line-height: 1.35; }
 .warning-row code { color: var(--coral); font-size: var(--type-caption); }
 .warning-row.informational code { color: var(--teal-strong); }
 .warning-row p { grid-column: 2; margin: 0; color: var(--text-soft); font-size: var(--type-small); }

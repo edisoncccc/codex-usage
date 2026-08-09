@@ -1,5 +1,36 @@
 # Codex Usage 验收记录
 
+## 2026-08-10 全面优化分支
+
+- 执行主机：Windows amd64
+- 分支：`codex/comprehensive-optimization-20260810`
+- 范围：源代码、单元/竞态/浏览器测试、依赖漏洞、四平台交叉构建和隔离性能基准；未制作 Release 包，也未验证已安装服务或其他物理平台上的最终运行。
+
+- 正确性：价格聚合不再把 `total_tokens != input_tokens + output_tokens` 的相反误差互相抵消；总览和逐 Session 聚合均与逐事件估算保持一致。
+- 导出：CSV/JSON 改为单个 SQLite 读快照和稳定全序遍历，消除 OFFSET 分页在并发写入或相同时间戳下漏行/重复的风险。
+- 数据刷新：Session metadata 实际变化会推进 `data_revision`，无变化的 upsert 不会制造多余刷新。
+- 安全：写接口只接受与当前端口完全一致的 HTTP loopback Origin，并拒绝无 Origin 但标记为 `Sec-Fetch-Site: cross-site` 的请求；CLI 等非浏览器客户端保持可用。
+- 依赖：升级到 [`modernc.org/sqlite v1.56.0`](https://gitlab.com/cznic/sqlite/-/blob/v1.56.0/CHANGELOG.md)，纳入官方记录的 SQLite 3.53.3 journal rollback 数据损坏修复；Playwright 升级到 [1.62.1](https://github.com/microsoft/playwright/releases/tag/v1.62.1)。
+- UI：补齐三个对话框入口的 `aria-controls`，并修复警告时间副文本引用不存在颜色变量的问题；保留现有信息架构和视觉方向。
+- 开发体验：`npm test` 不再要求手工设置 `CODEX_USAGE_BIN`，会在临时目录自动构建真实二进制。
+
+自动化结果：
+
+- `go test -count=1 -mod=readonly ./...`：通过。
+- `go test -race -count=1 -mod=readonly ./...`：通过。
+- `go vet -mod=readonly ./...`：通过。
+- `govulncheck ./...`：未发现已知漏洞。
+- Playwright：12/12 通过，包含自动构建真实二进制、同端口 loopback Origin、ARIA、中英文、移动端、主题、筛选、定价、扫描和 synthetic Demo。
+- 交叉构建：Windows/Linux × amd64/arm64 四个目标全部通过。
+
+隔离性能基准使用本机 550 个 JSONL 新建临时数据库，共 67,409 条规范事件；每种实现 3 轮、每轮 5 次：
+
+- OFFSET 分页导出：3.19–3.21 秒/次，约 262.88 MB 分配。
+- 单快照导出：0.702–0.712 秒/次，约 159.90 MB 分配。
+- 同数据下约快 4.5 倍，单次分配降低约 39%。临时数据库和交叉构建产物已移入回收站，现有统计库未参与测试。
+
+## v2.2.0 验收记录（2026-08-04）
+
 执行日期：2026-08-04
 执行主机：Windows amd64
 候选版本：v2.2.0 · Session search, per-Session cost, and public-first documentation
@@ -16,7 +47,7 @@
 ## JSONL-only 统计回归
 
 - 唯一计数源：查询只选择 `session_jsonl`；旧 `otel` / `state_fallback` 行不参与任何总量，`unattributed` 为 0。
-- v4 → v5 数据迁移：旧解析器事件、游标、session 高水位和 OTel 表会被清除；安装/服务随后从源 JSONL 自动重建。
+- v4 → v5 数据迁移：当前实现会先保留旧解析器事件、游标、session 高水位和 OTel 表并提示重建；只有用户在 Dashboard 确认或显式运行 `scan --rebuild` 后才清除派生数据并从仍存在的源 JSONL 重建。
 - fork/subagent：三个子线程共享同一父历史前缀时，父历史只计一次；每个子线程只计继续产生的增量，Session、项目、模型与 Agent 归属保持为子线程 owner。
 - 同总量修正：后续快照只修正 Input / Output / Cached Input / Cache Write / Reasoning 分类时，会在同一累计 segment 的既有事件中就近回写；修正量超过最后一条增量或跨增量扫描时仍生效。
 - 文件变更：同尺寸重写和截断都会触发全 JSONL 派生索引重建，旧事件不会残留。

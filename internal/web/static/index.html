@@ -33,7 +33,7 @@
         <button class="icon-button pressable" id="themeButton" type="button" aria-label="切换明暗主题" title="切换明暗主题" data-i18n-aria-label="action.theme" data-i18n-title="action.theme"><span aria-hidden="true">◐</span></button>
         <button class="icon-button pressable settings-button" id="settingsButton" type="button" aria-haspopup="dialog" aria-controls="settingsDialog" aria-label="打开显示设置" title="打开显示设置" data-i18n-aria-label="action.settings" data-i18n-title="action.settings"><span class="settings-glyph" aria-hidden="true"><i></i><i></i><i></i></span></button>
         <button class="action-button pressable" id="filterButton" type="button" aria-haspopup="dialog" aria-controls="filterSheet"><span data-i18n="action.filter">筛选</span><b class="count-badge hidden" id="filterCount">0</b></button>
-        <button class="action-button quiet pressable" id="exportButton" type="button" aria-haspopup="dialog"><span data-i18n="action.export">导出</span></button>
+        <button class="action-button quiet pressable" id="exportButton" type="button" aria-haspopup="dialog" aria-controls="exportDialog"><span data-i18n="action.export">导出</span></button>
         <button class="action-button primary pressable" id="scanButton" type="button"><span class="scan-icon" aria-hidden="true">↻</span><span data-i18n="action.scan">扫描</span></button>
       </div>
     </div>
@@ -47,7 +47,7 @@
     <section class="coverage-banner hidden" id="coverageBanner" aria-live="polite">
       <span class="coverage-icon" aria-hidden="true">!</span>
       <div><strong data-i18n="quality.title">数据质量需要留意</strong><p id="coverageText"></p></div>
-      <button class="text-button pressable" id="warningButton" type="button" data-i18n="action.viewDetails">查看详情</button>
+      <button class="text-button pressable" id="warningButton" type="button" aria-haspopup="dialog" aria-controls="warningsDialog" data-i18n="action.viewDetails">查看详情</button>
     </section>
 
     <div class="filter-context hidden" id="filterContext" aria-label="已应用筛选" data-i18n-aria-label="filter.applied">
@@ -78,7 +78,7 @@
         </article>
         <div class="hero-divider" aria-hidden="true"></div>
         <article class="hero-metric cost-metric">
-          <div class="metric-label-row"><span class="metric-label" data-i18n="overview.cost">Standard API 等价成本</span><button class="text-button copper pressable" id="pricingButton" type="button" aria-haspopup="dialog" data-i18n="overview.pricing">定价设置</button></div>
+          <div class="metric-label-row"><span class="metric-label" data-i18n="overview.cost">Standard API 等价成本</span><button class="text-button copper pressable" id="pricingButton" type="button" aria-haspopup="dialog" aria-controls="pricingDialog" data-i18n="overview.pricing">定价设置</button></div>
           <strong class="hero-value cost loading" id="overviewCost">—</strong>
           <div class="coverage-line"><span class="coverage-track" aria-hidden="true"><i id="overviewCoverageBar"></i></span><span id="overviewCoverage" data-i18n="overview.estimating">正在估算…</span></div>
           <p class="metric-note" id="overviewCostNote" data-i18n="overview.notBill">不是 OpenAI 真实账单</p>

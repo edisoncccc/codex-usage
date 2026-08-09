@@ -220,6 +220,39 @@ func TestDashboardAPIAndExport(t *testing.T) {
 	}
 }
 
+func TestSafeOriginRequiresSameLoopbackOrigin(t *testing.T) {
+	tests := []struct {
+		name         string
+		target       string
+		origin       string
+		secFetchSite string
+		allowed      bool
+	}{
+		{name: "same IPv4 origin", target: "http://127.0.0.1:43189/api/v1/rescan", origin: "http://127.0.0.1:43189", allowed: true},
+		{name: "same localhost origin", target: "http://localhost:43189/api/v1/rescan", origin: "http://localhost:43189", allowed: true},
+		{name: "different loopback port", target: "http://127.0.0.1:43189/api/v1/rescan", origin: "http://127.0.0.1:43200"},
+		{name: "HTTPS origin for HTTP service", target: "http://127.0.0.1:43189/api/v1/rescan", origin: "https://127.0.0.1:43189"},
+		{name: "non-loopback origin", target: "http://127.0.0.1:43189/api/v1/rescan", origin: "http://example.test:43189"},
+		{name: "origin with path", target: "http://127.0.0.1:43189/api/v1/rescan", origin: "http://127.0.0.1:43189/path"},
+		{name: "non-browser client", target: "http://127.0.0.1:43189/api/v1/rescan", allowed: true},
+		{name: "cross-site request without origin", target: "http://127.0.0.1:43189/api/v1/rescan", secFetchSite: "cross-site"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, test.target, nil)
+			if test.origin != "" {
+				request.Header.Set("Origin", test.origin)
+			}
+			if test.secFetchSite != "" {
+				request.Header.Set("Sec-Fetch-Site", test.secFetchSite)
+			}
+			if got := safeOrigin(request); got != test.allowed {
+				t.Fatalf("safeOrigin()=%v, want %v", got, test.allowed)
+			}
+		})
+	}
+}
+
 func TestRescanRequiresExplicitRebuildApproval(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, ".codex")

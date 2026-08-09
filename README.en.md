@@ -129,9 +129,9 @@ The Codex state database is used only to discover rollout paths and enrich title
 
 ### File and calendar stability
 
-Every scan unions paths from the state database with `sessions/` and `archived_sessions/`, so a missing state row cannot hide a JSONL file. Ordinary Windows paths and `\\?\` extended paths normalize to one file. Truncation, a rewrite inside the scanned range, or a newly completed fork-replay boundary triggers an automatic rebuild from all JSONL, leaving no stale events.
+Every scan unions paths from the state database with `sessions/` and `archived_sessions/`, so a missing state row cannot hide a JSONL file. Ordinary Windows paths and `\\?\` extended paths normalize to one file. Truncation, a rewrite inside the scanned range, a newly completed fork-replay boundary, or a parser upgrade preserves the current statistics and requests a rebuild. Derived indexes are cleared only after confirmation in the Dashboard or an explicit `codex-usage scan --rebuild`, then rebuilt from the JSONL files that still exist. Data from deleted JSONL files may no longer be recoverable at that point.
 
-Each event stores its local date and hour at ingestion, so changing the system timezone later does not move existing history at query time. Repeated data-quality records are grouped by kind and local path; cumulative resets, malformed records, invalid timestamps, and automatic rebuilds remain visible.
+Each event stores its local date and hour at ingestion, so changing the system timezone later does not move existing history at query time. Repeated data-quality records are grouped by kind and local path; cumulative resets, malformed records, invalid timestamps, and rebuild requests remain visible.
 
 ### Local service
 
@@ -158,7 +158,7 @@ Bundled Standard text prices were checked on **2026-08-04**. All values are USD 
 | [GPT-5.3-Codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex) | 1.75 | 0.175 | not published | 14.00 |
 | [GPT-5.2-Codex](https://developers.openai.com/api/docs/models/gpt-5.2-codex) | 1.75 | 0.175 | not published | 14.00 |
 
-GPT-5.6 Cache Write uses the official 1.25× regular Input rule. To match Codex's current effective context limit of roughly 258K, every recognized model uses the Standard short-context rates shown above and no long-context multiplier is applied. The UI always shows estimated cost together with token pricing coverage; unknown models are never treated as zero-cost.
+GPT-5.6 Cache Write uses the official 1.25× regular Input rule. Local JSONL stores cumulative token activity and cannot reliably reconstruct the per-request boundaries used for API billing, so the estimator reports an equivalent value using the Standard base rates above and does not infer long-context multipliers. The UI always shows estimated cost together with token pricing coverage; unknown models are never treated as zero-cost.
 
 Internal models can be explicitly mapped to one built-in public model or assigned custom rates in the Dashboard. Overrides take effect without restarting:
 
@@ -236,9 +236,10 @@ Dashboard tests:
 ```bash
 npm ci
 npx playwright install chromium
-go build -trimpath -o codex-usage ./cmd/codex-usage
-CODEX_USAGE_BIN=./codex-usage npm test
+npm test
 ```
+
+By default, `npm test` builds and launches a real Go binary in a temporary directory. Set `CODEX_USAGE_BIN` to reuse an existing build.
 
 See [ACCEPTANCE.md](ACCEPTANCE.md) for validation results, [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue, and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 

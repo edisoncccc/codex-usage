@@ -586,22 +586,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) forEachEvent(ctx context.Context, filter model.Filter, fn func(model.UsageEvent) error) error {
-	offset := 0
-	for {
-		items, err := s.Store.Events(ctx, store.EventQuery{Filter: filter, Limit: 5000, Offset: offset})
-		if err != nil {
-			return err
-		}
-		for _, item := range items {
-			if err := fn(item); err != nil {
-				return err
-			}
-		}
-		if len(items) < 5000 {
-			return nil
-		}
-		offset += len(items)
-	}
+	return s.Store.WalkEvents(ctx, filter, fn)
 }
 
 func (s *Server) forEachPricingEvent(ctx context.Context, filter model.Filter, fn func(model.UsageEvent) error) error {
@@ -717,17 +702,21 @@ func parseAbsoluteTime(value string) (time.Time, error) {
 func safeOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
-		return true
+		return !strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site")
 	}
 	parsed, err := url.Parse(origin)
 	if err != nil {
 		return false
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+	if parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return false
 	}
-	host := parsed.Hostname()
-	return host == "127.0.0.1" || host == "localhost" || host == "::1"
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
 }
 
 func methodNotAllowed(w http.ResponseWriter, methods ...string) {

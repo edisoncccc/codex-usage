@@ -162,7 +162,7 @@ Dashboard 固定为“概览 / 每日 / 明细”三个一级视图。概览默�
 | [GPT-5.3-Codex](https://developers.openai.com/api/docs/models/gpt-5.3-codex) | 1.75 | 0.175 | 未公开 | 14.00 |
 | [GPT-5.2-Codex](https://developers.openai.com/api/docs/models/gpt-5.2-codex) | 1.75 | 0.175 | 未公开 | 14.00 |
 
-GPT-5.6 的 Cache Write 使用官方“普通 Input 的 1.25 倍”规则。为了匹配 Codex 当前约 258K 的有效上下文上限，所有已识别模型统一使用上表的 Standard 短上下文单价，不应用长上下文倍率。页面始终同时展示费用和 Token 定价覆盖率，未知模型不会被当成零费用。
+GPT-5.6 的 Cache Write 使用官方“普通 Input 的 1.25 倍”规则。本机 JSONL 保存的是累计 Token 活动，不能可靠还原 API 账单中的逐请求边界，因此工具统一展示上表 Standard 基础单价的等价值，不推断长上下文倍率。页面始终同时展示费用和 Token 定价覆盖率，未知模型不会被当成零费用。
 
 内部模型可以在 Dashboard 的“定价设置”中映射到一个明确的内置公开模型，或填写自定义单价。等价配置如下，保存后无需重启：
 
@@ -252,9 +252,10 @@ Dashboard 测试：
 ```bash
 npm ci
 npx playwright install chromium
-go build -trimpath -o codex-usage ./cmd/codex-usage
-CODEX_USAGE_BIN=./codex-usage npm test
+npm test
 ```
+
+`npm test` 默认在临时目录构建并启动真实 Go 二进制；设置 `CODEX_USAGE_BIN` 可以复用已有构建产物。
 
 更多验收数据见 [ACCEPTANCE.md](ACCEPTANCE.md)。问题反馈前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)；涉及本机数据或路径的安全问题请按 [SECURITY.md](SECURITY.md) 私密报告。
 

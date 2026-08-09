@@ -24,8 +24,18 @@ import (
 )
 
 const (
-	schemaVersion              = 5
-	historicalRebuildReasonKey = "historical_rebuild_required"
+	schemaVersion               = 5
+	historicalRebuildReasonKey  = "historical_rebuild_required"
+	pricingAggregatableEventSQL = `e.input_tokens>=0 AND e.cached_input_tokens>=0 AND e.cache_write_input_tokens>=0
+		AND e.output_tokens>=0 AND e.reasoning_output_tokens>=0 AND e.total_tokens>=0
+		AND e.cached_input_tokens+e.cache_write_input_tokens<=e.input_tokens
+		AND e.reasoning_output_tokens<=e.output_tokens
+		AND (e.total_tokens=0 OR e.input_tokens+e.output_tokens=0
+			OR e.total_tokens=e.input_tokens+e.output_tokens)`
+	pricingClassSQL = `CASE
+		WHEN e.input_tokens=0 AND e.output_tokens=0 AND e.total_tokens>0 THEN 1
+		WHEN e.total_tokens=0 AND e.input_tokens+e.output_tokens>0 THEN 2
+		ELSE 0 END`
 )
 
 type Store struct {
@@ -460,7 +470,7 @@ func (s *Store) UpsertSession(ctx context.Context, in model.SessionInfo) error {
 	if in.SessionID == "" {
 		return nil
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions(
+	result, err := s.db.ExecContext(ctx, `INSERT INTO sessions(
 		session_id,rollout_path,codex_home,title,project_path,model,source,thread_source,
 		agent_type,cli_version,tokens_used,created_at,updated_at,archived)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -494,7 +504,13 @@ func (s *Store) UpsertSession(ctx context.Context, in model.SessionInfo) error {
 		in.SessionID, in.RolloutPath, in.CodexHome, in.Title, in.ProjectPath, in.Model,
 		in.Source, in.ThreadSource, defaultAgent(in.AgentType), in.CLIValue, in.TokensUsed,
 		unixOrZero(in.CreatedAt), unixOrZero(in.UpdatedAt), boolInt(in.Archived))
-	return err
+	if err != nil {
+		return err
+	}
+	if changed, rowsErr := result.RowsAffected(); rowsErr == nil && changed > 0 {
+		s.revision.Add(1)
+	}
+	return nil
 }
 
 func (s *Store) Session(ctx context.Context, id string) (model.SessionInfo, error) {
@@ -1197,21 +1213,13 @@ func (s *Store) WalkSessionPricingAggregates(ctx context.Context, filter model.F
 		args = append(args, sessionID)
 	}
 	where += " AND " + sessionExpr + " IN (" + strings.Join(placeholders, ",") + ")"
-	valid := `e.input_tokens>=0 AND e.cached_input_tokens>=0 AND e.cache_write_input_tokens>=0
-		AND e.output_tokens>=0 AND e.reasoning_output_tokens>=0 AND e.total_tokens>=0
-		AND e.cached_input_tokens+e.cache_write_input_tokens<=e.input_tokens
-		AND e.reasoning_output_tokens<=e.output_tokens`
-	pricingClass := `CASE
-		WHEN e.input_tokens=0 AND e.output_tokens=0 AND e.total_tokens>0 THEN 1
-		WHEN e.total_tokens=0 AND e.input_tokens+e.output_tokens>0 THEN 2
-		ELSE 0 END`
 	rows, err := s.reader().QueryContext(ctx, `SELECT `+sessionExpr+`,e.model,
 		COALESCE(MIN(NULLIF(e.usage_at,0)),0),
 		COALESCE(SUM(e.input_tokens),0),COALESCE(SUM(e.cached_input_tokens),0),
 		COALESCE(SUM(e.cache_write_input_tokens),0),COALESCE(SUM(e.output_tokens),0),
 		COALESCE(SUM(e.reasoning_output_tokens),0),COALESCE(SUM(e.total_tokens),0)
-		FROM usage_events e WHERE `+where+` AND `+valid+`
-		GROUP BY `+sessionExpr+`,e.model,`+pricingClass, args...)
+		FROM usage_events e WHERE `+where+` AND `+pricingAggregatableEventSQL+`
+		GROUP BY `+sessionExpr+`,e.model,`+pricingClassSQL, args...)
 	if err != nil {
 		return err
 	}
@@ -1242,7 +1250,7 @@ func (s *Store) WalkSessionPricingAggregates(ctx context.Context, filter model.F
 	invalidRows, err := s.reader().QueryContext(ctx, `SELECT `+sessionExpr+`,usage_at,model,
 		input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,
 		reasoning_output_tokens,total_tokens
-		FROM usage_events e WHERE `+where+` AND NOT (`+valid+`)`, invalidArgs...)
+		FROM usage_events e WHERE `+where+` AND NOT (`+pricingAggregatableEventSQL+`)`, invalidArgs...)
 	if err != nil {
 		return err
 	}
@@ -1265,6 +1273,32 @@ func (s *Store) WalkSessionPricingAggregates(ctx context.Context, filter model.F
 
 func (s *Store) Events(ctx context.Context, query EventQuery) ([]model.UsageEvent, error) {
 	return s.queryEvents(ctx, query, false)
+}
+
+// WalkEvents traverses the canonical export view in one stable SQLite read
+// snapshot. A total ordering avoids duplicate or skipped rows when timestamps
+// are equal, while avoiding the repeated work of OFFSET pagination.
+func (s *Store) WalkEvents(ctx context.Context, filter model.Filter, fn func(model.UsageEvent) error) error {
+	where, args := canonicalWithFallbackWhere(filter, "e")
+	rows, err := s.reader().QueryContext(ctx, `SELECT id,usage_at,local_date,local_hour,observed_at,machine_id,
+		session_id,turn_id,model,source,agent_type,project_path,thread_title,
+		input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,
+		reasoning_output_tokens,total_tokens,provenance,confidence,codex_home
+		FROM usage_events e WHERE `+where+` ORDER BY e.usage_at DESC,e.observed_at DESC,e.id DESC`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		item, scanErr := scanUsageEvent(rows)
+		if scanErr != nil {
+			return scanErr
+		}
+		if err := fn(item); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // PricingEvents applies the same canonical source and attribution rules as the
@@ -1291,18 +1325,10 @@ func (s *Store) WalkPricingEvents(ctx context.Context, filter model.Filter, fn f
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var item model.UsageEvent
-		var usageAt, observedAt int64
-		if err := rows.Scan(&item.ID, &usageAt, &item.LocalDate, &item.LocalHour, &observedAt, &item.MachineID,
-			&item.SessionID, &item.TurnID, &item.Model, &item.Source, &item.AgentType,
-			&item.ProjectPath, &item.ThreadTitle, &item.Usage.Input,
-			&item.Usage.CachedInput, &item.Usage.CacheWriteInput, &item.Usage.Output,
-			&item.Usage.ReasoningOutput, &item.Usage.Total, &item.Provenance,
-			&item.Confidence, &item.CodexHome); err != nil {
-			return err
+		item, scanErr := scanUsageEvent(rows)
+		if scanErr != nil {
+			return scanErr
 		}
-		item.Timestamp = timeFromUnix(usageAt)
-		item.ObservedAt = timeFromUnix(observedAt)
 		if err := fn(item); err != nil {
 			return err
 		}
@@ -1311,28 +1337,20 @@ func (s *Store) WalkPricingEvents(ctx context.Context, filter model.Filter, fn f
 }
 
 // WalkPricingAggregates emits one valid aggregate per local day and model.
-// Rows with invalid token subset relationships remain individual so pricing
-// diagnostics are byte-for-byte equivalent to evaluating raw events.
+// Rows that are unsafe to aggregate remain individual so pricing diagnostics
+// are byte-for-byte equivalent to evaluating raw events.
 func (s *Store) WalkPricingAggregates(ctx context.Context, filter model.Filter, fn func(model.UsageEvent) error) error {
 	where, args := canonicalWithFallbackWhere(filter, "e")
 	if requiresAttribution(filter) {
 		where, args = attributionWhere(filter, "e", true)
 	}
-	valid := `e.input_tokens>=0 AND e.cached_input_tokens>=0 AND e.cache_write_input_tokens>=0
-		AND e.output_tokens>=0 AND e.reasoning_output_tokens>=0 AND e.total_tokens>=0
-		AND e.cached_input_tokens+e.cache_write_input_tokens<=e.input_tokens
-		AND e.reasoning_output_tokens<=e.output_tokens`
-	pricingClass := `CASE
-		WHEN e.input_tokens=0 AND e.output_tokens=0 AND e.total_tokens>0 THEN 1
-		WHEN e.total_tokens=0 AND e.input_tokens+e.output_tokens>0 THEN 2
-		ELSE 0 END`
 	rows, err := s.reader().QueryContext(ctx, `SELECT e.local_date,e.model,
 		COALESCE(MIN(NULLIF(e.usage_at,0)),0),
 		COALESCE(SUM(e.input_tokens),0),COALESCE(SUM(e.cached_input_tokens),0),
 		COALESCE(SUM(e.cache_write_input_tokens),0),COALESCE(SUM(e.output_tokens),0),
 		COALESCE(SUM(e.reasoning_output_tokens),0),COALESCE(SUM(e.total_tokens),0)
-		FROM usage_events e WHERE `+where+` AND `+valid+`
-		GROUP BY e.local_date,e.model,`+pricingClass, args...)
+		FROM usage_events e WHERE `+where+` AND `+pricingAggregatableEventSQL+`
+		GROUP BY e.local_date,e.model,`+pricingClassSQL, args...)
 	if err != nil {
 		return err
 	}
@@ -1363,7 +1381,7 @@ func (s *Store) WalkPricingAggregates(ctx context.Context, filter model.Filter, 
 	invalidRows, err := s.reader().QueryContext(ctx, `SELECT usage_at,local_date,model,
 		input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,
 		reasoning_output_tokens,total_tokens
-		FROM usage_events e WHERE `+where+` AND NOT (`+valid+`)`, invalidArgs...)
+		FROM usage_events e WHERE `+where+` AND NOT (`+pricingAggregatableEventSQL+`)`, invalidArgs...)
 	if err != nil {
 		return err
 	}
@@ -1400,28 +1418,40 @@ func (s *Store) queryEvents(ctx context.Context, query EventQuery, pricingView b
 		session_id,turn_id,model,source,agent_type,project_path,thread_title,
 		input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,
 		reasoning_output_tokens,total_tokens,provenance,confidence,codex_home
-		FROM usage_events e WHERE `+where+` ORDER BY usage_at DESC,observed_at DESC LIMIT ? OFFSET ?`, args...)
+		FROM usage_events e WHERE `+where+` ORDER BY e.usage_at DESC,e.observed_at DESC,e.id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []model.UsageEvent
 	for rows.Next() {
-		var item model.UsageEvent
-		var usageAt, observedAt int64
-		if err := rows.Scan(&item.ID, &usageAt, &item.LocalDate, &item.LocalHour, &observedAt, &item.MachineID,
-			&item.SessionID, &item.TurnID, &item.Model, &item.Source, &item.AgentType,
-			&item.ProjectPath, &item.ThreadTitle, &item.Usage.Input,
-			&item.Usage.CachedInput, &item.Usage.CacheWriteInput, &item.Usage.Output,
-			&item.Usage.ReasoningOutput, &item.Usage.Total, &item.Provenance,
-			&item.Confidence, &item.CodexHome); err != nil {
-			return nil, err
+		item, scanErr := scanUsageEvent(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		item.Timestamp = timeFromUnix(usageAt)
-		item.ObservedAt = timeFromUnix(observedAt)
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+type usageEventScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanUsageEvent(scanner usageEventScanner) (model.UsageEvent, error) {
+	var item model.UsageEvent
+	var usageAt, observedAt int64
+	if err := scanner.Scan(&item.ID, &usageAt, &item.LocalDate, &item.LocalHour, &observedAt, &item.MachineID,
+		&item.SessionID, &item.TurnID, &item.Model, &item.Source, &item.AgentType,
+		&item.ProjectPath, &item.ThreadTitle, &item.Usage.Input,
+		&item.Usage.CachedInput, &item.Usage.CacheWriteInput, &item.Usage.Output,
+		&item.Usage.ReasoningOutput, &item.Usage.Total, &item.Provenance,
+		&item.Confidence, &item.CodexHome); err != nil {
+		return model.UsageEvent{}, err
+	}
+	item.Timestamp = timeFromUnix(usageAt)
+	item.ObservedAt = timeFromUnix(observedAt)
+	return item, nil
 }
 
 func (s *Store) Status(ctx context.Context) (Status, error) {

@@ -5,16 +5,36 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 
 let processHandle;
 let stateDir;
 let codexHomeDir;
+let testBinaryDir;
 let baseURL;
 let dashboardURL;
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+async function buildTestBinary() {
+  testBinaryDir = await mkdtemp(path.join(tmpdir(), "codex-usage-e2e-bin-"));
+  const binary = path.join(testBinaryDir, process.platform === "win32" ? "codex-usage.exe" : "codex-usage");
+  const build = spawn(process.env.GO_BINARY || "go", ["build", "-trimpath", "-o", binary, "./cmd/codex-usage"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+    windowsHide: true
+  });
+  await new Promise((resolve, reject) => {
+    build.once("error", reject);
+    build.once("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`go build failed (code=${code}, signal=${signal || "none"})`));
+    });
+  });
+  return binary;
+}
 
 test.beforeAll(async () => {
-  const binary = process.env.CODEX_USAGE_BIN;
-  if (!binary) throw new Error("CODEX_USAGE_BIN must point to a built codex-usage binary");
+  const binary = process.env.CODEX_USAGE_BIN || await buildTestBinary();
   stateDir = await mkdtemp(path.join(tmpdir(), "codex-usage-e2e-"));
   const port = 45000 + (process.pid % 1000);
   codexHomeDir = await mkdtemp(path.join(tmpdir(), "codex-usage-codex-home-"));
@@ -73,6 +93,7 @@ test.afterAll(async () => {
   }
   if (stateDir) await rm(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   if (codexHomeDir) await rm(codexHomeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  if (testBinaryDir) await rm(testBinaryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("overview is calm, local-only, and exposes honest cost coverage", async ({ page }) => {
@@ -341,7 +362,7 @@ test("mobile, tablet, themes, and reduced motion avoid page overflow", async ({ 
   expect(duration).toBeLessThanOrEqual(.001);
 });
 
-test("mutation endpoints block foreign origins", async ({ request }) => {
+test("mutation endpoints require the same loopback origin", async ({ request }) => {
   for (const [method, endpoint, data] of [
     ["post", "/api/v1/rescan", {}],
     ["put", "/api/v1/pricing/overrides", { overrides: {} }]
@@ -352,6 +373,16 @@ test("mutation endpoints block foreign origins", async ({ request }) => {
     });
     expect(response.status()).toBe(403);
   }
+  const otherLoopbackPort = await request.post(`${baseURL}/api/v1/rescan`, {
+    headers: { Origin: `${baseURL.slice(0, baseURL.lastIndexOf(":"))}:49999` },
+    data: {}
+  });
+  expect(otherLoopbackPort.status()).toBe(403);
+  const crossSiteWithoutOrigin = await request.post(`${baseURL}/api/v1/rescan`, {
+    headers: { "Sec-Fetch-Site": "cross-site" },
+    data: {}
+  });
+  expect(crossSiteWithoutOrigin.status()).toBe(403);
 });
 
 test("localization catalogs, precedence, persistence, dates, numbers, and ARIA stay aligned", async ({ page }) => {
@@ -363,6 +394,9 @@ test("localization catalogs, precedence, persistence, dates, numbers, and ARIA s
   await expect(page.locator("#machinePill")).toHaveAttribute("aria-label", /Current machine:/);
   await expect(page.locator("#overviewSubtitle")).toHaveText("Past 7 local calendar days");
   await expect(page.locator("#overviewTotal")).toContainText(/\d/);
+  await expect(page.locator("#exportButton")).toHaveAttribute("aria-controls", "exportDialog");
+  await expect(page.locator("#pricingButton")).toHaveAttribute("aria-controls", "pricingDialog");
+  await expect(page.locator("#warningButton")).toHaveAttribute("aria-controls", "warningsDialog");
   const catalogs = await page.evaluate(() => {
     const values = window.CodexUsageI18n.catalogs;
     const zh = Object.keys(values["zh-CN"]).sort();
