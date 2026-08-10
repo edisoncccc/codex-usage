@@ -42,6 +42,10 @@ function localDateKey(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+function localHourKey(date) {
+  return `${localDateKey(date)}T${String(date.getHours()).padStart(2, "0")}`;
+}
+
 function costEstimate(url) {
   const start = url.searchParams.get("since") ? new Date(`${url.searchParams.get("since")}T00:00:00`) : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
   const end = url.searchParams.get("until") ? new Date(`${url.searchParams.get("until")}T00:00:00`) : new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
@@ -107,12 +111,15 @@ const server = http.createServer(async (request, response) => {
     }
   }
   if (url.pathname === "/api/v1/timeseries") {
-    const points = Array.from({ length: 30 }, (_, index) => {
-      const time = new Date(now.getTime() - (29 - index) * 86400000);
+    const bucket = url.searchParams.get("bucket") === "hour" ? "hour" : "day";
+    const count = bucket === "hour" ? 24 : 30;
+    const unit = bucket === "hour" ? 3_600_000 : 86_400_000;
+    const points = Array.from({ length: count }, (_, index) => {
+      const time = new Date(now.getTime() - (count - 1 - index) * unit);
       const wave = 150_000 + Math.round((Math.sin(index * .72) + 1.35) * 145_000) + index * 8500;
-      return { time: time.toISOString(), date: time.toISOString().slice(0, 10), usage: { input: Math.round(wave * .78), cached_input: Math.round(wave * .42), cache_write_input: 0, output: Math.round(wave * .22), reasoning_output: Math.round(wave * .08), total: wave } };
+      return { time: time.toISOString(), date: bucket === "hour" ? localHourKey(time) : localDateKey(time), usage: { input: Math.round(wave * .78), cached_input: Math.round(wave * .42), cache_write_input: 0, output: Math.round(wave * .22), reasoning_output: Math.round(wave * .08), total: wave } };
     });
-    return json(response, { bucket: "day", points });
+    return json(response, { bucket, points });
   }
   if (url.pathname === "/api/v1/breakdown") {
     const dimension = url.searchParams.get("dimension");

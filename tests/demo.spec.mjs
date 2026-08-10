@@ -43,6 +43,8 @@ test("Pages subpath loads the canonical UI with synthetic-only APIs", async ({ p
   await expect(page.getByRole("heading", { name: "Per-machine usage overview" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await expect(page.locator("#machineLabel")).toHaveText("Synthetic Windows · demo");
+  await expect(page.getByRole("heading", { name: "Hourly usage" })).toBeVisible();
+  await expect(page.locator("#hourlyRuler .hour-slot")).toHaveCount(24);
   expect(networkAPIs).toEqual([]);
   expect(external).toEqual([]);
   expect(await page.context().cookies()).toEqual([]);

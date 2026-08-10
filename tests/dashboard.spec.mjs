@@ -40,15 +40,22 @@ test.beforeAll(async () => {
   codexHomeDir = await mkdtemp(path.join(tmpdir(), "codex-usage-codex-home-"));
   const codexHome = codexHomeDir;
   const now = new Date();
+  const currentHour = new Date(now);
+  currentHour.setMinutes(0, 0, 0);
+  const previousHourTimestamp = new Date(currentHour.getTime() - 30 * 60_000).toISOString();
   const sessionDir = path.join(codexHome, "sessions", String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0"));
   await mkdir(sessionDir, { recursive: true });
   const timestamp = now.toISOString();
   const fixture = [
-    { timestamp, type: "session_meta", payload: { id: "e2e-session", cwd: "C:\\work\\codex-usage-e2e", originator: "codex_desktop" } },
-    { timestamp, type: "turn_context", payload: { turn_id: "turn-1", cwd: "C:\\work\\codex-usage-e2e", model: "gpt-5.4" } },
+    { timestamp: previousHourTimestamp, type: "session_meta", payload: { id: "e2e-session", cwd: "C:\\work\\codex-usage-e2e", originator: "codex_desktop" } },
+    { timestamp: previousHourTimestamp, type: "turn_context", payload: { turn_id: "turn-1", cwd: "C:\\work\\codex-usage-e2e", model: "gpt-5.4" } },
+    { timestamp: previousHourTimestamp, type: "event_msg", payload: { type: "token_count", info: {
+      total_token_usage: { input_tokens: 48, cached_input_tokens: 12, cache_write_input_tokens: 0, output_tokens: 12, reasoning_output_tokens: 3, total_tokens: 60 },
+      last_token_usage: { input_tokens: 48, cached_input_tokens: 12, cache_write_input_tokens: 0, output_tokens: 12, reasoning_output_tokens: 3, total_tokens: 60 }
+    } } },
     { timestamp, type: "event_msg", payload: { type: "token_count", info: {
       total_token_usage: { input_tokens: 80, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 5, total_tokens: 100 },
-      last_token_usage: { input_tokens: 80, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 5, total_tokens: 100 }
+      last_token_usage: { input_tokens: 32, cached_input_tokens: 8, cache_write_input_tokens: 0, output_tokens: 8, reasoning_output_tokens: 2, total_tokens: 40 }
     } } }
   ];
   await writeFile(path.join(sessionDir, "rollout-e2e.jsonl"), `${fixture.map((item) => JSON.stringify(item)).join("\n")}\n`);
@@ -124,6 +131,24 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1440);
   expect(externalRequests).toEqual([]);
   expect(consoleErrors).toEqual([]);
+});
+
+test("hourly usage defaults to the previous complete hour and supports a rolling hour", async ({ page }) => {
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "小时用量" })).toBeVisible();
+  await expect(page.locator("#hourlyTotal")).toHaveText("60");
+  await expect(page.locator("#hourlyRuler .hour-slot")).toHaveCount(24);
+  await expect(page.locator("#hourlyRuler .hour-slot").last()).toHaveClass(/selected/);
+  const previousLabel = await page.locator("#hourlyWindowLabel").textContent();
+  const rollingResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/v1/summary" && url.searchParams.get("since")?.includes("T");
+  });
+  await page.locator('[data-hour-range="rolling"]').click();
+  await rollingResponse;
+  await expect(page.locator('[data-hour-range="rolling"]')).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => page.locator("#hourlyWindowLabel").textContent()).not.toBe(previousLabel);
+  await expect(page.locator("#hourlyTotal")).not.toHaveText("—");
 });
 
 test("view switching stays within the pre-optimization interaction budget", async ({ page }) => {

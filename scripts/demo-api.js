@@ -49,6 +49,7 @@
 
   const pad = (value) => String(value).padStart(2, "0");
   const dateKey = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  const hourKey = (date) => `${dateKey(date)}T${pad(date.getHours())}`;
   const scaledUsage = (usage, multiplier) => Object.fromEntries(Object.entries(usage).map(([key, value]) => [key, Math.round(value * multiplier)]));
   const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {
     status,
@@ -66,7 +67,7 @@
   function summary(url) {
     const since = url.searchParams.get("since");
     const until = url.searchParams.get("until");
-    const dayScale = since && until ? Math.min(1, Math.max(1, (new Date(until) - new Date(since)) / 86_400_000) / 30) : 1;
+    const dayScale = since && until ? Math.min(1, Math.max(1 / 24, (new Date(until) - new Date(since)) / 86_400_000) / 30) : 1;
     const usage = scaledUsage(baseUsage, dayScale * filterScale(url));
     return {
       usage,
@@ -110,6 +111,27 @@
           coverage_ratio: total ? priced / total : 0,
           reasons: unpriced ? [{ kind: "unknown_model", model: "codex-auto-review", tokens: unpriced, detail: "Synthetic model has no public API rate or local override." }] : []
         }
+      });
+    }
+    return points;
+  }
+
+  function hourlyPoints(url) {
+    const currentHour = new Date(now);
+    currentHour.setMinutes(0, 0, 0);
+    const start = url.searchParams.get("since") ? new Date(url.searchParams.get("since")) : new Date(currentHour.getTime() - 24 * 60 * 60_000);
+    const end = url.searchParams.get("until") ? new Date(url.searchParams.get("until")) : currentHour;
+    const points = [];
+    let index = 0;
+    for (let date = new Date(start); date < end && index < 168; date = new Date(date.getTime() + 60 * 60_000), index++) {
+      const seed = Math.floor(date.getTime() / 3_600_000);
+      const total = seed % 13 === 4 ? 0 : Math.round((38_000 + (Math.sin(seed * .61) + 1.2) * 29_000 + (seed % 17) * 900) * filterScale(url));
+      const input = Math.round(total * .81);
+      const output = total - input;
+      points.push({
+        date: hourKey(date),
+        time: date.toISOString(),
+        usage: { input, cached_input: Math.round(input * .54), cache_write_input: Math.round(input * .02), output, reasoning_output: Math.round(output * .35), total }
       });
     }
     return points;
@@ -204,7 +226,11 @@
     });
     if (endpoint === "/api/v1/summary") return jsonResponse(summary(url));
     if (endpoint === "/api/v1/cost-estimate") return jsonResponse(costEstimate(url));
-    if (endpoint === "/api/v1/timeseries") return jsonResponse({ bucket: "day", points: dailyPoints(url).map((point) => ({ time: point.time, date: point.date, usage: point.usage })) });
+    if (endpoint === "/api/v1/timeseries") {
+      const bucket = url.searchParams.get("bucket") === "hour" ? "hour" : "day";
+      const points = bucket === "hour" ? hourlyPoints(url) : dailyPoints(url).map((point) => ({ time: point.time, date: point.date, usage: point.usage }));
+      return jsonResponse({ bucket, points });
+    }
     if (endpoint === "/api/v1/breakdown") return jsonResponse(breakdown(url));
     if (endpoint === "/api/v1/dimensions") return jsonResponse({
       models: models.map((item) => item.key),

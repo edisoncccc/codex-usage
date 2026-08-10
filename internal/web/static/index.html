@@ -85,6 +85,30 @@
         </article>
       </section>
 
+      <section class="hourly-panel surface" id="hourlyPanel" aria-labelledby="hourlyTitle">
+        <div class="hourly-head">
+          <div>
+            <h2 id="hourlyTitle" data-i18n="hourly.title">小时用量</h2>
+            <p data-i18n="hourly.caption">最近 24 个完整小时</p>
+          </div>
+          <div class="segmented hourly-range" role="group" aria-label="小时统计范围" data-i18n-aria-label="hourly.rangeAria">
+            <button class="pressable selected" type="button" data-hour-range="previous" aria-pressed="true" data-i18n="hourly.previous">上一小时</button>
+            <button class="pressable" type="button" data-hour-range="rolling" aria-pressed="false" data-i18n="hourly.rolling">最近 60 分钟</button>
+          </div>
+        </div>
+        <div class="hourly-summary" aria-live="polite">
+          <div class="hourly-total-block">
+            <span data-i18n="hourly.window">统计时段</span>
+            <strong id="hourlyWindowLabel">—</strong>
+            <b class="loading" id="hourlyTotal">—</b>
+          </div>
+          <div class="hourly-ledger" id="hourlyLedger"><span class="hourly-placeholder" data-i18n="common.loading">正在读取…</span></div>
+        </div>
+        <div class="hourly-ruler-scroll">
+          <div class="hourly-ruler" id="hourlyRuler" role="list" aria-label="最近 24 个完整小时的 Token 用量" data-i18n-aria-label="hourly.rulerAria"><div class="empty-state" data-i18n="common.loading">正在读取…</div></div>
+        </div>
+      </section>
+
       <section class="pulse-panel surface" aria-labelledby="pulseTitle">
         <div class="section-head"><h2 id="pulseTitle" data-i18n="pulse.title">每日脉冲带</h2></div>
         <div class="pulse-scroll" id="pulseScroll">
