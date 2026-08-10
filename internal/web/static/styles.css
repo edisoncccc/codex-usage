@@ -390,6 +390,8 @@ h1, h2, h3 { font-family: var(--display); text-wrap: balance; }
 .session-metric strong { overflow: hidden; max-width: 100%; font-size: var(--type-small); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .session-metric > small { color: var(--text-faint); font-size: var(--type-micro); }
 .session-cost strong { color: var(--copper-strong); }
+.session-cost.pending strong { color: var(--text-faint); font-weight: 520; }
+.session-cost.unavailable strong { color: var(--coral); font-weight: 520; }
 .session-mobile-label { display: none; }
 .session-filter { min-height: 30px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--text-soft); background: transparent; cursor: pointer; font-size: var(--type-micro); font-weight: 620; white-space: nowrap; }
 .session-filter:hover { color: var(--teal-strong); border-color: color-mix(in srgb, var(--teal) 42%, var(--line)); }

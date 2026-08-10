@@ -122,7 +122,7 @@ const state = {
   statusQualityNotes: [],
   dataQualityNotes: [],
   sessionSearch: "",
-  requestSerial: { overview: 0, hourly: 0, daily: 0, day: 0, breakdown: 0, sessions: 0 }
+  requestSerial: { overview: 0, hourly: 0, daily: 0, day: 0, breakdown: 0, sessions: 0, estimates: 0 }
 };
 
 const responseCache = new Map();
@@ -842,17 +842,35 @@ async function loadBreakdown({ preserve = false } = {}) {
 
 async function loadSessions({ preserve = false } = {}) {
   const serial = ++state.requestSerial.sessions;
+  const estimateSerial = ++state.requestSerial.estimates;
   const bounds = rangeBounds(state.detailRange);
+  const query = { ...bounds, limit: 100, compact: 1, q: state.sessionSearch };
+  const rowsURL = apiURL("/api/v1/sessions", { ...query, include_estimate: 0 });
+  const estimatesURL = apiURL("/api/v1/session-estimates", query);
   if (!preserve) $("#sessionRows").innerHTML = `<div class="empty-state">${escapeHTML(t("details.sessionsLoading"))}</div>`;
   $("#sessionsPanel").setAttribute("aria-busy", "true");
   try {
-    const sessions = await api(apiURL("/api/v1/sessions", { ...bounds, limit: 100, compact: 1, q: state.sessionSearch }));
+    const sessions = await api(rowsURL);
     if (serial !== state.requestSerial.sessions) return;
-    renderSessions(sessions.items || []);
+    const items = sessions.items || [];
+    renderSessions(items, { estimatesPending: items.length > 0 });
+    if (items.length) loadSessionEstimates(estimatesURL, serial, estimateSerial);
   } catch (error) {
     if (serial === state.requestSerial.sessions) toast(t("dynamic.sessionsError", { error: error.message }), true);
   } finally {
     if (serial === state.requestSerial.sessions) $("#sessionsPanel").removeAttribute("aria-busy");
+  }
+}
+
+async function loadSessionEstimates(url, sessionSerial, estimateSerial) {
+  try {
+    const payload = await api(url);
+    if (sessionSerial !== state.requestSerial.sessions || estimateSerial !== state.requestSerial.estimates) return;
+    patchSessionEstimates(payload.items || []);
+  } catch (error) {
+    if (sessionSerial !== state.requestSerial.sessions || estimateSerial !== state.requestSerial.estimates) return;
+    markSessionEstimatesUnavailable();
+    toast(t("dynamic.sessionEstimateError", { error: error.message }), true);
   }
 }
 
@@ -894,7 +912,56 @@ function renderBreakdown(items, dimension) {
   }));
 }
 
-function renderSessions(items) {
+function sessionEstimatePresentation(estimate = {}) {
+  const totalEstimateTokens = estimateTokens(estimate);
+  const pricedTokens = Number(estimate.priced_tokens || 0);
+  const cost = totalEstimateTokens && !pricedTokens ? t("dynamic.unpriced") : estimateDisplay(estimate);
+  const partialCoverage = pricedTokens > 0 && Number(estimate.coverage_ratio || 0) < 1
+    ? formatPercent(estimate.coverage_ratio) : "";
+  const title = [estimateLabel(estimate), reasonSummary(estimate)].filter(Boolean).join(" · ");
+  return { cost, partialCoverage, title };
+}
+
+function renderSessionEstimate(cell, estimate) {
+  const presentation = sessionEstimatePresentation(estimate);
+  cell.classList.remove("pending", "unavailable");
+  cell.removeAttribute("aria-busy");
+  cell.title = presentation.title;
+  cell.innerHTML = `<small class="session-mobile-label">API</small><strong>${escapeHTML(presentation.cost)}</strong>${presentation.partialCoverage ? `<small>${escapeHTML(presentation.partialCoverage)}</small>` : ""}`;
+}
+
+function patchSessionEstimates(items) {
+  const rows = new Map($$('[data-session-id]', $("#sessionRows")).map((row) => [row.dataset.sessionId, row]));
+  const received = new Set();
+  for (const item of items) {
+    const row = rows.get(item.session_id);
+    if (!row) continue;
+    const cell = $('[data-session-cost]', row);
+    if (cell) {
+      received.add(item.session_id);
+      renderSessionEstimate(cell, item.estimate || {});
+    }
+  }
+  for (const [sessionID, row] of rows) {
+    if (received.has(sessionID)) continue;
+    const cell = $('[data-session-cost].pending', row);
+    if (cell) renderSessionEstimateUnavailable(cell);
+  }
+}
+
+function renderSessionEstimateUnavailable(cell) {
+  cell.classList.remove("pending");
+  cell.classList.add("unavailable");
+  cell.removeAttribute("aria-busy");
+  cell.title = t("details.costUnavailable");
+  cell.innerHTML = `<small class="session-mobile-label">API</small><strong>${escapeHTML(t("details.costUnavailable"))}</strong>`;
+}
+
+function markSessionEstimatesUnavailable() {
+  $$('[data-session-cost].pending', $("#sessionRows")).forEach(renderSessionEstimateUnavailable);
+}
+
+function renderSessions(items, { estimatesPending = false } = {}) {
   const container = $("#sessionRows");
   if (!items.length) {
     const key = state.sessionSearch ? "dynamic.sessionsSearchEmpty" : "dynamic.sessionsEmpty";
@@ -902,21 +969,18 @@ function renderSessions(items) {
     return;
   }
   container.innerHTML = items.map((item) => {
-    const estimate = item.estimate || {};
-    const totalEstimateTokens = estimateTokens(estimate);
-    const pricedTokens = Number(estimate.priced_tokens || 0);
-    const cost = totalEstimateTokens && !pricedTokens ? t("dynamic.unpriced") : estimateDisplay(estimate);
-    const partialCoverage = pricedTokens > 0 && Number(estimate.coverage_ratio || 0) < 1
-      ? formatPercent(estimate.coverage_ratio) : "";
-    const costTitle = [estimateLabel(estimate), reasonSummary(estimate)].filter(Boolean).join(" · ");
+    const presentation = sessionEstimatePresentation(item.estimate || {});
     const active = state.filters.session_id === item.session_id;
-    return `<article class="session-row">
+    const costCell = estimatesPending
+      ? `<div class="session-metric session-cost pending" data-session-cost aria-busy="true"><small class="session-mobile-label">API</small><strong>${escapeHTML(t("details.costPending"))}</strong></div>`
+      : `<div class="session-metric session-cost" data-session-cost title="${escapeHTML(presentation.title)}"><small class="session-mobile-label">API</small><strong>${escapeHTML(presentation.cost)}</strong>${presentation.partialCoverage ? `<small>${escapeHTML(presentation.partialCoverage)}</small>` : ""}</div>`;
+    return `<article class="session-row" data-session-id="${escapeHTML(item.session_id)}">
     <div class="session-cell"><strong title="${escapeHTML(item.title || item.session_id)}">${escapeHTML(item.title || t("dynamic.untitledThread"))}</strong><small title="${escapeHTML(item.session_id)}">${escapeHTML(shortId(item.session_id))}</small></div>
     <div class="session-cell"><span title="${escapeHTML(item.project_path || t("common.notRecorded"))}">${escapeHTML(shortPath(item.project_path))}</span><small title="${escapeHTML(item.project_path || "")}">${escapeHTML(item.project_path || t("common.notRecorded"))}</small></div>
     <div class="session-cell"><strong title="${escapeHTML(item.model || t("common.unknownModel"))}">${escapeHTML(item.model || t("common.unknownModel"))}</strong><span>${escapeHTML(item.source || t("common.unknownSource"))}</span></div>
     <div class="session-cell"><span class="agent-badge">${escapeHTML(item.agent_type || "main")}</span><span class="confidence-badge ${escapeHTML(item.confidence)}">${confidenceLabel(item.confidence)}</span></div>
     <div class="session-metric session-token" title="${fullToken(usageTotal(item.usage))} Token"><small class="session-mobile-label">Token</small><strong>${formatToken(usageTotal(item.usage))}</strong></div>
-    <div class="session-metric session-cost" title="${escapeHTML(costTitle)}"><small class="session-mobile-label">API</small><strong>${escapeHTML(cost)}</strong>${partialCoverage ? `<small>${escapeHTML(partialCoverage)}</small>` : ""}</div>
+    ${costCell}
     <div class="session-cell"><span>${escapeHTML(localTime(item.last_usage))}</span></div>
     <button class="session-filter pressable ${active ? "active" : ""}" type="button" data-session-filter="${escapeHTML(item.session_id)}" aria-pressed="${active}">${escapeHTML(t(active ? "details.cancelSessionFilter" : "details.onlySession"))}</button>
   </article>`;

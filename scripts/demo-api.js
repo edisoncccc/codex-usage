@@ -237,7 +237,17 @@
       sources: sources.map((item) => item.key),
       projects: projects.map((item) => item.key)
     });
-    if (endpoint === "/api/v1/sessions") return jsonResponse(sessionPayload(url));
+    if (endpoint === "/api/v1/sessions") {
+      const payload = sessionPayload(url);
+      if (["0", "false"].includes((url.searchParams.get("include_estimate") || "").toLowerCase())) {
+        payload.items = payload.items.map(({ estimate, ...item }) => item);
+      }
+      return jsonResponse(payload);
+    }
+    if (endpoint === "/api/v1/session-estimates") {
+      const payload = sessionPayload(url);
+      return jsonResponse({ items: payload.items.map((item) => ({ session_id: item.session_id, estimate: item.estimate })) });
+    }
     if (endpoint === "/api/v1/warnings") return jsonResponse({ items: [
       { created_at: now.toISOString(), first_seen: new Date(now.getTime() - 86_400_000).toISOString(), occurrences: 1, kind: "fork_replay_detected", path: "synthetic://rollout", detail: "Synthetic copied parent history was skipped and the JSONL index was rebuilt." },
       { created_at: now.toISOString(), occurrences: 1, kind: "cumulative_reset", path: "synthetic://rollout", detail: "Synthetic cumulative vector moved backward; last_token_usage filled the delta." }

@@ -84,6 +84,8 @@ func TestDashboardAPIAndExport(t *testing.T) {
 		"/api/v1/breakdown?dimension=model",
 		"/api/v1/dimensions",
 		"/api/v1/sessions?limit=10",
+		"/api/v1/sessions?limit=10&include_estimate=0",
+		"/api/v1/session-estimates?limit=10",
 		"/api/v1/cost-estimate?bucket=day",
 		"/api/v1/pricing",
 		"/api/v1/export?format=json",
@@ -168,6 +170,63 @@ func TestDashboardAPIAndExport(t *testing.T) {
 		t.Fatalf("unexpected searched session estimate: %#v", sessionPayload.Items)
 	}
 
+	response, err = http.Get(httpServer.URL + "/api/v1/sessions?limit=10&q=private-project&include_estimate=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var baseSessionPayload struct {
+		Items []struct {
+			SessionID string          `json:"session_id"`
+			Estimate  json.RawMessage `json:"estimate"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&baseSessionPayload); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(baseSessionPayload.Items) != 1 || baseSessionPayload.Items[0].SessionID != "session-1" || baseSessionPayload.Items[0].Estimate != nil {
+		t.Fatalf("base sessions unexpectedly included pricing: %#v", baseSessionPayload.Items)
+	}
+	if timing := response.Header.Get("Server-Timing"); !strings.Contains(timing, `sessions;`) || !strings.Contains(timing, `desc="hit"`) {
+		t.Fatalf("base sessions timing did not report a cache hit: %q", timing)
+	}
+
+	response, err = http.Get(httpServer.URL + "/api/v1/session-estimates?limit=10&q=private-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var estimatePayload struct {
+		Items []sessionEstimateResponseItem `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&estimatePayload); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(estimatePayload.Items) != 1 || estimatePayload.Items[0].SessionID != "session-1" || estimatePayload.Items[0].Estimate.PricedTokens != 100 {
+		t.Fatalf("unexpected deferred session estimate: %#v", estimatePayload.Items)
+	}
+	if timing := response.Header.Get("Server-Timing"); !strings.Contains(timing, `pricing;`) || !strings.Contains(timing, `desc="hit"`) {
+		t.Fatalf("deferred estimate timing did not report a cache hit: %q", timing)
+	}
+
+	response, err = http.Get(httpServer.URL + "/api/v1/session-estimates?limit=10&session_id=session-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unpricedSessionPayload struct {
+		Items []sessionEstimateResponseItem `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&unpricedSessionPayload); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(unpricedSessionPayload.Items) != 1 || unpricedSessionPayload.Items[0].Estimate.UnpricedTokens != 20 {
+		t.Fatalf("unexpected unpriced session estimate: %#v", unpricedSessionPayload.Items)
+	}
+
 	request, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/api/v1/pricing/overrides", strings.NewReader(
 		`{"overrides":{"codex-auto-review":{"alias_of":"gpt-5.6-luna"}}}`,
 	))
@@ -195,6 +254,22 @@ func TestDashboardAPIAndExport(t *testing.T) {
 	response.Body.Close()
 	if overriddenCost.Summary.PricedTokens != 120 || overriddenCost.Summary.UnpricedTokens != 0 || overriddenCost.Summary.CoverageRatio != 1 {
 		t.Fatalf("override was not applied without restart: %#v", overriddenCost.Summary)
+	}
+
+	response, err = http.Get(httpServer.URL + "/api/v1/session-estimates?limit=10&session_id=session-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var overriddenSessionPayload struct {
+		Items []sessionEstimateResponseItem `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&overriddenSessionPayload); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(overriddenSessionPayload.Items) != 1 || overriddenSessionPayload.Items[0].Estimate.PricedTokens != 20 || overriddenSessionPayload.Items[0].Estimate.UnpricedTokens != 0 {
+		t.Fatalf("pricing override did not invalidate session estimate cache: %#v", overriddenSessionPayload.Items)
 	}
 
 	request, _ = http.NewRequest(http.MethodPost, httpServer.URL+"/api/v1/rescan", strings.NewReader("{}"))

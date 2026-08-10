@@ -134,7 +134,7 @@ const server = http.createServer(async (request, response) => {
     sources: ["codex_desktop", "codex_cli_rs"],
     projects: ["C:\\dev\\render-lab", "/srv/inference"]
   });
-  if (url.pathname === "/api/v1/sessions") {
+  if (url.pathname === "/api/v1/sessions" || url.pathname === "/api/v1/session-estimates") {
     const sessions = [
       { session_id: "019fb24a-f4dd-7673-9b7d-225d26f2b141", title: "实现逐电脑 Token 统计与可视化", project_path: "C:\\dev\\codex-usage", model: "gpt-5.4", source: "codex_desktop", agent_type: "main", usage: { ...usage, total: 2_920_000 }, confidence: "exact", last_usage: now.toISOString() },
       { session_id: "019fa142-1051-72bd-aa0f-975efd2bf6c2", title: "Linux 渲染任务诊断", project_path: "/srv/inference/render", model: "gpt-5.5-codex", source: "codex_cli_rs", agent_type: "subagent", usage: { ...usage, total: 1_180_000 }, confidence: "gap_fallback", last_usage: new Date(now.getTime() - 3600000).toISOString() },
@@ -142,7 +142,7 @@ const server = http.createServer(async (request, response) => {
     ];
     const query = (url.searchParams.get("q") || "").trim().toLocaleLowerCase();
     const sessionID = url.searchParams.get("session_id");
-    return json(response, { items: sessions.filter((item) => {
+    let responseItems = sessions.filter((item) => {
       if (sessionID && item.session_id !== sessionID) return false;
       return !query || [item.title, item.session_id, item.project_path, item.model, item.source]
         .some((value) => String(value || "").toLocaleLowerCase().includes(query));
@@ -153,7 +153,13 @@ const server = http.createServer(async (request, response) => {
         regular_input_usd: "0.000000000", cached_input_usd: "0.000000000", cache_write_input_usd: "0.000000000", output_usd: "0.000000000",
         priced_tokens: item.usage.total, unpriced_tokens: 0, coverage_ratio: 1, reasons: []
       }
-    })) });
+    }));
+    if (url.pathname === "/api/v1/session-estimates") {
+      responseItems = responseItems.map((item) => ({ session_id: item.session_id, estimate: item.estimate }));
+    } else if (["0", "false"].includes((url.searchParams.get("include_estimate") || "").toLowerCase())) {
+      responseItems = responseItems.map(({ estimate, ...item }) => item);
+    }
+    return json(response, { items: responseItems });
   }
   if (url.pathname === "/api/v1/warnings") return json(response, { items: [
     { created_at: now.toISOString(), kind: "fork_replay_detected", path: "rollout-fork.jsonl", detail: "检测到复制的父线程历史前缀，已跳过并重建派生索引" },

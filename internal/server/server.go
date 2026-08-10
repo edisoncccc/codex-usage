@@ -33,12 +33,15 @@ type Server struct {
 	LoadPricingOverrides func() (map[string]pricing.Override, error)
 	SavePricingOverrides func(map[string]pricing.Override) error
 
-	scanMu            sync.Mutex
-	pricingMu         sync.Mutex
-	dimensionMu       sync.Mutex
-	dimensionRevision uint64
-	dimensionCache    store.DimensionValues
-	scanning          atomic.Bool
+	scanMu               sync.Mutex
+	pricingMu            sync.Mutex
+	dimensionMu          sync.Mutex
+	dimensionRevision    uint64
+	dimensionCache       store.DimensionValues
+	sessionRowsCache     boundedCache[sessionQueryKey, []store.SessionRow]
+	sessionEstimateCache boundedCache[sessionEstimateCacheKey, []sessionEstimateResponseItem]
+	pricingRevision      atomic.Uint64
+	scanning             atomic.Bool
 }
 
 func (s *Server) URL() string {
@@ -60,6 +63,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/breakdown", s.handleBreakdown)
 	mux.HandleFunc("/api/v1/dimensions", s.handleDimensions)
 	mux.HandleFunc("/api/v1/sessions", s.handleSessions)
+	mux.HandleFunc("/api/v1/session-estimates", s.handleSessionEstimates)
 	mux.HandleFunc("/api/v1/warnings", s.handleWarnings)
 	mux.HandleFunc("/api/v1/cost-estimate", s.handleCostEstimate)
 	mux.HandleFunc("/api/v1/pricing", s.handlePricing)
@@ -238,67 +242,6 @@ func (s *Server) handleDimensions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, values)
 }
 
-func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, http.MethodGet)
-		return
-	}
-	filter, err := parseFilter(r.URL.Query())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	items, err := s.Store.Sessions(r.Context(), filter,
-		parseInt(r.URL.Query().Get("limit"), 100), parseInt(r.URL.Query().Get("offset"), 0))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if r.URL.Query().Get("compact") == "1" || strings.EqualFold(r.URL.Query().Get("compact"), "true") {
-		for index := range items {
-			items[index].Title = compactText(items[index].Title, 240)
-		}
-	}
-	overrides, err := s.pricingOverrides()
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	builders := make(map[string]*pricing.Builder, len(items))
-	sessionIDs := make([]string, 0, len(items))
-	for _, item := range items {
-		builder, buildErr := pricing.NewBuilder(overrides)
-		if buildErr != nil {
-			writeError(w, buildErr)
-			return
-		}
-		builders[item.SessionID] = builder
-		sessionIDs = append(sessionIDs, item.SessionID)
-	}
-	if err := s.Store.WalkSessionPricingAggregates(r.Context(), filter, sessionIDs, func(event model.UsageEvent) error {
-		builder := builders[event.SessionID]
-		if builder == nil {
-			return nil
-		}
-		return builder.Add(event)
-	}); err != nil {
-		writeError(w, err)
-		return
-	}
-	type sessionResponseItem struct {
-		store.SessionRow
-		Estimate pricing.Estimate `json:"estimate"`
-	}
-	responseItems := make([]sessionResponseItem, 0, len(items))
-	for _, item := range items {
-		responseItems = append(responseItems, sessionResponseItem{
-			SessionRow: item,
-			Estimate:   builders[item.SessionID].Report().Summary,
-		})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": responseItems})
-}
-
 func (s *Server) handleWarnings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, http.MethodGet)
@@ -418,6 +361,8 @@ func (s *Server) handlePricingOverrides(w http.ResponseWriter, r *http.Request) 
 		writeError(w, err)
 		return
 	}
+	s.pricingRevision.Add(1)
+	s.sessionEstimateCache.clear()
 	response, err := s.pricingResponse(r.Context(), normalized)
 	if err != nil {
 		writeError(w, err)

@@ -139,15 +139,18 @@ test("hourly usage defaults to the previous complete hour and supports a rolling
   await expect(page.locator("#hourlyTotal")).toHaveText("60");
   await expect(page.locator("#hourlyRuler .hour-slot")).toHaveCount(24);
   await expect(page.locator("#hourlyRuler .hour-slot").last()).toHaveClass(/selected/);
-  const previousLabel = await page.locator("#hourlyWindowLabel").textContent();
   const rollingResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return url.pathname === "/api/v1/summary" && url.searchParams.get("since")?.includes("T");
   });
   await page.locator('[data-hour-range="rolling"]').click();
-  await rollingResponse;
+  const rollingURL = new URL((await rollingResponse).url());
+  const rollingSince = Date.parse(rollingURL.searchParams.get("since"));
+  const rollingUntil = Date.parse(rollingURL.searchParams.get("until"));
   await expect(page.locator('[data-hour-range="rolling"]')).toHaveAttribute("aria-pressed", "true");
-  await expect.poll(() => page.locator("#hourlyWindowLabel").textContent()).not.toBe(previousLabel);
+  expect(rollingUntil - rollingSince).toBe(60 * 60 * 1000);
+  expect(Math.abs(Date.now() - rollingUntil)).toBeLessThan(10_000);
+  await expect(page.locator("#hourlyWindowLabel")).not.toHaveText("—");
   await expect(page.locator("#hourlyTotal")).not.toHaveText("—");
 });
 
@@ -174,8 +177,15 @@ test("view switching exposes the target panel immediately", async ({ page }) => 
 
 test("details renders breakdown before delayed sessions and dimension changes stay local", async ({ page }) => {
   let sessionRequests = 0;
+  let estimateRequests = 0;
   await page.route("**/api/v1/sessions?**", async (route) => {
     sessionRequests++;
+    expect(new URL(route.request().url()).searchParams.get("include_estimate")).toBe("0");
+    await delay(1200);
+    await route.continue();
+  });
+  await page.route("**/api/v1/session-estimates?**", async (route) => {
+    estimateRequests++;
     await delay(1200);
     await route.continue();
   });
@@ -187,6 +197,9 @@ test("details renders breakdown before delayed sessions and dimension changes st
   expect(Date.now() - started).toBeLessThan(1100);
   await expect(page.locator("#sessionRows")).toContainText("正在加载本机 Session");
   await expect(page.locator("#sessionRows .session-row").first()).toBeVisible({ timeout: 3000 });
+  await expect(page.locator("#sessionRows .session-cost").first()).toHaveClass(/pending/);
+  await expect(page.locator("#sessionRows .session-cost").first()).not.toHaveClass(/pending/, { timeout: 3000 });
+  expect(estimateRequests).toBe(1);
 
   const requestsBeforeDimensionChange = sessionRequests;
   const sourceBreakdown = page.waitForResponse((response) => {
@@ -281,7 +294,8 @@ test("navigation, month drill-down, filter chips, pricing, and scan feedback wor
   await expect(page.getByRole("heading", { name: "明细与归属" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Session 明细" })).toBeVisible();
   await expect(page.getByText("等价 API 价格", { exact: true })).toBeVisible();
-  await expect(page.locator(".session-cost strong").first()).not.toHaveText("—");
+  await expect(page.locator(".session-cost").first()).not.toHaveClass(/pending/);
+  await expect(page.locator(".session-cost strong").first()).toHaveText(/^\$/);
 
   const modelDrill = page.locator('[data-drill-value="gpt-5.4"]');
   await modelDrill.click();
