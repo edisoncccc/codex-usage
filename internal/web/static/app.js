@@ -100,6 +100,7 @@ function resetDisplayPreferences() {
 
 const state = {
   view: "overview",
+  viewVisited: { overview: true, daily: false, details: false },
   overviewRange: "7d",
   detailRange: "30d",
   detailDimension: "model",
@@ -121,7 +122,7 @@ const state = {
   statusQualityNotes: [],
   dataQualityNotes: [],
   sessionSearch: "",
-  requestSerial: { overview: 0, hourly: 0, daily: 0, day: 0, details: 0 }
+  requestSerial: { overview: 0, hourly: 0, daily: 0, day: 0, breakdown: 0, sessions: 0 }
 };
 
 const responseCache = new Map();
@@ -821,29 +822,45 @@ function renderDayDetail(point, report, loadingModels = false) {
   $("#dayModels").innerHTML = models.length ? models.map((item) => `<div class="mini-model-row"><span title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><strong title="${fullToken(usageTotal(item.usage))}">${formatToken(usageTotal(item.usage))}</strong></div>`).join("") : `<div class="empty-state">${escapeHTML(t("dynamic.noModelsDay"))}</div>`;
 }
 
-async function loadDetails({ preserve = false } = {}) {
-  const serial = ++state.requestSerial.details;
+async function loadBreakdown({ preserve = false } = {}) {
+  const serial = ++state.requestSerial.breakdown;
   const bounds = rangeBounds(state.detailRange);
   const dimension = state.detailDimension;
   $("#breakdownTitle").textContent = t("dynamic.breakdownBy", { dimension: dimensionLabel(dimension) });
-  if (!preserve) {
-    $("#detailBreakdown").innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.breakdownLoading", { dimension: dimensionLabel(dimension) }))}</div>`;
-    $("#sessionRows").innerHTML = `<div class="empty-state">${escapeHTML(t("details.sessionsLoading"))}</div>`;
-  }
-  $("#view-details").setAttribute("aria-busy", "true");
+  if (!preserve) $("#detailBreakdown").innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.breakdownLoading", { dimension: dimensionLabel(dimension) }))}</div>`;
+  $("#breakdownPanel").setAttribute("aria-busy", "true");
   try {
-    const [breakdown, sessions] = await Promise.all([
-      api(apiURL("/api/v1/breakdown", { ...bounds, dimension, limit: 100 })),
-      api(apiURL("/api/v1/sessions", { ...bounds, limit: 100, compact: 1, q: state.sessionSearch }))
-    ]);
-    if (serial !== state.requestSerial.details) return;
+    const breakdown = await api(apiURL("/api/v1/breakdown", { ...bounds, dimension, limit: 100 }));
+    if (serial !== state.requestSerial.breakdown) return;
     renderBreakdown(breakdown.items || [], dimension);
+  } catch (error) {
+    if (serial === state.requestSerial.breakdown) toast(t("dynamic.breakdownError", { error: error.message }), true);
+  } finally {
+    if (serial === state.requestSerial.breakdown) $("#breakdownPanel").removeAttribute("aria-busy");
+  }
+}
+
+async function loadSessions({ preserve = false } = {}) {
+  const serial = ++state.requestSerial.sessions;
+  const bounds = rangeBounds(state.detailRange);
+  if (!preserve) $("#sessionRows").innerHTML = `<div class="empty-state">${escapeHTML(t("details.sessionsLoading"))}</div>`;
+  $("#sessionsPanel").setAttribute("aria-busy", "true");
+  try {
+    const sessions = await api(apiURL("/api/v1/sessions", { ...bounds, limit: 100, compact: 1, q: state.sessionSearch }));
+    if (serial !== state.requestSerial.sessions) return;
     renderSessions(sessions.items || []);
   } catch (error) {
-    if (serial === state.requestSerial.details) toast(t("dynamic.detailsError", { error: error.message }), true);
+    if (serial === state.requestSerial.sessions) toast(t("dynamic.sessionsError", { error: error.message }), true);
   } finally {
-    if (serial === state.requestSerial.details) $("#view-details").removeAttribute("aria-busy");
+    if (serial === state.requestSerial.sessions) $("#sessionsPanel").removeAttribute("aria-busy");
   }
+}
+
+async function loadDetails({ preserve = false, breakdown = true, sessions = true } = {}) {
+  const tasks = [];
+  if (breakdown) tasks.push(loadBreakdown({ preserve }));
+  if (sessions) tasks.push(loadSessions({ preserve }));
+  await Promise.all(tasks);
 }
 
 function renderBreakdown(items, dimension) {
@@ -920,7 +937,7 @@ function applySessionSearch() {
   $("#sessionSearchClear").classList.toggle("hidden", !value);
   if (value === state.sessionSearch) return;
   state.sessionSearch = value;
-  loadDetails();
+  loadSessions();
 }
 
 async function loadCurrentView(options = {}) {
@@ -929,10 +946,11 @@ async function loadCurrentView(options = {}) {
   return loadOverview(options);
 }
 
-async function switchView(next) {
+function switchView(next) {
   if (!next || next === state.view) return;
   const currentPanel = $(`[data-view-panel="${state.view}"]`);
   const nextPanel = $(`[data-view-panel="${next}"]`);
+  const preserve = Boolean(state.viewVisited[next]);
   state.view = next;
   $$('.nav-tab').forEach((tab) => {
     const selected = tab.dataset.view === next;
@@ -941,14 +959,13 @@ async function switchView(next) {
     tab.tabIndex = selected ? 0 : -1;
   });
   history.replaceState(null, "", `#${next}`);
-  loadCurrentView();
-  currentPanel.classList.add("leaving");
-  await new Promise((resolve) => setTimeout(resolve, reducedMotion() ? 0 : 180));
   currentPanel.hidden = true;
-  currentPanel.classList.remove("active", "leaving");
+  currentPanel.classList.remove("active", "entering");
   nextPanel.hidden = false;
   nextPanel.classList.add("active", "entering");
-  requestAnimationFrame(() => setTimeout(() => nextPanel.classList.remove("entering"), reducedMotion() ? 0 : 220));
+  state.viewVisited[next] = true;
+  loadCurrentView({ preserve });
+  requestAnimationFrame(() => setTimeout(() => nextPanel.classList.remove("entering"), reducedMotion() ? 0 : 140));
 }
 
 function openDialog(dialog) {
@@ -1194,7 +1211,7 @@ function setupEvents() {
       item.setAttribute("aria-selected", String(selected));
       item.tabIndex = selected ? 0 : -1;
     });
-    loadDetails();
+    loadBreakdown();
   }));
   $(".dimension-tabs").addEventListener("keydown", (event) => tablistKeydown(event, $$('[data-dimension]'), (button) => button.click()));
   $("#previousMonth").addEventListener("click", () => {
@@ -1357,6 +1374,7 @@ async function boot() {
   if (["daily", "details"].includes(requestedView)) {
     const initial = state.view;
     state.view = requestedView;
+    state.viewVisited[requestedView] = true;
     $(`[data-view-panel="${initial}"]`).hidden = true;
     $(`[data-view-panel="${requestedView}"]`).hidden = false;
     $$('.nav-tab').forEach((tab) => {

@@ -151,7 +151,7 @@ test("hourly usage defaults to the previous complete hour and supports a rolling
   await expect(page.locator("#hourlyTotal")).not.toHaveText("—");
 });
 
-test("view switching stays within the pre-optimization interaction budget", async ({ page }) => {
+test("view switching exposes the target panel immediately", async ({ page }) => {
   await page.goto(dashboardURL, { waitUntil: "networkidle" });
   const elapsed = await page.evaluate(async () => {
     const panel = document.querySelector("#view-daily");
@@ -168,8 +168,36 @@ test("view switching stays within the pre-optimization interaction budget", asyn
     });
     return performance.now() - start;
   });
-  expect(elapsed).toBeLessThan(400);
+  expect(elapsed).toBeLessThan(100);
   await expect(page.locator("#view-daily")).toBeVisible();
+});
+
+test("details renders breakdown before delayed sessions and dimension changes stay local", async ({ page }) => {
+  let sessionRequests = 0;
+  await page.route("**/api/v1/sessions?**", async (route) => {
+    sessionRequests++;
+    await delay(1200);
+    await route.continue();
+  });
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+
+  const started = Date.now();
+  await page.getByRole("tab", { name: "明细" }).click();
+  await expect(page.locator("#detailBreakdown .breakdown-row").first()).toBeVisible({ timeout: 1000 });
+  expect(Date.now() - started).toBeLessThan(1100);
+  await expect(page.locator("#sessionRows")).toContainText("正在加载本机 Session");
+  await expect(page.locator("#sessionRows .session-row").first()).toBeVisible({ timeout: 3000 });
+
+  const requestsBeforeDimensionChange = sessionRequests;
+  const sourceBreakdown = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/v1/breakdown" && url.searchParams.get("dimension") === "source";
+  });
+  await page.getByRole("tab", { name: "来源" }).click();
+  await sourceBreakdown;
+  await expect(page.locator("#breakdownTitle")).toHaveText("按来源");
+  await page.waitForTimeout(100);
+  expect(sessionRequests).toBe(requestsBeforeDimensionChange);
 });
 
 test("filter dimensions load lazily once instead of running startup breakdowns", async ({ page }) => {

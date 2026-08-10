@@ -213,10 +213,8 @@ button:disabled { cursor: not-allowed; opacity: .52; }
 .filter-chip button { width: 16px; height: 16px; padding: 0; border: 0; border-radius: 4px; color: var(--text-faint); background: transparent; cursor: pointer; line-height: 1; }
 
 .view-panel { min-height: 620px; }
-.view-panel.entering { animation: view-in 210ms var(--ease) both; }
-.view-panel.leaving { animation: view-out 180ms var(--ease) both; }
+.view-panel.entering { animation: view-in 120ms var(--ease) both; }
 @keyframes view-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
-@keyframes view-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-3px); } }
 .view-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
 .eyebrow { margin: 0 0 6px; color: var(--text-faint); font-family: var(--mono); font-size: var(--type-micro); font-weight: 650; letter-spacing: .12em; }
 h1, h2, h3 { font-family: var(--display); text-wrap: balance; }
@@ -586,12 +584,12 @@ select:focus, input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px col
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
-  .view-panel.entering, .view-panel.leaving { animation: none; }
+  .view-panel.entering { animation: none; }
 }
 
 :root[data-motion="reduce"] { scroll-behavior: auto; }
 :root[data-motion="reduce"] *, :root[data-motion="reduce"] *::before, :root[data-motion="reduce"] *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
-:root[data-motion="reduce"] .view-panel.entering, :root[data-motion="reduce"] .view-panel.leaving { animation: none; }
+:root[data-motion="reduce"] .view-panel.entering { animation: none; }
 
 @media (prefers-reduced-transparency: reduce) {
   .topbar, dialog { -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--surface-raised); }
