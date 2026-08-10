@@ -107,7 +107,6 @@ const state = {
   filters: {},
   status: null,
   overview: null,
-  hourlyMode: "previous",
   hourlyLoaded: false,
   hourlyPoints: [],
   hourlyPointDate: "",
@@ -505,12 +504,10 @@ async function loadHourlyUsage({ preserve = false } = {}) {
       until: windows.chartEnd.toISOString(),
       bucket: "hour"
     }));
-    const rollingPromise = state.hourlyMode === "rolling"
-      ? api(apiURL("/api/v1/summary", {
-        since: windows.rollingStart.toISOString(),
-        until: windows.rollingEnd.toISOString()
-      }))
-      : Promise.resolve(null);
+    const rollingPromise = api(apiURL("/api/v1/summary", {
+      since: windows.rollingStart.toISOString(),
+      until: windows.rollingEnd.toISOString()
+    }));
     const [series, rolling] = await Promise.all([chartPromise, rollingPromise]);
     if (serial !== state.requestSerial.hourly) return;
     state.hourlyPoints = fillCompleteHours(series.points || [], windows);
@@ -524,12 +521,9 @@ async function loadHourlyUsage({ preserve = false } = {}) {
 }
 
 function renderHourlyUsage(points, rolling, windows) {
-  const previous = points.at(-1) || { usage: emptyUsage() };
-  const usage = state.hourlyMode === "rolling" ? rolling?.usage || emptyUsage() : previous.usage || emptyUsage();
+  const usage = rolling?.usage || emptyUsage();
   const total = usageTotal(usage);
-  const label = state.hourlyMode === "rolling"
-    ? formatHourWindow(windows.rollingStart, windows.rollingEnd)
-    : formatHourWindow(windows.previousStart, windows.previousEnd);
+  const label = formatHourWindow(windows.rollingStart, windows.rollingEnd);
   $("#hourlyWindowLabel").textContent = label;
   const totalNode = $("#hourlyTotal");
   totalNode.textContent = formatToken(total);
@@ -592,7 +586,7 @@ function renderHourlyLine(points) {
   pointLayer.innerHTML = coordinates.map(({ point, index, total, x, y }) => {
     const windowLabel = formatHourWindow(point.start, new Date(point.start.getTime() + 60 * 60_000));
     const selected = point.date === state.hourlyPointDate;
-    return `<button class="hour-point pressable ${selected ? "selected" : ""} ${total ? "" : "zero"}" type="button" data-hour-point="${index}" style="left:${(x / 10).toFixed(3)}%;top:${(y / 1.8).toFixed(3)}%" aria-pressed="${selected}" tabindex="${selected ? "0" : "-1"}" aria-label="${escapeHTML(t("hourly.barAria", { time: windowLabel, tokens: fullToken(total) }))}" title="${escapeHTML(t("hourly.barAria", { time: windowLabel, tokens: fullToken(total) }))}"></button>`;
+    return `<button class="hour-point pressable ${selected ? "selected" : ""} ${total ? "" : "zero"}" type="button" data-hour-point="${index}" style="left:${(x / 10).toFixed(3)}%;top:${y.toFixed(2)}px" aria-pressed="${selected}" tabindex="${selected ? "0" : "-1"}" aria-label="${escapeHTML(t("hourly.barAria", { time: windowLabel, tokens: fullToken(total) }))}" title="${escapeHTML(t("hourly.barAria", { time: windowLabel, tokens: fullToken(total) }))}"></button>`;
   }).join("");
   axis.innerHTML = coordinates.filter(({ index }) => index % 3 === 0 || index === points.length - 1).map(({ point, index, x }) => {
     const clock = formatClock(point.start);
@@ -644,6 +638,7 @@ function switchTrendView(next) {
   });
   $("#trendHourlyPane").hidden = next !== "hourly";
   $("#trendDailyPane").hidden = next !== "daily";
+  if (next === "hourly" && state.hourlyPoints.length) renderHourlyLine(state.hourlyPoints);
   if (next === "daily" && state.pulsePoints.length) renderPulse(state.pulsePoints);
 }
 
@@ -1349,15 +1344,6 @@ function setupEvents() {
     state.hourlyPointDate = "";
     state.pulseDate = "";
     loadOverview();
-  }));
-  $$('[data-hour-range]').forEach((button) => button.addEventListener("click", () => {
-    state.hourlyMode = button.dataset.hourRange;
-    $$('[data-hour-range]').forEach((item) => {
-      const selected = item === button;
-      item.classList.toggle("selected", selected);
-      item.setAttribute("aria-pressed", String(selected));
-    });
-    loadHourlyUsage({ preserve: state.hourlyLoaded });
   }));
   $$('[data-detail-range]').forEach((button) => button.addEventListener("click", () => {
     state.detailRange = button.dataset.detailRange;

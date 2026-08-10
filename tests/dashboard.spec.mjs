@@ -80,7 +80,7 @@ test.beforeAll(async () => {
     try {
       const response = await fetch(`${baseURL}/healthz`);
       if (response.ok) {
-        const summary = await fetch(`${baseURL}/api/v1/summary?since=today`);
+        const summary = await fetch(`${baseURL}/api/v1/summary?since=7d`);
         if (summary.ok && (await summary.json()).grand_total >= 100) return;
       }
     } catch {}
@@ -117,13 +117,13 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   await expect(page.getByRole("tab", { name: "概览" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByText("过去 7 个本地自然日")).toBeVisible();
   const trend = page.locator("#usageTrendPanel");
-  await expect(trend.getByRole("heading", { name: "每小时Token用量" })).toBeVisible();
-  await expect(trend.getByRole("tab", { name: "每小时" })).toHaveAttribute("aria-selected", "true");
-  await trend.getByRole("tab", { name: "每日" }).click();
   await expect(trend.getByRole("heading", { name: "每日Token用量" })).toBeVisible();
+  await expect(trend.getByRole("tab", { name: "每日" })).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#trendHourlyPane")).toBeHidden();
   await expect(page.locator("#trendDailyPane")).toBeVisible();
   await trend.getByRole("tab", { name: "每小时" }).click();
+  await expect(trend.getByRole("heading", { name: "每小时Token用量" })).toBeVisible();
+  await expect(trend.getByRole("tab", { name: "每小时" })).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#view-overview").getByText("Standard API 等价成本", { exact: true })).toBeVisible();
   await expect(page.locator("#machineId")).not.toHaveText("—");
   await expect(page.locator("#overviewCoverage")).toContainText("已定价 100.0% Token");
@@ -140,10 +140,20 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   expect(consoleErrors).toEqual([]);
 });
 
-test("hourly usage defaults to the previous complete hour and supports a rolling hour", async ({ page }) => {
+test("hourly usage is fixed to the last 60 minutes and keeps points aligned with the line", async ({ page }) => {
+  const summaryRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/summary" && url.searchParams.has("since") && url.searchParams.has("until")) summaryRequests.push(url);
+  });
   await page.goto(dashboardURL, { waitUntil: "networkidle" });
+  const trend = page.locator("#usageTrendPanel");
+  await trend.getByRole("tab", { name: "每小时" }).click();
   await expect(page.getByRole("heading", { name: "每小时Token用量" })).toBeVisible();
-  await expect(page.locator("#hourlyTotal")).toHaveText("60");
+  await expect(trend.getByText("最近 60 分钟", { exact: true })).toBeVisible();
+  await expect(trend.getByText("上一小时", { exact: true })).toHaveCount(0);
+  await expect(page.locator("[data-hour-range]")).toHaveCount(0);
+  await expect(page.locator("#hourlyTotal")).not.toHaveText("—");
   await expect(page.locator("#hourlyLine .hour-line-path")).toHaveCount(1);
   const hourPoints = page.locator("#hourlyPoints .hour-point");
   await expect(hourPoints).toHaveCount(24);
@@ -155,19 +165,29 @@ test("hourly usage defaults to the previous complete hour and supports a rolling
   await hourPoints.first().press("End");
   await expect(hourPoints.last()).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#hourPointTotal")).toHaveText("60");
-  const rollingResponse = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return url.pathname === "/api/v1/summary" && url.searchParams.get("since")?.includes("T");
+  const alignment = await page.evaluate(() => {
+    const svg = document.querySelector("#hourlyLine");
+    const polyline = svg.querySelector(".hour-line-path");
+    const svgRect = svg.getBoundingClientRect();
+    const coordinates = polyline.getAttribute("points").trim().split(/\s+/).map((pair) => pair.split(",").map(Number));
+    return [...document.querySelectorAll("#hourlyPoints .hour-point")].map((button, index) => {
+      const rect = button.getBoundingClientRect();
+      const [x, y] = coordinates[index];
+      return {
+        x: Math.abs(rect.left + rect.width / 2 - (svgRect.left + x / 1000 * svgRect.width)),
+        y: Math.abs(rect.top + rect.height / 2 - (svgRect.top + y / 180 * svgRect.height))
+      };
+    });
   });
-  await page.locator('[data-hour-range="rolling"]').click();
-  const rollingURL = new URL((await rollingResponse).url());
+  expect(Math.max(...alignment.map(({ x }) => x))).toBeLessThan(0.5);
+  expect(Math.max(...alignment.map(({ y }) => y))).toBeLessThan(0.5);
+  const rollingURL = summaryRequests.find((url) => Date.parse(url.searchParams.get("until")) - Date.parse(url.searchParams.get("since")) === 60 * 60 * 1000);
+  expect(rollingURL).toBeTruthy();
   const rollingSince = Date.parse(rollingURL.searchParams.get("since"));
   const rollingUntil = Date.parse(rollingURL.searchParams.get("until"));
-  await expect(page.locator('[data-hour-range="rolling"]')).toHaveAttribute("aria-pressed", "true");
   expect(rollingUntil - rollingSince).toBe(60 * 60 * 1000);
   expect(Math.abs(Date.now() - rollingUntil)).toBeLessThan(10_000);
   await expect(page.locator("#hourlyWindowLabel")).not.toHaveText("—");
-  await expect(page.locator("#hourlyTotal")).not.toHaveText("—");
 });
 
 test("view switching exposes the target panel immediately", async ({ page }) => {
@@ -443,6 +463,7 @@ test("historical rebuild requires explicit dashboard approval", async ({ page })
 test("mobile, tablet, themes, and reduced motion avoid page overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(dashboardURL, { waitUntil: "networkidle" });
+  await page.locator("#usageTrendPanel").getByRole("tab", { name: "每小时" }).click();
   await expect(page.locator("#hourlyPoints .hour-point")).toHaveCount(24);
   await expect.poll(() => page.locator(".hourly-chart-scroll").evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
   await page.getByRole("tab", { name: "明细" }).click();

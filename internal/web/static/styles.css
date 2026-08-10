@@ -250,7 +250,7 @@ h1, h2, h3 { font-family: var(--display); text-wrap: balance; }
 .hourly-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 17px; }
 .hourly-head h2 { margin: 0; font-size: var(--type-section); letter-spacing: -.025em; }
 .hourly-head p { margin: 3px 0 0; color: var(--text-faint); font-family: var(--mono); font-size: var(--type-micro); }
-.hourly-range button { min-width: 92px; }
+.hourly-window-badge { align-self: center; padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--text-soft); background: var(--surface-muted); font-size: var(--type-small); font-weight: 600; white-space: nowrap; }
 .hourly-summary { display: grid; grid-template-columns: minmax(210px, .72fr) minmax(0, 1.28fr); gap: 24px; align-items: center; padding-bottom: 17px; border-bottom: 1px solid var(--line); }
 .hourly-total-block { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 18px; align-items: end; }
 .hourly-total-block > span { grid-column: 1; color: var(--text-faint); font-size: var(--type-caption); }
@@ -559,8 +559,7 @@ select:focus, input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px col
   .trend-panel, .quiet-section, .calendar-panel, .day-detail, .detail-breakdown, .sessions-panel { padding: var(--density-mobile-panel); }
   .trend-switcher { width: 100%; }
   .hourly-head { align-items: stretch; flex-direction: column; }
-  .hourly-range { width: 100%; }
-  .hourly-range button { min-width: 0; flex: 1; }
+  .hourly-window-badge { align-self: flex-start; }
   .hourly-ledger { grid-template-columns: repeat(3, minmax(70px, 1fr)); }
   .hourly-chart { min-width: 660px; }
   .hour-point-inspector { grid-template-columns: 1fr 1fr; }

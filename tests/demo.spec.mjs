@@ -43,6 +43,10 @@ test("Pages subpath loads the canonical UI with synthetic-only APIs", async ({ p
   await expect(page.getByRole("heading", { name: "Per-machine usage overview" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await expect(page.locator("#machineLabel")).toHaveText("Synthetic Windows · demo");
+  const trend = page.locator("#usageTrendPanel");
+  await expect(trend.getByRole("heading", { name: "Daily token usage" })).toBeVisible();
+  await expect(trend.getByRole("tab", { name: "Daily" })).toHaveAttribute("aria-selected", "true");
+  await trend.getByRole("tab", { name: "Hourly" }).click();
   await expect(page.getByRole("heading", { name: "Hourly token usage" })).toBeVisible();
   await expect(page.locator("#hourlyLine .hour-line-path")).toHaveCount(1);
   await expect(page.locator("#hourlyPoints .hour-point")).toHaveCount(24);
