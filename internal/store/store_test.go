@@ -138,6 +138,78 @@ func BenchmarkDashboardQueries(b *testing.B) {
 			}
 		}
 	})
+	b.Run("breakdown-model-7d", func(b *testing.B) {
+		for range b.N {
+			if _, err := st.Breakdown(context.Background(), filter, "model", 100); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("breakdown-thread-7d", func(b *testing.B) {
+		for range b.N {
+			if _, err := st.Breakdown(context.Background(), filter, "thread", 100); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("sessions-7d", func(b *testing.B) {
+		for range b.N {
+			if _, err := st.Sessions(context.Background(), filter, 100, 0); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func TestHourlyTimeseriesUsesInclusiveSinceAndExclusiveUntil(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	base := time.Date(2026, 8, 10, 10, 59, 59, 0, time.Local)
+	events := []model.UsageEvent{
+		{ID: "before", Timestamp: base, SessionID: "hourly", Usage: model.TokenUsage{Input: 7, Output: 3, Total: 10}},
+		{ID: "start", Timestamp: base.Add(time.Second), SessionID: "hourly", Usage: model.TokenUsage{Input: 12, CachedInput: 4, Output: 8, ReasoningOutput: 3, Total: 20}},
+		{ID: "inside", Timestamp: base.Add(time.Hour), SessionID: "hourly", Usage: model.TokenUsage{Input: 20, CachedInput: 5, Output: 10, ReasoningOutput: 2, Total: 30}},
+		{ID: "until", Timestamp: base.Add(time.Hour + time.Second), SessionID: "hourly", Usage: model.TokenUsage{Input: 30, Output: 10, Total: 40}},
+	}
+	for _, event := range events {
+		event.Provenance = model.ProvenanceSessionJSONL
+		event.Confidence = model.ConfidenceExact
+		if _, err := st.InsertEvent(ctx, event, event.ID+".jsonl"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	since := time.Date(2026, 8, 10, 11, 0, 0, 0, time.Local)
+	until := since.Add(time.Hour)
+	filter := model.Filter{Since: since, Until: until}
+	points, err := st.Timeseries(ctx, filter, "hour")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 1 {
+		t.Fatalf("expected one complete hour, got %#v", points)
+	}
+	point := points[0]
+	if point.Date != "2026-08-10T11" {
+		t.Fatalf("unexpected local-hour key %q", point.Date)
+	}
+	if point.Usage.Total != 50 || point.Usage.Input != 32 || point.Usage.Output != 18 ||
+		point.Usage.CachedInput != 9 || point.Usage.ReasoningOutput != 5 {
+		t.Fatalf("unexpected hourly usage: %#v", point.Usage)
+	}
+
+	summary, err := st.Summary(ctx, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.GrandTotal != 50 {
+		t.Fatalf("summary and hourly bucket drifted: %#v", summary)
+	}
 }
 
 func TestReadPoolRemainsAvailableWhileWriterConnectionIsBusy(t *testing.T) {

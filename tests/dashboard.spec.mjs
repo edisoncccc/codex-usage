@@ -126,6 +126,27 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   expect(consoleErrors).toEqual([]);
 });
 
+test("view switching stays within the pre-optimization interaction budget", async ({ page }) => {
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+  const elapsed = await page.evaluate(async () => {
+    const panel = document.querySelector("#view-daily");
+    const start = performance.now();
+    document.querySelector('[data-view="daily"]').click();
+    if (!panel.hidden) return performance.now() - start;
+    await new Promise((resolve) => {
+      const observer = new MutationObserver(() => {
+        if (panel.hidden) return;
+        observer.disconnect();
+        resolve();
+      });
+      observer.observe(panel, { attributes: true, attributeFilter: ["hidden"] });
+    });
+    return performance.now() - start;
+  });
+  expect(elapsed).toBeLessThan(400);
+  await expect(page.locator("#view-daily")).toBeVisible();
+});
+
 test("filter dimensions load lazily once instead of running startup breakdowns", async ({ page }) => {
   const dimensionRequests = [];
   const startupBreakdowns = [];
