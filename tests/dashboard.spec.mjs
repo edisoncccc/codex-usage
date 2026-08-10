@@ -116,7 +116,14 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   await expect(page.getByRole("heading", { name: "本机用量概览" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "概览" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByText("过去 7 个本地自然日")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "每日脉冲带" })).toBeVisible();
+  const trend = page.locator("#usageTrendPanel");
+  await expect(trend.getByRole("heading", { name: "每小时Token用量" })).toBeVisible();
+  await expect(trend.getByRole("tab", { name: "每小时" })).toHaveAttribute("aria-selected", "true");
+  await trend.getByRole("tab", { name: "每日" }).click();
+  await expect(trend.getByRole("heading", { name: "每日Token用量" })).toBeVisible();
+  await expect(page.locator("#trendHourlyPane")).toBeHidden();
+  await expect(page.locator("#trendDailyPane")).toBeVisible();
+  await trend.getByRole("tab", { name: "每小时" }).click();
   await expect(page.locator("#view-overview").getByText("Standard API 等价成本", { exact: true })).toBeVisible();
   await expect(page.locator("#machineId")).not.toHaveText("—");
   await expect(page.locator("#overviewCoverage")).toContainText("已定价 100.0% Token");
@@ -135,10 +142,19 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
 
 test("hourly usage defaults to the previous complete hour and supports a rolling hour", async ({ page }) => {
   await page.goto(dashboardURL, { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: "小时用量" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "每小时Token用量" })).toBeVisible();
   await expect(page.locator("#hourlyTotal")).toHaveText("60");
-  await expect(page.locator("#hourlyRuler .hour-slot")).toHaveCount(24);
-  await expect(page.locator("#hourlyRuler .hour-slot").last()).toHaveClass(/selected/);
+  await expect(page.locator("#hourlyLine .hour-line-path")).toHaveCount(1);
+  const hourPoints = page.locator("#hourlyPoints .hour-point");
+  await expect(hourPoints).toHaveCount(24);
+  await expect(hourPoints.last()).toHaveClass(/selected/);
+  await expect(page.locator("#hourPointTotal")).toHaveText("60");
+  await hourPoints.first().focus();
+  await expect(hourPoints.first()).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#hourPointTotal")).toHaveText("0");
+  await hourPoints.first().press("End");
+  await expect(hourPoints.last()).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#hourPointTotal")).toHaveText("60");
   const rollingResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return url.pathname === "/api/v1/summary" && url.searchParams.get("since")?.includes("T");
@@ -281,7 +297,7 @@ test("display settings improve the default scale and persist font, density, them
 test("navigation, month drill-down, filter chips, pricing, and scan feedback work", async ({ page }) => {
   await page.goto(dashboardURL, { waitUntil: "networkidle" });
 
-  const dailyTab = page.getByRole("tab", { name: "每日" });
+  const dailyTab = page.locator(".primary-nav").getByRole("tab", { name: "每日" });
   await dailyTab.focus();
   await dailyTab.press("Enter");
   await expect(page.getByRole("heading", { name: "每日用量" })).toBeVisible();
@@ -372,14 +388,14 @@ test("revisiting a range or view reuses the current data revision", async ({ pag
   await page.waitForTimeout(100);
   expect(dataRequests.filter((item) => item === allCostKey).length).toBe(firstAllCount);
 
-  await page.getByRole("tab", { name: "每日" }).click();
+  await page.locator(".primary-nav").getByRole("tab", { name: "每日" }).click();
   await expect(page.getByRole("heading", { name: "每日用量" })).toBeVisible();
   const monthCostKey = dataRequests.find((item) => item.startsWith("/api/v1/cost-estimate?since=") && item.includes("&bucket=day"));
   expect(monthCostKey).toBeTruthy();
   const firstMonthCount = dataRequests.filter((item) => item === monthCostKey).length;
   await page.getByRole("tab", { name: "明细" }).click();
   await expect(page.getByRole("heading", { name: "明细与归属" })).toBeVisible();
-  await page.getByRole("tab", { name: "每日" }).click();
+  await page.locator(".primary-nav").getByRole("tab", { name: "每日" }).click();
   await expect(page.getByRole("heading", { name: "每日用量" })).toBeVisible();
   await page.waitForTimeout(100);
   expect(dataRequests.filter((item) => item === monthCostKey).length).toBe(firstMonthCount);
@@ -427,6 +443,8 @@ test("historical rebuild requires explicit dashboard approval", async ({ page })
 test("mobile, tablet, themes, and reduced motion avoid page overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(dashboardURL, { waitUntil: "networkidle" });
+  await expect(page.locator("#hourlyPoints .hour-point")).toHaveCount(24);
+  await expect.poll(() => page.locator(".hourly-chart-scroll").evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
   await page.getByRole("tab", { name: "明细" }).click();
   await expect(page.getByRole("heading", { name: "Session 明细" })).toBeVisible();
   expect(await page.locator(".session-row").count()).toBeGreaterThan(0);
@@ -497,7 +515,7 @@ test("localization catalogs, precedence, persistence, dates, numbers, and ARIA s
     await expect(page.getByText(leaked, { exact: true })).toHaveCount(0);
   }
 
-  await page.getByRole("tab", { name: "Daily" }).click();
+  await page.locator(".primary-nav").getByRole("tab", { name: "Daily" }).click();
   await expect(page.locator("#monthLabel")).toContainText(/[A-Za-z]/);
   await page.locator("#localeButton").click();
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");

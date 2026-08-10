@@ -85,40 +85,57 @@
         </article>
       </section>
 
-      <section class="hourly-panel surface" id="hourlyPanel" aria-labelledby="hourlyTitle">
-        <div class="hourly-head">
-          <div>
-            <h2 id="hourlyTitle" data-i18n="hourly.title">小时用量</h2>
-            <p data-i18n="hourly.caption">最近 24 个完整小时</p>
-          </div>
-          <div class="segmented hourly-range" role="group" aria-label="小时统计范围" data-i18n-aria-label="hourly.rangeAria">
-            <button class="pressable selected" type="button" data-hour-range="previous" aria-pressed="true" data-i18n="hourly.previous">上一小时</button>
-            <button class="pressable" type="button" data-hour-range="rolling" aria-pressed="false" data-i18n="hourly.rolling">最近 60 分钟</button>
-          </div>
+      <section class="trend-panel surface" id="usageTrendPanel" aria-label="Token 用量趋势" data-i18n-aria-label="trend.aria">
+        <div class="trend-switcher segmented" role="tablist" aria-label="趋势显示方式" data-i18n-aria-label="trend.modeAria">
+          <button class="pressable selected" id="trendHourlyTab" type="button" role="tab" aria-selected="true" aria-controls="trendHourlyPane" tabindex="0" data-trend-view="hourly" data-i18n="trend.hourly">每小时</button>
+          <button class="pressable" id="trendDailyTab" type="button" role="tab" aria-selected="false" aria-controls="trendDailyPane" tabindex="-1" data-trend-view="daily" data-i18n="trend.daily">每日</button>
         </div>
-        <div class="hourly-summary" aria-live="polite">
-          <div class="hourly-total-block">
-            <span data-i18n="hourly.window">统计时段</span>
-            <strong id="hourlyWindowLabel">—</strong>
-            <b class="loading" id="hourlyTotal">—</b>
-          </div>
-          <div class="hourly-ledger" id="hourlyLedger"><span class="hourly-placeholder" data-i18n="common.loading">正在读取…</span></div>
-        </div>
-        <div class="hourly-ruler-scroll">
-          <div class="hourly-ruler" id="hourlyRuler" role="list" aria-label="最近 24 个完整小时的 Token 用量" data-i18n-aria-label="hourly.rulerAria"><div class="empty-state" data-i18n="common.loading">正在读取…</div></div>
-        </div>
-      </section>
 
-      <section class="pulse-panel surface" aria-labelledby="pulseTitle">
-        <div class="section-head"><h2 id="pulseTitle" data-i18n="pulse.title">每日脉冲带</h2></div>
-        <div class="pulse-scroll" id="pulseScroll">
-          <div class="pulse-belt" id="pulseBelt" role="listbox" aria-label="每日 Token 用量" data-i18n-aria-label="pulse.aria"></div>
+        <div class="trend-pane" id="trendHourlyPane" role="tabpanel" aria-labelledby="trendHourlyTab">
+          <div class="hourly-head">
+            <div>
+              <h2 id="hourlyTitle" data-i18n="hourly.title">每小时Token用量</h2>
+              <p data-i18n="hourly.caption">最近 24 个完整小时</p>
+            </div>
+            <div class="segmented hourly-range" role="group" aria-label="小时统计范围" data-i18n-aria-label="hourly.rangeAria">
+              <button class="pressable selected" type="button" data-hour-range="previous" aria-pressed="true" data-i18n="hourly.previous">上一小时</button>
+              <button class="pressable" type="button" data-hour-range="rolling" aria-pressed="false" data-i18n="hourly.rolling">最近 60 分钟</button>
+            </div>
+          </div>
+          <div class="hourly-summary" aria-live="polite">
+            <div class="hourly-total-block">
+              <span data-i18n="hourly.window">统计时段</span>
+              <strong id="hourlyWindowLabel">—</strong>
+              <b class="loading" id="hourlyTotal">—</b>
+            </div>
+            <div class="hourly-ledger" id="hourlyLedger"><span class="hourly-placeholder" data-i18n="common.loading">正在读取…</span></div>
+          </div>
+          <div class="hourly-chart-scroll">
+            <div class="hourly-chart" id="hourlyChart">
+              <svg class="hourly-line" id="hourlyLine" viewBox="0 0 1000 180" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <div class="hourly-points" id="hourlyPoints" role="group" aria-label="最近 24 个完整小时的 Token 用量折线图" data-i18n-aria-label="hourly.rulerAria"><div class="empty-state" data-i18n="common.loading">正在读取…</div></div>
+              <div class="hourly-axis" id="hourlyAxis" aria-hidden="true"></div>
+            </div>
+          </div>
+          <div class="hour-point-inspector" id="hourPointInspector" aria-live="polite"><div class="empty-state" data-i18n="common.loading">正在读取…</div></div>
         </div>
-        <div class="pulse-inspector" id="pulseInspector" aria-live="polite">
-          <div><span data-i18n="pulse.selectedDate">选中日期</span><strong id="pulseDate">—</strong></div>
-          <div><span>Total</span><strong id="pulseTotal">—</strong></div>
-          <div><span>Input / Output</span><strong id="pulseIO">—</strong></div>
-          <div><span data-i18n="pulse.cost">等价成本</span><strong class="copper" id="pulseCost">—</strong></div>
+
+        <div class="trend-pane" id="trendDailyPane" role="tabpanel" aria-labelledby="trendDailyTab" hidden>
+          <div class="section-head trend-daily-head">
+            <div>
+              <h2 id="pulseTitle" data-i18n="pulse.title">每日Token用量</h2>
+              <p id="pulseCaption" data-i18n="pulse.caption">连续本地自然日 · 零用量日保留位置</p>
+            </div>
+          </div>
+          <div class="pulse-scroll" id="pulseScroll">
+            <div class="pulse-belt" id="pulseBelt" role="listbox" aria-label="每日 Token 用量" data-i18n-aria-label="pulse.aria"></div>
+          </div>
+          <div class="pulse-inspector" id="pulseInspector" aria-live="polite">
+            <div><span data-i18n="pulse.selectedDate">选中日期</span><strong id="pulseDate">—</strong></div>
+            <div><span>Total</span><strong id="pulseTotal">—</strong></div>
+            <div><span>Input / Output</span><strong id="pulseIO">—</strong></div>
+            <div><span data-i18n="pulse.cost">等价成本</span><strong class="copper" id="pulseCost">—</strong></div>
+          </div>
         </div>
       </section>
 

@@ -110,6 +110,8 @@ const state = {
   hourlyMode: "previous",
   hourlyLoaded: false,
   hourlyPoints: [],
+  hourlyPointDate: "",
+  pulsePoints: [],
   pulseDate: "",
   monthCursor: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   selectedDate: "",
@@ -166,12 +168,13 @@ function hourlyWindows(now = new Date()) {
   };
 }
 
+function formatClock(value) {
+  return value.toLocaleTimeString(i18n.getLocale(), { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 function formatHourWindow(start, end) {
-  const startOptions = { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false };
-  const endOptions = dateKey(start) === dateKey(end)
-    ? { hour: "2-digit", minute: "2-digit", hour12: false }
-    : startOptions;
-  return `${i18n.formatDate(start, startOptions)}–${i18n.formatDate(end, endOptions)}`;
+  const dateTime = (value) => `${i18n.formatDate(value, { month: "short", day: "numeric" })} ${formatClock(value)}`;
+  return `${dateTime(start)}–${dateKey(start) === dateKey(end) ? formatClock(end) : dateTime(end)}`;
 }
 
 function fillCompleteHours(rawPoints, windows) {
@@ -424,6 +427,7 @@ function syncFilterForm() {
 }
 
 function resetDataSelections() {
+  state.hourlyPointDate = "";
   state.pulseDate = "";
   state.selectedDate = "";
   state.dailyInitialSelection = true;
@@ -489,9 +493,12 @@ async function loadHourlyUsage({ preserve = false } = {}) {
   if (!preserve) {
     setLoading($("#hourlyTotal"));
     $("#hourlyLedger").innerHTML = `<span class="hourly-placeholder">${escapeHTML(t("common.loading"))}</span>`;
-    $("#hourlyRuler").innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
+    $("#hourlyLine").innerHTML = "";
+    $("#hourlyAxis").innerHTML = "";
+    $("#hourlyPoints").innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
+    $("#hourPointInspector").innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
   }
-  $("#hourlyPanel").setAttribute("aria-busy", "true");
+  $("#trendHourlyPane").setAttribute("aria-busy", "true");
   try {
     const chartPromise = api(apiURL("/api/v1/timeseries", {
       since: windows.chartStart.toISOString(),
@@ -512,7 +519,7 @@ async function loadHourlyUsage({ preserve = false } = {}) {
   } catch (error) {
     if (serial === state.requestSerial.hourly) toast(t("dynamic.hourlyError", { error: error.message }), true);
   } finally {
-    if (serial === state.requestSerial.hourly) $("#hourlyPanel").removeAttribute("aria-busy");
+    if (serial === state.requestSerial.hourly) $("#trendHourlyPane").removeAttribute("aria-busy");
   }
 }
 
@@ -532,22 +539,112 @@ function renderHourlyUsage(points, rolling, windows) {
     ["Input", usage.input], ["Cached", usage.cached_input], ["Cache Write", usage.cache_write_input],
     ["Output", usage.output], ["Reasoning", usage.reasoning_output]
   ].map(([name, value]) => `<span><small>${name}</small><strong title="${fullToken(value)}">${formatToken(value)}</strong></span>`).join("");
-  renderHourlyRuler(points);
-  $("#hourlyPanel").title = t("hourly.updated", { time: localTime(new Date().toISOString()) });
+  renderHourlyLine(points);
+  $("#trendHourlyPane").title = t("hourly.updated", { time: localTime(new Date().toISOString()) });
 }
 
-function renderHourlyRuler(points) {
-  const ruler = $("#hourlyRuler");
+function renderHourlyPointInspector(point) {
+  const inspector = $("#hourPointInspector");
+  if (!point) {
+    inspector.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.hourlyEmpty"))}</div>`;
+    return;
+  }
+  const usage = point.usage || emptyUsage();
+  const end = new Date(point.start.getTime() + 60 * 60_000);
+  const values = [
+    ["hourPointWindow", t("hourly.pointWindow"), formatHourWindow(point.start, end), ""],
+    ["hourPointTotal", "Total", formatToken(usageTotal(usage)), fullToken(usageTotal(usage))],
+    ["hourPointInput", "Input", formatToken(usage.input), fullToken(usage.input)],
+    ["hourPointCached", "Cached", formatToken(usage.cached_input), fullToken(usage.cached_input)],
+    ["hourPointCacheWrite", "Cache Write", formatToken(usage.cache_write_input), fullToken(usage.cache_write_input)],
+    ["hourPointOutput", "Output", formatToken(usage.output), fullToken(usage.output)],
+    ["hourPointReasoning", "Reasoning", formatToken(usage.reasoning_output), fullToken(usage.reasoning_output)]
+  ];
+  inspector.innerHTML = values.map(([id, label, value, title]) => `<div><span>${escapeHTML(label)}</span><strong id="${id}"${title ? ` title="${escapeHTML(title)}"` : ""}>${escapeHTML(value)}</strong></div>`).join("");
+}
+
+function renderHourlyLine(points) {
+  const line = $("#hourlyLine");
+  const pointLayer = $("#hourlyPoints");
+  const axis = $("#hourlyAxis");
+  pointLayer.setAttribute("aria-label", t("hourly.rulerAria"));
+  if (!points.length) {
+    line.innerHTML = "";
+    axis.innerHTML = "";
+    pointLayer.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.hourlyEmpty"))}</div>`;
+    renderHourlyPointInspector(null);
+    return;
+  }
+  const plot = { left: 28, right: 972, top: 16, bottom: 142 };
   const max = Math.max(...points.map((point) => usageTotal(point.usage)), 1);
-  ruler.setAttribute("aria-label", t("hourly.rulerAria"));
-  ruler.innerHTML = points.map((point, index) => {
+  const coordinates = points.map((point, index) => {
+    const x = plot.left + (plot.right - plot.left) * (points.length === 1 ? .5 : index / (points.length - 1));
     const total = usageTotal(point.usage);
-    const height = total ? Math.max(5, total / max * 78) : 2;
-    const showLabel = index % 3 === 0 || index === points.length - 1;
-    const clock = i18n.formatDate(point.start, { hour: "2-digit", minute: "2-digit", hour12: false });
-    const selected = state.hourlyMode === "previous" && index === points.length - 1;
-    return `<div class="hour-slot ${selected ? "selected" : ""} ${total ? "" : "zero"}" role="listitem" aria-label="${escapeHTML(t("hourly.barAria", { time: clock, tokens: fullToken(total) }))}"><span class="hour-bar-space" aria-hidden="true"><i style="--hour-height:${height}px"></i></span><time datetime="${escapeHTML(point.date)}:00" ${showLabel ? "" : 'aria-hidden="true"'}>${showLabel ? escapeHTML(clock) : ""}</time></div>`;
+    const y = total ? plot.bottom - (plot.bottom - plot.top) * total / max : plot.bottom;
+    return { point, index, total, x, y };
+  });
+  const polyline = coordinates.map(({ x, y }) => `${x.toFixed(2)},${y.toFixed(2)}`).join(" ");
+  const area = `M ${coordinates[0].x.toFixed(2)} ${plot.bottom} L ${polyline.replaceAll(",", " ")} L ${coordinates.at(-1).x.toFixed(2)} ${plot.bottom} Z`;
+  line.innerHTML = `<path class="hour-line-area" d="${area}"></path><polyline class="hour-line-path" points="${polyline}"></polyline>`;
+
+  const availableDates = new Set(points.map((point) => point.date));
+  if (!state.hourlyPointDate || !availableDates.has(state.hourlyPointDate)) state.hourlyPointDate = points.at(-1).date;
+  pointLayer.innerHTML = coordinates.map(({ point, index, total, x, y }) => {
+    const windowLabel = formatHourWindow(point.start, new Date(point.start.getTime() + 60 * 60_000));
+    const selected = point.date === state.hourlyPointDate;
+    return `<button class="hour-point pressable ${selected ? "selected" : ""} ${total ? "" : "zero"}" type="button" data-hour-point="${index}" style="left:${(x / 10).toFixed(3)}%;top:${(y / 1.8).toFixed(3)}%" aria-pressed="${selected}" tabindex="${selected ? "0" : "-1"}" aria-label="${escapeHTML(t("hourly.barAria", { time: windowLabel, tokens: fullToken(total) }))}" title="${escapeHTML(t("hourly.barAria", { time: windowLabel, tokens: fullToken(total) }))}"></button>`;
   }).join("");
+  axis.innerHTML = coordinates.filter(({ index }) => index % 3 === 0 || index === points.length - 1).map(({ point, index, x }) => {
+    const clock = formatClock(point.start);
+    const edge = index === 0 ? "edge-start" : index === points.length - 1 ? "edge-end" : "";
+    return `<time class="${edge}" datetime="${escapeHTML(point.date)}:00" style="--label-x:${(x / 10).toFixed(3)}%">${escapeHTML(clock)}</time>`;
+  }).join("");
+
+  const selectPoint = (index) => {
+    const selectedPoint = points[index];
+    if (!selectedPoint) return;
+    state.hourlyPointDate = selectedPoint.date;
+    $$('[data-hour-point]', pointLayer).forEach((button) => {
+      const selected = Number(button.dataset.hourPoint) === index;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    });
+    renderHourlyPointInspector(selectedPoint);
+  };
+  $$('[data-hour-point]', pointLayer).forEach((button) => {
+    const index = Number(button.dataset.hourPoint);
+    button.addEventListener("mouseenter", () => selectPoint(index));
+    button.addEventListener("focus", () => selectPoint(index));
+    button.addEventListener("click", () => selectPoint(index));
+    button.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? points.length - 1 : Math.max(0, Math.min(points.length - 1, index + (event.key === "ArrowRight" ? 1 : -1)));
+      $(`[data-hour-point="${next}"]`, pointLayer)?.focus();
+    });
+  });
+  renderHourlyPointInspector(points.find((point) => point.date === state.hourlyPointDate));
+  requestAnimationFrame(() => {
+    const selected = $('[data-hour-point].selected', pointLayer);
+    const scroller = $(".hourly-chart-scroll");
+    if (selected && selected.offsetLeft + selected.offsetWidth > scroller.clientWidth + scroller.scrollLeft) {
+      scroller.scrollTo({ left: selected.offsetLeft - scroller.clientWidth + selected.offsetWidth + 12, behavior: reducedMotion() ? "auto" : "smooth" });
+    }
+  });
+}
+
+function switchTrendView(next) {
+  if (!["hourly", "daily"].includes(next)) return;
+  $$('[data-trend-view]').forEach((button) => {
+    const selected = button.dataset.trendView === next;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  $("#trendHourlyPane").hidden = next !== "hourly";
+  $("#trendDailyPane").hidden = next !== "daily";
+  if (next === "daily" && state.pulsePoints.length) renderPulse(state.pulsePoints);
 }
 
 function renderOverviewSummary(summary) {
@@ -581,6 +678,7 @@ function renderOverviewCost(cost) {
 }
 
 function renderPulse(allPoints) {
+  state.pulsePoints = allPoints;
   let points = allPoints;
   const limited = points.length > 90;
   if (limited) points = points.slice(-90);
@@ -1239,6 +1337,8 @@ function setupEvents() {
   $$('.nav-tab').forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $(".primary-nav").addEventListener("keydown", (event) => tablistKeydown(event, $$('.nav-tab'), (button) => switchView(button.dataset.view)));
   $("#brandButton").addEventListener("click", () => switchView("overview"));
+  $$('[data-trend-view]').forEach((button) => button.addEventListener("click", () => switchTrendView(button.dataset.trendView)));
+  $("#usageTrendPanel").querySelector('[role="tablist"]').addEventListener("keydown", (event) => tablistKeydown(event, $$('[data-trend-view]'), (button) => switchTrendView(button.dataset.trendView)));
   $$('[data-overview-range]').forEach((button) => button.addEventListener("click", () => {
     state.overviewRange = button.dataset.overviewRange;
     $$('[data-overview-range]').forEach((item) => {
@@ -1246,6 +1346,7 @@ function setupEvents() {
       item.classList.toggle("selected", selected);
       item.setAttribute("aria-pressed", String(selected));
     });
+    state.hourlyPointDate = "";
     state.pulseDate = "";
     loadOverview();
   }));
