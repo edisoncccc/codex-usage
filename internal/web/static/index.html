@@ -180,8 +180,10 @@
         <div><h1 data-i18n="daily.title">每日用量</h1></div>
         <div class="month-nav" aria-label="月份切换" data-i18n-aria-label="daily.monthNav">
           <button class="icon-button pressable" id="previousMonth" type="button" aria-label="上个月" data-i18n-aria-label="daily.previousMonth">←</button>
-          <strong id="monthLabel">—</strong>
+          <input id="dailyDatePicker" type="date" aria-label="选择日期" data-i18n-aria-label="daily.dateAria">
+          <strong class="visually-hidden" id="monthLabel">—</strong>
           <button class="icon-button pressable" id="nextMonth" type="button" aria-label="下个月" data-i18n-aria-label="daily.nextMonth">→</button>
+          <button class="month-today-button pressable" id="currentDay" type="button" data-i18n="daily.today">今天</button>
         </div>
       </div>
 

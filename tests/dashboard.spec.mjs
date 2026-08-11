@@ -370,6 +370,13 @@ test("navigation, month drill-down, filter chips, pricing, and scan feedback wor
   await expect(page.locator("#monthLabel")).not.toHaveText(initialMonth);
   await expect(page.locator("[data-calendar-date]").first()).toBeVisible();
 
+  const directDate = "2025-04-17";
+  await page.locator("#dailyDatePicker").fill(directDate);
+  await page.locator("#dailyDatePicker").dispatchEvent("change");
+  await expect(page.locator("#dailyDatePicker")).toHaveValue(directDate);
+  await expect(page.locator(`[data-calendar-date="${directDate}"]`)).toHaveClass(/selected/);
+  await expect(page.locator("#selectedDateTitle")).toContainText("4月17日");
+
   await page.getByRole("tab", { name: "明细" }).click();
   await expect(page.getByRole("heading", { name: "明细与归属" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Session 明细" })).toBeVisible();

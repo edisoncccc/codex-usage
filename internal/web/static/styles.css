@@ -143,6 +143,7 @@ button { color: inherit; }
 a { color: inherit; }
 code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 [hidden], .hidden { display: none !important; }
+.visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 
 .skip-link { position: fixed; z-index: 200; left: 12px; top: -60px; padding: 10px 14px; color: var(--surface-raised); background: var(--text); border-radius: 8px; text-decoration: none; transition: top 180ms var(--ease); }
 .skip-link:focus { top: 12px; }
@@ -345,8 +346,11 @@ h1, h2, h3 { font-family: var(--display); text-wrap: balance; }
 .provenance-list code { max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--teal-strong); font-size: var(--type-small); }
 .provenance-list small { margin-top: 2px; color: var(--text-faint); font-size: var(--type-micro); }
 
-.month-nav { display: flex; align-items: center; gap: 11px; }
-.month-nav strong { min-width: 130px; text-align: center; font-family: var(--display); font-size: var(--type-brand); }
+.month-nav { display: flex; align-items: center; gap: 6px; padding: 3px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-muted); }
+.month-nav input { min-width: 142px; height: 34px; padding: 5px 9px; border: 0; border-radius: 7px; color: var(--text); background: var(--surface-raised); font-family: var(--mono); font-size: var(--type-ui); color-scheme: light dark; cursor: pointer; }
+.month-nav .icon-button { width: 34px; height: 34px; border: 0; border-radius: 7px; background: transparent; }
+.month-nav .icon-button:hover, .month-today-button:hover { color: var(--text); background: var(--surface-raised); }
+.month-today-button { min-width: 48px; height: 34px; padding: 0 10px; border: 0; border-radius: 7px; color: var(--text-soft); background: transparent; font-size: var(--type-ui); font-weight: 620; cursor: pointer; white-space: nowrap; }
 .daily-layout { display: grid; grid-template-columns: minmax(0, 1.28fr) minmax(330px, .72fr); align-items: start; gap: 16px; }
 .calendar-panel { min-width: 0; padding: var(--density-panel-block); }
 .weekday-row, .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
@@ -576,6 +580,8 @@ select:focus, input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px col
   .view-heading { align-items: start; flex-direction: column; gap: 16px; }
   .range-control { align-self: stretch; }
   .range-control button { flex: 1; }
+  .month-nav { width: 100%; }
+  .month-nav input { min-width: 0; flex: 1; }
   .hero-value { font-size: clamp(2.625rem, 15vw, 4rem); }
   .hero-value.cost { font-size: clamp(2.25rem, 12vw, 3.375rem); }
   .trend-panel, .quiet-section, .calendar-panel, .day-detail, .detail-breakdown, .sessions-panel { padding: var(--density-mobile-panel); }

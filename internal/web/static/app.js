@@ -947,6 +947,7 @@ async function loadDaily({ preserve = false } = {}) {
   const serial = ++state.requestSerial.daily;
   const bounds = monthBounds();
   $("#monthLabel").textContent = i18n.formatDate(state.monthCursor, { year: "numeric", month: "long" });
+  syncDailyNavigator();
   if (!preserve) $("#calendarGrid").innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.monthLoading"))}</div>`;
   $("#view-daily").setAttribute("aria-busy", "true");
   try {
@@ -972,6 +973,7 @@ async function loadDaily({ preserve = false } = {}) {
     state.dailyInitialSelection = false;
     state.monthReport = report;
     chooseDailySelection(report.points || []);
+    syncDailyNavigator();
     renderCalendar(report);
     if (state.selectedDate) loadDailySelection(state.selectedDate);
   } catch (error) {
@@ -982,14 +984,44 @@ async function loadDaily({ preserve = false } = {}) {
 }
 
 function chooseDailySelection(points) {
-  const dates = new Set(points.map((point) => point.date));
-  if (state.selectedDate && dates.has(state.selectedDate)) return;
+  const selected = state.selectedDate && dateFromKey(state.selectedDate);
+  if (selected && !Number.isNaN(selected.getTime())
+    && selected.getFullYear() === state.monthCursor.getFullYear()
+    && selected.getMonth() === state.monthCursor.getMonth()) return;
   const today = points.find((point) => point.date === todayKey());
   if (today && usageTotal(today.usage) > 0) {
     state.selectedDate = today.date;
     return;
   }
   state.selectedDate = [...points].reverse().find((point) => usageTotal(point.usage) > 0)?.date || today?.date || points[0]?.date || "";
+}
+
+function syncDailyNavigator() {
+  const picker = $("#dailyDatePicker");
+  const fallback = dateKey(state.monthCursor);
+  picker.value = state.selectedDate || fallback;
+  picker.max = todayKey();
+  const currentMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  $("#nextMonth").disabled = state.monthCursor >= currentMonth;
+  $("#currentDay").disabled = state.selectedDate === todayKey();
+}
+
+function navigateDailyDate(value) {
+  const parsed = dateFromKey(value);
+  if (!value || Number.isNaN(parsed.getTime()) || dateKey(parsed) !== value || value > todayKey()) {
+    syncDailyNavigator();
+    return;
+  }
+  const sameMonth = parsed.getFullYear() === state.monthCursor.getFullYear() && parsed.getMonth() === state.monthCursor.getMonth();
+  state.dailyInitialSelection = false;
+  if (sameMonth && state.monthReport) {
+    selectCalendarDate(value);
+    syncDailyNavigator();
+    return;
+  }
+  state.monthCursor = new Date(parsed.getFullYear(), parsed.getMonth(), 1);
+  state.selectedDate = value;
+  loadDaily();
 }
 
 function renderCalendar(report) {
@@ -1037,8 +1069,12 @@ function calendarKeydown(event) {
 }
 
 function selectCalendarDate(date) {
-  if (!date || date === state.selectedDate) return;
+  if (!date || date === state.selectedDate) {
+    syncDailyNavigator();
+    return;
+  }
   state.selectedDate = date;
+  syncDailyNavigator();
   $$('[data-calendar-date]').forEach((button) => {
     const selected = button.dataset.calendarDate === date;
     button.classList.toggle("selected", selected);
@@ -1560,6 +1596,8 @@ function setupEvents() {
     state.selectedDate = "";
     loadDaily();
   });
+  $("#dailyDatePicker").addEventListener("change", (event) => navigateDailyDate(event.target.value));
+  $("#currentDay").addEventListener("click", () => navigateDailyDate(todayKey()));
   $("#filterButton").addEventListener("click", () => {
     syncFilterForm();
     openDialog($("#filterSheet"));
