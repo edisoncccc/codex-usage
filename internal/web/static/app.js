@@ -566,6 +566,7 @@ function syncHourlyNavigator(windows) {
   const picker = $("#hourlyDatePicker");
   picker.value = windows.date;
   picker.max = todayKey();
+  syncDatePickerDisplay("hourlyDate", windows.date);
   $("#nextHourDay").disabled = windows.date >= todayKey();
   $("#currentHourDay").disabled = windows.date === todayKey();
   const displayDate = i18n.formatDate(windows.chartStart, { year: "numeric", month: "long", day: "numeric" });
@@ -1001,9 +1002,29 @@ function syncDailyNavigator() {
   const fallback = dateKey(state.monthCursor);
   picker.value = state.selectedDate || fallback;
   picker.max = todayKey();
+  syncDatePickerDisplay("dailyDate", picker.value);
   const currentMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
   $("#nextMonth").disabled = state.monthCursor >= currentMonth;
   $("#currentDay").disabled = state.selectedDate === todayKey();
+}
+
+function syncDatePickerDisplay(prefix, value) {
+  const date = dateFromKey(value);
+  if (!value || Number.isNaN(date.getTime()) || dateKey(date) !== value) return;
+  $(`#${prefix}Year`).textContent = i18n.formatDate(date, { year: "numeric" });
+  $(`#${prefix}Label`).textContent = i18n.formatDate(date, { month: "short", day: "numeric" });
+}
+
+function enableNativeDatePicker(picker) {
+  const open = () => {
+    try { picker.showPicker?.(); } catch {}
+  };
+  picker.addEventListener("click", open);
+  picker.addEventListener("keydown", (event) => {
+    if (!["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    open();
+  });
 }
 
 function navigateDailyDate(value) {
@@ -1555,6 +1576,7 @@ function setupEvents() {
   $("#nextHourDay").addEventListener("click", () => navigateHourlyDate(dateKey(addDays(state.hourlyDate, 1)), 1));
   $("#currentHourDay").addEventListener("click", () => navigateHourlyDate(todayKey(), 1));
   $("#hourlyDatePicker").addEventListener("change", (event) => navigateHourlyDate(event.target.value));
+  enableNativeDatePicker($("#hourlyDatePicker"));
   $$('[data-overview-range]').forEach((button) => button.addEventListener("click", () => {
     state.overviewRange = button.dataset.overviewRange;
     $$('[data-overview-range]').forEach((item) => {
@@ -1597,6 +1619,7 @@ function setupEvents() {
     loadDaily();
   });
   $("#dailyDatePicker").addEventListener("change", (event) => navigateDailyDate(event.target.value));
+  enableNativeDatePicker($("#dailyDatePicker"));
   $("#currentDay").addEventListener("click", () => navigateDailyDate(todayKey()));
   $("#filterButton").addEventListener("click", () => {
     syncFilterForm();

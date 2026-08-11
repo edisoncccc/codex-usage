@@ -99,7 +99,11 @@
             </div>
             <div class="hourly-navigator" aria-label="逐小时日期" data-i18n-aria-label="hourly.navigatorAria">
               <button class="hourly-nav-button pressable" id="previousHourDay" type="button" aria-label="前一天" data-i18n-aria-label="hourly.previousDay">←</button>
-              <input id="hourlyDatePicker" type="date" aria-label="选择日期" data-i18n-aria-label="hourly.dateAria">
+              <label class="date-picker-shell" for="hourlyDatePicker">
+                <span class="date-picker-copy" aria-hidden="true"><small id="hourlyDateYear">—</small><strong id="hourlyDateLabel">—</strong></span>
+                <span class="date-picker-glyph" aria-hidden="true"></span>
+                <input class="date-picker-native" id="hourlyDatePicker" type="date" aria-label="选择日期" data-i18n-aria-label="hourly.dateAria">
+              </label>
               <button class="hourly-nav-button pressable" id="nextHourDay" type="button" aria-label="后一天" data-i18n-aria-label="hourly.nextDay">→</button>
               <button class="hourly-today-button pressable" id="currentHourDay" type="button" data-i18n="hourly.today">今天</button>
             </div>
@@ -180,7 +184,11 @@
         <div><h1 data-i18n="daily.title">每日用量</h1></div>
         <div class="month-nav" aria-label="月份切换" data-i18n-aria-label="daily.monthNav">
           <button class="icon-button pressable" id="previousMonth" type="button" aria-label="上个月" data-i18n-aria-label="daily.previousMonth">←</button>
-          <input id="dailyDatePicker" type="date" aria-label="选择日期" data-i18n-aria-label="daily.dateAria">
+          <label class="date-picker-shell" for="dailyDatePicker">
+            <span class="date-picker-copy" aria-hidden="true"><small id="dailyDateYear">—</small><strong id="dailyDateLabel">—</strong></span>
+            <span class="date-picker-glyph" aria-hidden="true"></span>
+            <input class="date-picker-native" id="dailyDatePicker" type="date" aria-label="选择日期" data-i18n-aria-label="daily.dateAria">
+          </label>
           <strong class="visually-hidden" id="monthLabel">—</strong>
           <button class="icon-button pressable" id="nextMonth" type="button" aria-label="下个月" data-i18n-aria-label="daily.nextMonth">→</button>
           <button class="month-today-button pressable" id="currentDay" type="button" data-i18n="daily.today">今天</button>

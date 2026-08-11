@@ -157,6 +157,8 @@ test("hourly usage inspects the selected point and navigates across local days",
   await expect(trend.getByText("上一小时", { exact: true })).toHaveCount(0);
   await expect(page.locator("#hourPointInspector")).toHaveCount(0);
   await expect(page.locator("#hourlyDatePicker")).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
+  await expect(page.locator("#hourlyDateYear")).not.toHaveText("—");
+  await expect(page.locator("#hourlyDateLabel")).not.toHaveText("—");
   await expect(page.locator("#hourlyTotal")).toHaveText("60");
   await expect(page.locator("#hourlyCost")).toHaveText(/^\$/);
   await expect(page.locator("#hourlyModels").getByText("gpt-5.4", { exact: true })).toBeVisible();
@@ -374,6 +376,8 @@ test("navigation, month drill-down, filter chips, pricing, and scan feedback wor
   await page.locator("#dailyDatePicker").fill(directDate);
   await page.locator("#dailyDatePicker").dispatchEvent("change");
   await expect(page.locator("#dailyDatePicker")).toHaveValue(directDate);
+  await expect(page.locator("#dailyDateYear")).toContainText("2025");
+  await expect(page.locator("#dailyDateLabel")).toContainText("4月17日");
   await expect(page.locator(`[data-calendar-date="${directDate}"]`)).toHaveClass(/selected/);
   await expect(page.locator("#selectedDateTitle")).toContainText("4月17日");
 
