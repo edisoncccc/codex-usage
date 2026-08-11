@@ -95,9 +95,14 @@
           <div class="hourly-head">
             <div>
               <h2 id="hourlyTitle" data-i18n="hourly.title">每小时Token用量</h2>
-              <p data-i18n="hourly.caption">最近 24 个完整小时</p>
+              <p id="hourlyCaption" data-i18n="hourly.caption">选择日期，查看当天的完整小时</p>
             </div>
-            <span class="hourly-window-badge" data-i18n="hourly.rolling">最近 60 分钟</span>
+            <div class="hourly-navigator" aria-label="逐小时日期" data-i18n-aria-label="hourly.navigatorAria">
+              <button class="hourly-nav-button pressable" id="previousHourDay" type="button" aria-label="前一天" data-i18n-aria-label="hourly.previousDay">←</button>
+              <input id="hourlyDatePicker" type="date" aria-label="选择日期" data-i18n-aria-label="hourly.dateAria">
+              <button class="hourly-nav-button pressable" id="nextHourDay" type="button" aria-label="后一天" data-i18n-aria-label="hourly.nextDay">→</button>
+              <button class="hourly-today-button pressable" id="currentHourDay" type="button" data-i18n="hourly.today">今天</button>
+            </div>
           </div>
           <div class="hourly-summary" aria-live="polite">
             <div class="hourly-total-block">
@@ -110,11 +115,10 @@
           <div class="hourly-chart-scroll">
             <div class="hourly-chart" id="hourlyChart">
               <svg class="hourly-line" id="hourlyLine" viewBox="0 0 1000 180" preserveAspectRatio="none" aria-hidden="true"></svg>
-              <div class="hourly-points" id="hourlyPoints" role="group" aria-label="最近 24 个完整小时的 Token 用量折线图" data-i18n-aria-label="hourly.rulerAria"><div class="empty-state" data-i18n="common.loading">正在读取…</div></div>
+              <div class="hourly-points" id="hourlyPoints" role="group" aria-label="每小时 Token 用量折线图"><div class="empty-state" data-i18n="common.loading">正在读取…</div></div>
               <div class="hourly-axis" id="hourlyAxis" aria-hidden="true"></div>
             </div>
           </div>
-          <div class="hour-point-inspector" id="hourPointInspector" aria-live="polite"><div class="empty-state" data-i18n="common.loading">正在读取…</div></div>
         </div>
 
         <div class="trend-pane" id="trendDailyPane" role="tabpanel" aria-labelledby="trendDailyTab">

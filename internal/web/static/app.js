@@ -108,6 +108,8 @@ const state = {
   status: null,
   overview: null,
   hourlyLoaded: false,
+  hourlyDate: "",
+  hourlyNavigationDirection: 0,
   hourlyPoints: [],
   hourlyPointDate: "",
   pulsePoints: [],
@@ -153,17 +155,32 @@ const emptyUsage = () => ({ input: 0, cached_input: 0, cache_write_input: 0, out
 const usageTotal = (usage = {}) => Number(usage.total || (Number(usage.input || 0) + Number(usage.output || 0)) || 0);
 const hourKey = (date) => `${dateKey(date)}T${pad2(date.getHours())}`;
 
-function hourlyWindows(now = new Date()) {
+function latestCompleteHour(now = new Date()) {
   const currentHour = new Date(now);
   currentHour.setMinutes(0, 0, 0);
-  const previousStart = new Date(currentHour.getTime() - 60 * 60_000);
+  return new Date(currentHour.getTime() - 60 * 60_000);
+}
+
+function normalizeHourlyDate(value, now = new Date()) {
+  const fallback = dateKey(latestCompleteHour(now));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return fallback;
+  const parsed = dateFromKey(value);
+  if (Number.isNaN(parsed.getTime()) || dateKey(parsed) !== value || value > dateKey(now)) return fallback;
+  return value;
+}
+
+function hourlyWindow(selectedDate = state.hourlyDate, now = new Date()) {
+  const date = normalizeHourlyDate(selectedDate, now);
+  const chartStart = dateFromKey(date);
+  const dayEnd = addDays(chartStart, 1);
+  const currentHour = new Date(now);
+  currentHour.setMinutes(0, 0, 0);
+  const chartEnd = date === dateKey(now) && currentHour < dayEnd ? currentHour : dayEnd;
   return {
-    chartStart: new Date(currentHour.getTime() - 24 * 60 * 60_000),
-    chartEnd: currentHour,
-    previousStart,
-    previousEnd: currentHour,
-    rollingStart: new Date(now.getTime() - 60 * 60_000),
-    rollingEnd: now
+    date,
+    chartStart,
+    chartEnd,
+    completeHours: Math.max(0, Math.round((chartEnd.getTime() - chartStart.getTime()) / 60 / 60_000))
   };
 }
 
@@ -178,7 +195,7 @@ function formatHourWindow(start, end) {
 
 function fillCompleteHours(rawPoints, windows) {
   const byHour = new Map((rawPoints || []).map((point) => [point.date, point]));
-  return Array.from({ length: 24 }, (_, index) => {
+  return Array.from({ length: windows.completeHours }, (_, index) => {
     const start = new Date(windows.chartStart.getTime() + index * 60 * 60_000);
     const existing = byHour.get(hourKey(start));
     return { date: hourKey(start), start, usage: existing?.usage || emptyUsage() };
@@ -488,85 +505,141 @@ async function loadOverview({ preserve = false } = {}) {
 
 async function loadHourlyUsage({ preserve = false } = {}) {
   const serial = ++state.requestSerial.hourly;
-  const windows = hourlyWindows();
+  const windows = hourlyWindow();
+  state.hourlyDate = windows.date;
+  syncHourlyNavigator(windows);
+  const chart = $("#hourlyChart");
+  const summary = $(".hourly-summary");
   if (!preserve) {
     setLoading($("#hourlyTotal"));
     $("#hourlyLedger").innerHTML = `<span class="hourly-placeholder">${escapeHTML(t("common.loading"))}</span>`;
     $("#hourlyLine").innerHTML = "";
     $("#hourlyAxis").innerHTML = "";
     $("#hourlyPoints").innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
-    $("#hourPointInspector").innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
+  } else {
+    chart.classList.add("is-updating");
+    summary.classList.add("is-updating");
   }
+  summary.setAttribute("aria-busy", "true");
   $("#trendHourlyPane").setAttribute("aria-busy", "true");
   try {
-    const chartPromise = api(apiURL("/api/v1/timeseries", {
+    const series = await api(apiURL("/api/v1/timeseries", {
       since: windows.chartStart.toISOString(),
       until: windows.chartEnd.toISOString(),
       bucket: "hour"
     }));
-    const rollingPromise = api(apiURL("/api/v1/summary", {
-      since: windows.rollingStart.toISOString(),
-      until: windows.rollingEnd.toISOString()
-    }));
-    const [series, rolling] = await Promise.all([chartPromise, rollingPromise]);
     if (serial !== state.requestSerial.hourly) return;
     state.hourlyPoints = fillCompleteHours(series.points || [], windows);
     state.hourlyLoaded = true;
-    renderHourlyUsage(state.hourlyPoints, rolling, windows);
+    renderHourlyUsage(state.hourlyPoints, windows);
+    animateHourlyChart(state.hourlyNavigationDirection);
+    state.hourlyNavigationDirection = 0;
+    prefetchHourlyNeighbors(windows);
   } catch (error) {
-    if (serial === state.requestSerial.hourly) toast(t("dynamic.hourlyError", { error: error.message }), true);
+    if (serial === state.requestSerial.hourly) {
+      state.hourlyPoints = [];
+      renderHourlyUsage([], windows);
+      state.hourlyNavigationDirection = 0;
+      toast(t("dynamic.hourlyError", { error: error.message }), true);
+    }
   } finally {
-    if (serial === state.requestSerial.hourly) $("#trendHourlyPane").removeAttribute("aria-busy");
+    if (serial === state.requestSerial.hourly) {
+      chart.classList.remove("is-updating");
+      summary.classList.remove("is-updating");
+      summary.removeAttribute("aria-busy");
+      $("#trendHourlyPane").removeAttribute("aria-busy");
+    }
   }
 }
 
-function renderHourlyUsage(points, rolling, windows) {
-  const usage = rolling?.usage || emptyUsage();
-  const total = usageTotal(usage);
-  const label = formatHourWindow(windows.rollingStart, windows.rollingEnd);
-  $("#hourlyWindowLabel").textContent = label;
+function syncHourlyNavigator(windows) {
+  const picker = $("#hourlyDatePicker");
+  picker.value = windows.date;
+  picker.max = todayKey();
+  $("#nextHourDay").disabled = windows.date >= todayKey();
+  $("#currentHourDay").disabled = windows.date === todayKey();
+  const displayDate = i18n.formatDate(windows.chartStart, { year: "numeric", month: "long", day: "numeric" });
+  $("#hourlyCaption").textContent = t("hourly.completeHours", { date: displayDate, count: windows.completeHours });
+  $("#hourlyPoints").setAttribute("aria-label", t("hourly.rulerAria", { date: displayDate }));
+}
+
+function prefetchHourlyNeighbors(windows) {
+  const dates = [dateKey(addDays(windows.date, -1)), dateKey(addDays(windows.date, 1))]
+    .filter((value) => value <= todayKey());
+  for (const date of dates) {
+    const neighbor = hourlyWindow(date);
+    api(apiURL("/api/v1/timeseries", {
+      since: neighbor.chartStart.toISOString(),
+      until: neighbor.chartEnd.toISOString(),
+      bucket: "hour"
+    })).catch(() => {});
+  }
+}
+
+function animateHourlyChart(direction) {
+  const chart = $("#hourlyChart");
+  chart.classList.remove("enter-previous", "enter-next", "is-updating");
+  if (!direction || reducedMotion()) return;
+  chart.classList.add(direction < 0 ? "enter-previous" : "enter-next");
+  requestAnimationFrame(() => requestAnimationFrame(() => chart.classList.remove("enter-previous", "enter-next")));
+}
+
+function navigateHourlyDate(value, direction = 0) {
+  const next = normalizeHourlyDate(value);
+  if (next === state.hourlyDate && state.hourlyLoaded) {
+    syncHourlyNavigator(hourlyWindow(next));
+    return;
+  }
+  state.hourlyNavigationDirection = direction || (next < state.hourlyDate ? -1 : 1);
+  state.hourlyDate = next;
+  state.hourlyPointDate = "";
+  syncHourlyNavigator(hourlyWindow(next));
+  loadHourlyUsage({ preserve: state.hourlyLoaded });
+}
+
+function renderHourlySelection(point) {
   const totalNode = $("#hourlyTotal");
+  if (!point) {
+    $("#hourlyWindowLabel").textContent = "—";
+    totalNode.textContent = "—";
+    totalNode.removeAttribute("title");
+    totalNode.classList.remove("loading");
+    $("#hourlyLedger").innerHTML = `<span class="hourly-placeholder">${escapeHTML(t("dynamic.hourlyEmpty"))}</span>`;
+    return;
+  }
+  const usage = point.usage || emptyUsage();
+  const total = usageTotal(usage);
+  $("#hourlyWindowLabel").textContent = formatHourWindow(point.start, new Date(point.start.getTime() + 60 * 60_000));
   totalNode.textContent = formatToken(total);
   totalNode.title = `${fullToken(total)} Total Token`;
   totalNode.classList.remove("loading");
   $("#hourlyLedger").innerHTML = [
-    ["Input", usage.input], ["Cached", usage.cached_input], ["Cache Write", usage.cache_write_input],
-    ["Output", usage.output], ["Reasoning", usage.reasoning_output]
-  ].map(([name, value]) => `<span><small>${name}</small><strong title="${fullToken(value)}">${formatToken(value)}</strong></span>`).join("");
-  renderHourlyLine(points);
-  $("#trendHourlyPane").title = t("hourly.updated", { time: localTime(new Date().toISOString()) });
+    ["hourlyInput", "Input", usage.input], ["hourlyCached", "Cached", usage.cached_input],
+    ["hourlyCacheWrite", "Cache Write", usage.cache_write_input], ["hourlyOutput", "Output", usage.output],
+    ["hourlyReasoning", "Reasoning", usage.reasoning_output]
+  ].map(([id, name, value]) => `<span><small>${name}</small><strong id="${id}" title="${fullToken(value)}">${formatToken(value)}</strong></span>`).join("");
 }
 
-function renderHourlyPointInspector(point) {
-  const inspector = $("#hourPointInspector");
-  if (!point) {
-    inspector.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.hourlyEmpty"))}</div>`;
-    return;
-  }
-  const usage = point.usage || emptyUsage();
-  const end = new Date(point.start.getTime() + 60 * 60_000);
-  const values = [
-    ["hourPointWindow", t("hourly.pointWindow"), formatHourWindow(point.start, end), ""],
-    ["hourPointTotal", "Total", formatToken(usageTotal(usage)), fullToken(usageTotal(usage))],
-    ["hourPointInput", "Input", formatToken(usage.input), fullToken(usage.input)],
-    ["hourPointCached", "Cached", formatToken(usage.cached_input), fullToken(usage.cached_input)],
-    ["hourPointCacheWrite", "Cache Write", formatToken(usage.cache_write_input), fullToken(usage.cache_write_input)],
-    ["hourPointOutput", "Output", formatToken(usage.output), fullToken(usage.output)],
-    ["hourPointReasoning", "Reasoning", formatToken(usage.reasoning_output), fullToken(usage.reasoning_output)]
-  ];
-  inspector.innerHTML = values.map(([id, label, value, title]) => `<div><span>${escapeHTML(label)}</span><strong id="${id}"${title ? ` title="${escapeHTML(title)}"` : ""}>${escapeHTML(value)}</strong></div>`).join("");
+function renderHourlyUsage(points, windows) {
+  syncHourlyNavigator(windows);
+  renderHourlyLine(points);
+  $("#trendHourlyPane").title = t("hourly.updated", { time: localTime(new Date().toISOString()) });
 }
 
 function renderHourlyLine(points) {
   const line = $("#hourlyLine");
   const pointLayer = $("#hourlyPoints");
   const axis = $("#hourlyAxis");
-  pointLayer.setAttribute("aria-label", t("hourly.rulerAria"));
+  cancelAnimationFrame(pointLayer.hourlyScrubFrame || 0);
+  const selectedWindow = hourlyWindow(state.hourlyDate);
+  const displayDate = i18n.formatDate(selectedWindow.chartStart, { year: "numeric", month: "long", day: "numeric" });
+  pointLayer.setAttribute("aria-label", t("hourly.rulerAria", { date: displayDate }));
   if (!points.length) {
     line.innerHTML = "";
     axis.innerHTML = "";
+    pointLayer.onpointermove = null;
     pointLayer.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.hourlyEmpty"))}</div>`;
-    renderHourlyPointInspector(null);
+    renderHourlySelection(null);
     return;
   }
   const plot = { left: 28, right: 972, top: 16, bottom: 142 };
@@ -579,7 +652,7 @@ function renderHourlyLine(points) {
   });
   const polyline = coordinates.map(({ x, y }) => `${x.toFixed(2)},${y.toFixed(2)}`).join(" ");
   const area = `M ${coordinates[0].x.toFixed(2)} ${plot.bottom} L ${polyline.replaceAll(",", " ")} L ${coordinates.at(-1).x.toFixed(2)} ${plot.bottom} Z`;
-  line.innerHTML = `<path class="hour-line-area" d="${area}"></path><polyline class="hour-line-path" points="${polyline}"></polyline>`;
+  line.innerHTML = `<path class="hour-line-area" d="${area}"></path><polyline class="hour-line-path" points="${polyline}"></polyline><line class="hour-selection-guide" id="hourSelectionGuide" x1="0" x2="0" y1="${plot.top}" y2="${plot.bottom}"></line>`;
 
   const availableDates = new Set(points.map((point) => point.date));
   if (!state.hourlyPointDate || !availableDates.has(state.hourlyPointDate)) state.hourlyPointDate = points.at(-1).date;
@@ -604,7 +677,10 @@ function renderHourlyLine(points) {
       button.setAttribute("aria-pressed", String(selected));
       button.tabIndex = selected ? 0 : -1;
     });
-    renderHourlyPointInspector(selectedPoint);
+    const guide = $("#hourSelectionGuide");
+    guide?.setAttribute("x1", coordinates[index].x.toFixed(2));
+    guide?.setAttribute("x2", coordinates[index].x.toFixed(2));
+    renderHourlySelection(selectedPoint);
   };
   $$('[data-hour-point]', pointLayer).forEach((button) => {
     const index = Number(button.dataset.hourPoint);
@@ -618,7 +694,19 @@ function renderHourlyLine(points) {
       $(`[data-hour-point="${next}"]`, pointLayer)?.focus();
     });
   });
-  renderHourlyPointInspector(points.find((point) => point.date === state.hourlyPointDate));
+  let scrubIndex = -1;
+  pointLayer.onpointermove = (event) => {
+    if (event.pointerType && event.pointerType !== "mouse" && event.pointerType !== "pen") return;
+    const rect = pointLayer.getBoundingClientRect();
+    if (!rect.width) return;
+    const localX = (event.clientX - rect.left) / rect.width * 1000;
+    const next = coordinates.reduce((best, coordinate, index) => Math.abs(coordinate.x - localX) < Math.abs(coordinates[best].x - localX) ? index : best, 0);
+    if (next === scrubIndex) return;
+    scrubIndex = next;
+    cancelAnimationFrame(pointLayer.hourlyScrubFrame || 0);
+    pointLayer.hourlyScrubFrame = requestAnimationFrame(() => selectPoint(next));
+  };
+  selectPoint(Math.max(0, points.findIndex((point) => point.date === state.hourlyPointDate)));
   requestAnimationFrame(() => {
     const selected = $('[data-hour-point].selected', pointLayer);
     const scroller = $(".hourly-chart-scroll");
@@ -1334,6 +1422,10 @@ function setupEvents() {
   $("#brandButton").addEventListener("click", () => switchView("overview"));
   $$('[data-trend-view]').forEach((button) => button.addEventListener("click", () => switchTrendView(button.dataset.trendView)));
   $("#usageTrendPanel").querySelector('[role="tablist"]').addEventListener("keydown", (event) => tablistKeydown(event, $$('[data-trend-view]'), (button) => switchTrendView(button.dataset.trendView)));
+  $("#previousHourDay").addEventListener("click", () => navigateHourlyDate(dateKey(addDays(state.hourlyDate, -1)), -1));
+  $("#nextHourDay").addEventListener("click", () => navigateHourlyDate(dateKey(addDays(state.hourlyDate, 1)), 1));
+  $("#currentHourDay").addEventListener("click", () => navigateHourlyDate(todayKey(), 1));
+  $("#hourlyDatePicker").addEventListener("change", (event) => navigateHourlyDate(event.target.value));
   $$('[data-overview-range]').forEach((button) => button.addEventListener("click", () => {
     state.overviewRange = button.dataset.overviewRange;
     $$('[data-overview-range]').forEach((item) => {

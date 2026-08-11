@@ -112,10 +112,14 @@ const server = http.createServer(async (request, response) => {
   }
   if (url.pathname === "/api/v1/timeseries") {
     const bucket = url.searchParams.get("bucket") === "hour" ? "hour" : "day";
-    const count = bucket === "hour" ? 24 : 30;
     const unit = bucket === "hour" ? 3_600_000 : 86_400_000;
+    const fallbackCount = bucket === "hour" ? 24 : 30;
+    const fallbackEnd = bucket === "hour" ? new Date(new Date(now).setMinutes(0, 0, 0)) : now;
+    const start = bucket === "hour" && url.searchParams.get("since") ? new Date(url.searchParams.get("since")) : new Date(fallbackEnd.getTime() - fallbackCount * unit);
+    const end = bucket === "hour" && url.searchParams.get("until") ? new Date(url.searchParams.get("until")) : fallbackEnd;
+    const count = bucket === "hour" ? Math.max(0, Math.min(744, Math.round((end.getTime() - start.getTime()) / unit))) : fallbackCount;
     const points = Array.from({ length: count }, (_, index) => {
-      const time = new Date(now.getTime() - (count - 1 - index) * unit);
+      const time = bucket === "hour" ? new Date(start.getTime() + index * unit) : new Date(now.getTime() - (count - 1 - index) * unit);
       const wave = 150_000 + Math.round((Math.sin(index * .72) + 1.35) * 145_000) + index * 8500;
       return { time: time.toISOString(), date: bucket === "hour" ? localHourKey(time) : localDateKey(time), usage: { input: Math.round(wave * .78), cached_input: Math.round(wave * .42), cache_write_input: 0, output: Math.round(wave * .22), reasoning_output: Math.round(wave * .08), total: wave } };
     });
