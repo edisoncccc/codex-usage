@@ -1,5 +1,25 @@
 # Codex Usage 验收记录
 
+## v2.3.3 验收记录（2026-08-11）
+
+- 执行主机：Windows amd64
+- 候选版本：v2.3.3 · Windows 首次冷启动容错
+- 背景：v2.3.2 正式资产的 4 个远端二进制均通过 SHA-256 复算，Windows amd64 也正确报告合并提交 `ebd6e9e`；但首次正式安装在本机冷启动/安全扫描下超过原固定 12 秒 health 窗口而被清理，第二次重试以 14.8 秒总耗时成功。
+- 修复：安装后的本机 health 等待窗口由 12 秒扩展到 30 秒，保留原 180 ms 轮询和超时后安全清理行为，为首次运行的 Windows 安全扫描和高负载启动留出余量。
+- 自动化：`go test -count=1 -mod=readonly ./...`、`go vet -mod=readonly ./...`、Playwright Dashboard + synthetic Demo 15/15、Windows/Linux × amd64/arm64 交叉构建均通过。
+- 真实升级：全新哈希的 Windows amd64 候选首次运行成功，安装总耗时 7.8 秒；新 PID 45200 与 43189 listener 一致，服务报告 v2.3.3，565 个 Session 和 74,087 个事件均保留。
+
+### v2.3.3 本地候选构建产物
+
+| 平台 | SHA-256 |
+|---|---|
+| Windows amd64 | `985e53e001dd4bea1d43368d266b6f81e6a5c0e46f14d032d9c4ef140bb6e4c9` |
+| Windows arm64 | `6f438e397f5754360d802cf63583912dc27f2b48889e6d7eb2de24bb5e30e237` |
+| Linux amd64 | `9060d183ee646dd6366dcf462efebfc6496f40d5e3d65cf08db05d30653427f5` |
+| Linux arm64 | `9b5c71ff1819c0640d0d70f2f61d91597eb319a84451368586259ee641977185` |
+
+Windows amd64 候选报告 `codex-usage 2.3.3 (ebd6e9e-dirty, …) windows/amd64`；正式 Release 由 tag workflow 从干净提交重新构建，最终哈希以远端 `SHA256SUMS` 为准。
+
 ## v2.3.2 验收记录（2026-08-11）
 
 - 执行主机：Windows amd64
