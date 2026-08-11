@@ -468,7 +468,7 @@ test("mobile, tablet, themes, and reduced motion avoid page overflow", async ({ 
   await expect.poll(() => page.locator(".hourly-chart-scroll").evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
   await page.getByRole("tab", { name: "明细" }).click();
   await expect(page.getByRole("heading", { name: "Session 明细" })).toBeVisible();
-  expect(await page.locator(".session-row").count()).toBeGreaterThan(0);
+  await expect(page.locator("#sessionRows .session-row").first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await expect(page.locator("#exportButton")).toBeVisible();
   await expect(page.locator("#settingsButton")).toBeVisible();
