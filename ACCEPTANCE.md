@@ -1,5 +1,40 @@
 # Codex Usage 验收记录
 
+## v2.3.0 验收记录（2026-08-11）
+
+- 执行主机：Windows amd64
+- 候选版本：v2.3.0 · 小时级 Token 统计、交互性能与可靠性优化
+- 范围：Go 单元测试与静态检查、Playwright 真实二进制与 synthetic Demo、Windows/Linux × amd64/arm64 交叉构建、候选二进制原生启动和 SHA-256；Linux 与 arm64 的原生运行仍由 GitHub Actions 和对应平台负责。
+
+主要验收项：
+
+- 小时统计：使用 JSONL Token 增量事件自身的时间戳按本地小时归属；提供最近 60 分钟汇总，以及最近 24 个完整小时的可交互折线图。
+- 趋势界面：概览默认显示“每日Token用量”，同一区域可切换“每小时”；折线与交互点使用同一 180px 坐标系，桌面实测最大偏差约 0.01px。
+- 交互性能：视图先切换再异步加载数据；Session 行与费用估算拆分请求，价格和筛选数据使用有界 revision cache，避免首次点击阻塞整页。
+- 统计与导出：价格聚合逐事件校验；CSV/JSON 使用稳定单快照遍历；Session metadata 实际变化才推进 `data_revision`。
+- 安全与依赖：写接口强制同端口 loopback Origin；SQLite 依赖升级并保留 JSONL-only 正式统计边界。
+- 响应式与无障碍：桌面及 390px 移动端无页面横向溢出；小时图可横向滚动，键盘选点、中英文、主题和 reduced-motion 回归通过。
+
+自动化结果：
+
+- `go test ./...`：通过。
+- `go vet ./...`：通过。
+- Playwright：15/15 通过；CI 时序修复后的移动端 Session 用例此前另行连续运行 5/5 通过。
+- 四平台交叉构建：Windows/Linux × amd64/arm64 全部生成成功。
+
+### v2.3.0 构建产物
+
+`scripts/build.ps1 -Version 2.3.0` 生成四个无 CGO 单文件二进制与 `SHA256SUMS`：
+
+| 平台 | SHA-256 |
+|---|---|
+| Windows amd64 | `23adfd6fbed252c5da07e754ae0453add99fb5bff84432659fa5b6601ba5a2ec` |
+| Windows arm64 | `2a0175ff273b97b7d082eb3ee1d0751394ac4e286386c8b7eb30fe449c888faa` |
+| Linux amd64 | `1fb4beda28d7a52826c40cbe3c112f14412667ae3cb561aa734f7adce4c2020d` |
+| Linux arm64 | `445e0b1c6af431b060224fb42049508110e49413fcd15603e5507b21a7c9fd78` |
+
+Windows amd64 候选已原生运行并报告 `codex-usage 2.3.0 (2fc46a7-dirty, …) windows/amd64`；`-dirty` 表示候选在发布准备提交前构建。GitHub tag 工作流会从干净发布提交重新执行测试与构建，因此正式资产的哈希预计与本地候选不同，发布后须以 Release 附带的 `SHA256SUMS` 为准。
+
 ## 2026-08-10 全面优化分支
 
 - 执行主机：Windows amd64
