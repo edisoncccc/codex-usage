@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -73,30 +77,28 @@ func LockDown(path string) error {
 
 func SetPrivateUmask() {}
 
-func UninstallService(stateDir string) error {
+func UninstallService(executable, stateDir string) error {
+	pidPath := filepath.Join(stateDir, "codex-usage.pid")
+	if err := stopWindowsExecutable(executable); err != nil {
+		return err
+	}
 	_, _ = exec.Command("reg.exe", "delete",
 		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "CodexUsage", "/f").CombinedOutput()
-	if pid, err := ReadPID(stateDir); err == nil && pid != os.Getpid() {
-		listing, _ := exec.Command("tasklist.exe", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH").Output()
-		if strings.Contains(strings.ToLower(string(listing)), `"codex-usage.exe"`) {
-			_, _ = exec.Command("taskkill.exe", "/PID", fmt.Sprint(pid), "/T", "/F").CombinedOutput()
+	for _, path := range []string{pidPath, filepath.Join(stateDir, "codex-usage-start.vbs")} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
 		}
 	}
-	_ = os.Remove(filepath.Join(stateDir, "codex-usage.pid"))
-	_ = os.Remove(filepath.Join(stateDir, "codex-usage-start.vbs"))
 	return nil
 }
 
 func StopPreviousService(previous PreviousService) error {
+	if err := stopWindowsExecutable(previous.Executable); err != nil {
+		return err
+	}
 	if previous.StartupEntry != "" {
 		_, _ = exec.Command("reg.exe", "delete",
 			`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", previous.StartupEntry, "/f").CombinedOutput()
-	}
-	if pid, err := readPIDFile(previous.PIDPath); err == nil && pid != os.Getpid() {
-		listing, _ := exec.Command("tasklist.exe", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH").Output()
-		if strings.Contains(strings.ToLower(string(listing)), strings.ToLower(`"`+filepath.Base(previous.Executable)+`"`)) {
-			_, _ = exec.Command("taskkill.exe", "/PID", fmt.Sprint(pid), "/T", "/F").CombinedOutput()
-		}
 	}
 	for _, path := range []string{previous.PIDPath, previous.LauncherPath} {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -104,6 +106,87 @@ func StopPreviousService(previous PreviousService) error {
 		}
 	}
 	return nil
+}
+
+var terminateWindowsProcessByPID = terminateWindowsProcess
+
+func stopWindowsExecutable(executable string) error {
+	target, err := filepath.Abs(executable)
+	if err != nil {
+		return fmt.Errorf("解析后台服务路径: %w", err)
+	}
+	target = filepath.Clean(target)
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return fmt.Errorf("枚举后台进程: %w", err)
+	}
+	defer windows.CloseHandle(snapshot)
+
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	if err := windows.Process32First(snapshot, &entry); err != nil {
+		if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+			return nil
+		}
+		return fmt.Errorf("读取后台进程列表: %w", err)
+	}
+	for {
+		pid := entry.ProcessID
+		if pid != 0 && pid != uint32(os.Getpid()) {
+			processPath, queryErr := windowsProcessExecutable(pid)
+			if queryErr == nil && strings.EqualFold(filepath.Clean(processPath), target) {
+				if err := terminateWindowsProcessByPID(pid); err != nil {
+					return windowsProcessError("停止", pid, err)
+				}
+			}
+		}
+		if err := windows.Process32Next(snapshot, &entry); err != nil {
+			if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+				break
+			}
+			return fmt.Errorf("读取后台进程列表: %w", err)
+		}
+	}
+	return nil
+}
+
+func windowsProcessExecutable(pid uint32) (string, error) {
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return "", err
+	}
+	defer windows.CloseHandle(handle)
+	buffer := make([]uint16, 32768)
+	size := uint32(len(buffer))
+	if err := windows.QueryFullProcessImageName(handle, 0, &buffer[0], &size); err != nil {
+		return "", err
+	}
+	return windows.UTF16ToString(buffer[:size]), nil
+}
+
+func terminateWindowsProcess(pid uint32) error {
+	handle, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, pid)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(handle)
+	if err := windows.TerminateProcess(handle, 0); err != nil {
+		return err
+	}
+	result, err := windows.WaitForSingleObject(handle, 5000)
+	if err != nil {
+		return err
+	}
+	if result != windows.WAIT_OBJECT_0 {
+		return fmt.Errorf("等待进程退出超时 (wait=%d)", result)
+	}
+	return nil
+}
+
+func windowsProcessError(action string, pid uint32, err error) error {
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return fmt.Errorf("%s后台服务 PID %d 被拒绝访问；请右键选择“以管理员身份运行”后重试 install: %w", action, pid, err)
+	}
+	return fmt.Errorf("%s后台服务 PID %d: %w", action, pid, err)
 }
 
 func RemovePreviousExecutable(previous PreviousService) error {

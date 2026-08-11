@@ -11,9 +11,9 @@ import (
 func InstallService(executable, stateDir string) (ServiceResult, error) {
 	return ServiceResult{Warning: "当前平台没有自动服务安装器"}, nil
 }
-func LockDown(path string) error             { return os.Chmod(path, 0o700) }
-func SetPrivateUmask()                       {}
-func UninstallService(stateDir string) error { return nil }
+func LockDown(path string) error                       { return os.Chmod(path, 0o700) }
+func SetPrivateUmask()                                 {}
+func UninstallService(_ string, stateDir string) error { return nil }
 func StopPreviousService(previous PreviousService) error {
 	if pid, err := readPIDFile(previous.PIDPath); err == nil && pid != os.Getpid() {
 		if process, findErr := os.FindProcess(pid); findErr == nil {
