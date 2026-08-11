@@ -125,7 +125,7 @@ const state = {
   statusQualityNotes: [],
   dataQualityNotes: [],
   sessionSearch: "",
-  requestSerial: { overview: 0, hourly: 0, daily: 0, day: 0, breakdown: 0, sessions: 0, estimates: 0 }
+  requestSerial: { overview: 0, hourly: 0, hourlyContext: 0, daily: 0, day: 0, breakdown: 0, sessions: 0, estimates: 0 }
 };
 
 const responseCache = new Map();
@@ -137,6 +137,7 @@ let cacheGeneration = 0;
 let statusPollTimer = null;
 let statusPollRunning = false;
 let sessionSearchTimer = null;
+let hourlyContextTimer = null;
 
 const reducedMotion = () => displayPreferences.motion === "reduce" || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const pad2 = (value) => String(value).padStart(2, "0");
@@ -505,20 +506,29 @@ async function loadOverview({ preserve = false } = {}) {
 
 async function loadHourlyUsage({ preserve = false } = {}) {
   const serial = ++state.requestSerial.hourly;
+  clearTimeout(hourlyContextTimer);
+  state.requestSerial.hourlyContext += 1;
   const windows = hourlyWindow();
   state.hourlyDate = windows.date;
   syncHourlyNavigator(windows);
   const chart = $("#hourlyChart");
   const summary = $(".hourly-summary");
+  const context = $("#hourlyContext");
   if (!preserve) {
     setLoading($("#hourlyTotal"));
     $("#hourlyLedger").innerHTML = `<span class="hourly-placeholder">${escapeHTML(t("common.loading"))}</span>`;
+    setLoading($("#hourlyCost"));
+    $("#hourlyCostNote").textContent = t("hourly.costNote");
+    $("#hourlyModels").innerHTML = `<span class="hourly-placeholder">${escapeHTML(t("common.loading"))}</span>`;
+    $("#hourlyCostCoverage").textContent = "—";
+    $("#hourlyCostCoverageNote").textContent = "—";
     $("#hourlyLine").innerHTML = "";
     $("#hourlyAxis").innerHTML = "";
     $("#hourlyPoints").innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
   } else {
     chart.classList.add("is-updating");
     summary.classList.add("is-updating");
+    context.classList.add("is-updating");
   }
   summary.setAttribute("aria-busy", "true");
   $("#trendHourlyPane").setAttribute("aria-busy", "true");
@@ -620,6 +630,87 @@ function renderHourlySelection(point) {
   ].map(([id, name, value]) => `<span><small>${name}</small><strong id="${id}" title="${fullToken(value)}">${formatToken(value)}</strong></span>`).join("");
 }
 
+function finishHourlyContextUpdate() {
+  const context = $("#hourlyContext");
+  context.classList.remove("is-updating");
+  context.removeAttribute("aria-busy");
+}
+
+function renderHourlyContext(report, point) {
+  const estimate = report?.summary || {};
+  const pointUsage = point?.usage || emptyUsage();
+  const hasUsage = usageTotal(pointUsage) > 0 || estimateTokens(estimate) > 0;
+  const pricedTokens = Number(estimate.priced_tokens || 0);
+  const costNode = $("#hourlyCost");
+  costNode.textContent = !hasUsage ? formatUSD(0)
+    : estimateTokens(estimate) && !pricedTokens ? t("dynamic.unpriced")
+      : estimateDisplay(estimate);
+  costNode.title = hasUsage ? `${formatUSD(estimate.usd)} · ${estimateLabel(estimate)}` : t("hourly.noUsage");
+  costNode.classList.remove("loading");
+  const reasons = reasonSummary(estimate);
+  $("#hourlyCostNote").textContent = t("hourly.costNote");
+  $("#hourlyCostNote").title = reasons || t("hourly.costNote");
+
+  const models = (report?.models || []).filter((item) => usageTotal(item.usage) > 0);
+  const visibleModels = models.slice(0, 3);
+  $("#hourlyModels").innerHTML = visibleModels.length ? visibleModels.map((item) => {
+    const tokens = usageTotal(item.usage);
+    const modelEstimate = item.estimate || {};
+    const modelCost = estimateTokens(modelEstimate) && !Number(modelEstimate.priced_tokens || 0)
+      ? t("dynamic.unpriced") : estimateDisplay(modelEstimate);
+    return `<span class="hourly-model-chip" title="${escapeHTML(`${item.key} · ${fullToken(tokens)} Token · ${modelCost}`)}"><strong>${escapeHTML(item.key || t("common.unknownModel"))}</strong><small>${escapeHTML(`${formatToken(tokens)} · ${modelCost}`)}</small></span>`;
+  }).join("") + (models.length > visibleModels.length ? `<span class="hourly-model-more">${escapeHTML(t("hourly.moreModels", { count: i18n.formatNumber(models.length - visibleModels.length) }))}</span>` : "")
+    : `<span class="hourly-placeholder">${escapeHTML(t("hourly.noModels"))}</span>`;
+
+  $("#hourlyCostCoverage").textContent = hasUsage ? formatPercent(estimate.coverage_ratio) : "—";
+  $("#hourlyCostCoverageNote").textContent = !hasUsage ? t("hourly.noUsage")
+    : Number(estimate.unpriced_tokens || 0) > 0
+      ? t("dynamic.unpricedSuffix", { tokens: formatToken(estimate.unpriced_tokens) })
+      : t("hourly.catalog", { date: report?.catalog_as_of || "—" });
+  finishHourlyContextUpdate();
+}
+
+function renderHourlyContextError(error) {
+  $("#hourlyCost").textContent = "—";
+  $("#hourlyCost").removeAttribute("title");
+  $("#hourlyCost").classList.remove("loading");
+  $("#hourlyCostNote").textContent = t("dynamic.hourlyContextError", { error: error.message });
+  $("#hourlyCostNote").removeAttribute("title");
+  $("#hourlyModels").innerHTML = `<span class="hourly-placeholder">—</span>`;
+  $("#hourlyCostCoverage").textContent = "—";
+  $("#hourlyCostCoverageNote").textContent = "—";
+  finishHourlyContextUpdate();
+}
+
+function scheduleHourlyContext(point, { immediate = false } = {}) {
+  clearTimeout(hourlyContextTimer);
+  const serial = ++state.requestSerial.hourlyContext;
+  const context = $("#hourlyContext");
+  context.classList.add("is-updating");
+  context.setAttribute("aria-busy", "true");
+  if (!point || usageTotal(point.usage) === 0) {
+    renderHourlyContext({ summary: {}, models: [] }, point);
+    return;
+  }
+  const load = async () => {
+    const end = new Date(point.start.getTime() + 60 * 60_000);
+    try {
+      const report = await api(apiURL("/api/v1/cost-estimate", {
+        since: point.start.toISOString(),
+        until: end.toISOString()
+      }));
+      if (serial !== state.requestSerial.hourlyContext || state.hourlyPointDate !== point.date) return;
+      renderHourlyContext(report, point);
+    } catch (error) {
+      if (serial !== state.requestSerial.hourlyContext || state.hourlyPointDate !== point.date) return;
+      renderHourlyContextError(error);
+      toast(t("dynamic.hourlyContextError", { error: error.message }), true);
+    }
+  };
+  if (immediate) void load();
+  else hourlyContextTimer = setTimeout(() => { void load(); }, 110);
+}
+
 function renderHourlyUsage(points, windows) {
   syncHourlyNavigator(windows);
   renderHourlyLine(points);
@@ -640,6 +731,7 @@ function renderHourlyLine(points) {
     pointLayer.onpointermove = null;
     pointLayer.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.hourlyEmpty"))}</div>`;
     renderHourlySelection(null);
+    scheduleHourlyContext(null, { immediate: true });
     return;
   }
   const plot = { left: 28, right: 972, top: 16, bottom: 142 };
@@ -667,7 +759,7 @@ function renderHourlyLine(points) {
     return `<time class="${edge}" datetime="${escapeHTML(point.date)}:00" style="--label-x:${(x / 10).toFixed(3)}%">${escapeHTML(clock)}</time>`;
   }).join("");
 
-  const selectPoint = (index) => {
+  const selectPoint = (index, { immediateContext = false } = {}) => {
     const selectedPoint = points[index];
     if (!selectedPoint) return;
     state.hourlyPointDate = selectedPoint.date;
@@ -681,12 +773,13 @@ function renderHourlyLine(points) {
     guide?.setAttribute("x1", coordinates[index].x.toFixed(2));
     guide?.setAttribute("x2", coordinates[index].x.toFixed(2));
     renderHourlySelection(selectedPoint);
+    scheduleHourlyContext(selectedPoint, { immediate: immediateContext });
   };
   $$('[data-hour-point]', pointLayer).forEach((button) => {
     const index = Number(button.dataset.hourPoint);
     button.addEventListener("mouseenter", () => selectPoint(index));
-    button.addEventListener("focus", () => selectPoint(index));
-    button.addEventListener("click", () => selectPoint(index));
+    button.addEventListener("focus", () => selectPoint(index, { immediateContext: true }));
+    button.addEventListener("click", () => selectPoint(index, { immediateContext: true }));
     button.addEventListener("keydown", (event) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
@@ -706,7 +799,7 @@ function renderHourlyLine(points) {
     cancelAnimationFrame(pointLayer.hourlyScrubFrame || 0);
     pointLayer.hourlyScrubFrame = requestAnimationFrame(() => selectPoint(next));
   };
-  selectPoint(Math.max(0, points.findIndex((point) => point.date === state.hourlyPointDate)));
+  selectPoint(Math.max(0, points.findIndex((point) => point.date === state.hourlyPointDate)), { immediateContext: true });
   requestAnimationFrame(() => {
     const selected = $('[data-hour-point].selected', pointLayer);
     const scroller = $(".hourly-chart-scroll");

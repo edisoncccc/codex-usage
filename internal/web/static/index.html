@@ -119,6 +119,24 @@
               <div class="hourly-axis" id="hourlyAxis" aria-hidden="true"></div>
             </div>
           </div>
+          <div class="hourly-context" id="hourlyContext" aria-live="polite">
+            <div class="hourly-cost-block">
+              <span data-i18n="hourly.cost">等价API成本</span>
+              <strong class="loading" id="hourlyCost">—</strong>
+              <small id="hourlyCostNote" data-i18n="hourly.costNote">Standard API 公开价格参考 · 不是真实账单</small>
+            </div>
+            <div class="hourly-context-details">
+              <div class="hourly-context-group hourly-model-group">
+                <span data-i18n="hourly.models">使用模型</span>
+                <div class="hourly-models" id="hourlyModels"><span class="hourly-placeholder" data-i18n="common.loading">正在读取…</span></div>
+              </div>
+              <div class="hourly-context-group hourly-coverage-group">
+                <span data-i18n="hourly.coverage">定价覆盖</span>
+                <strong id="hourlyCostCoverage">—</strong>
+                <small id="hourlyCostCoverageNote">—</small>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="trend-pane" id="trendDailyPane" role="tabpanel" aria-labelledby="trendDailyTab">

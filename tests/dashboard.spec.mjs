@@ -142,9 +142,12 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
 
 test("hourly usage inspects the selected point and navigates across local days", async ({ page }) => {
   const hourlyRequests = [];
+  const hourlyCostRequests = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.pathname === "/api/v1/timeseries" && url.searchParams.get("bucket") === "hour") hourlyRequests.push(url);
+    if (url.pathname === "/api/v1/cost-estimate" && url.searchParams.has("since") && url.searchParams.has("until")
+      && Date.parse(url.searchParams.get("until")) - Date.parse(url.searchParams.get("since")) === 60 * 60 * 1000) hourlyCostRequests.push(url);
   });
   await page.goto(dashboardURL, { waitUntil: "networkidle" });
   const trend = page.locator("#usageTrendPanel");
@@ -155,6 +158,10 @@ test("hourly usage inspects the selected point and navigates across local days",
   await expect(page.locator("#hourPointInspector")).toHaveCount(0);
   await expect(page.locator("#hourlyDatePicker")).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
   await expect(page.locator("#hourlyTotal")).toHaveText("60");
+  await expect(page.locator("#hourlyCost")).toHaveText(/^\$/);
+  await expect(page.locator("#hourlyModels").getByText("gpt-5.4", { exact: true })).toBeVisible();
+  await expect(page.locator("#hourlyCostCoverage")).toHaveText("100.0%");
+  await expect(page.locator("#hourlyContext").getByText("不是真实账单", { exact: false })).toBeVisible();
   const summaryType = await page.evaluate(() => ({
     window: Number.parseFloat(getComputedStyle(document.querySelector("#hourlyWindowLabel")).fontSize),
     ledger: Number.parseFloat(getComputedStyle(document.querySelector("#hourlyInput")).fontSize)
@@ -168,7 +175,11 @@ test("hourly usage inspects the selected point and navigates across local days",
   await expect(hourPoints.last()).toHaveClass(/selected/);
   await hourPoints.first().focus();
   await expect(hourPoints.first()).toHaveAttribute("aria-pressed", "true");
-  if (expectedHours > 1) await expect(page.locator("#hourlyTotal")).toHaveText("0");
+  if (expectedHours > 1) {
+    await expect(page.locator("#hourlyTotal")).toHaveText("0");
+    await expect(page.locator("#hourlyCost")).toHaveText("$0.00");
+    await expect(page.locator("#hourlyModels")).toContainText("没有模型用量");
+  }
   await hourPoints.first().press("End");
   await expect(hourPoints.last()).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#hourlyTotal")).toHaveText("60");
@@ -220,6 +231,7 @@ test("hourly usage inspects the selected point and navigates across local days",
   }));
   await expect(page.locator("#currentHourDay")).toBeDisabled();
   expect(hourlyRequests.some((url) => Date.parse(url.searchParams.get("until")) - Date.parse(url.searchParams.get("since")) === 24 * 60 * 60 * 1000)).toBeTruthy();
+  expect(hourlyCostRequests.length).toBeGreaterThan(0);
 });
 
 test("view switching exposes the target panel immediately", async ({ page }) => {

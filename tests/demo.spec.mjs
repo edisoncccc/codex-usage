@@ -50,6 +50,8 @@ test("Pages subpath loads the canonical UI with synthetic-only APIs", async ({ p
   await expect(page.getByRole("heading", { name: "Hourly token usage" })).toBeVisible();
   await expect(page.locator("#hourlyLine .hour-line-path")).toHaveCount(1);
   await expect(page.locator("#hourlyPoints .hour-point")).toHaveCount(await page.evaluate(() => new Date().getHours() || 24));
+  await expect(page.locator("#hourlyCost")).toHaveText(/^\$/);
+  await expect(page.locator("#hourlyModels .hourly-model-chip")).toHaveCount(3);
   expect(networkAPIs).toEqual([]);
   expect(external).toEqual([]);
   expect(await page.context().cookies()).toEqual([]);

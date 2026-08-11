@@ -46,9 +46,13 @@ function localHourKey(date) {
   return `${localDateKey(date)}T${String(date.getHours()).padStart(2, "0")}`;
 }
 
+function rangeDate(value) {
+  return new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00` : value);
+}
+
 function costEstimate(url) {
-  const start = url.searchParams.get("since") ? new Date(`${url.searchParams.get("since")}T00:00:00`) : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
-  const end = url.searchParams.get("until") ? new Date(`${url.searchParams.get("until")}T00:00:00`) : new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const start = url.searchParams.get("since") ? rangeDate(url.searchParams.get("since")) : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
+  const end = url.searchParams.get("until") ? rangeDate(url.searchParams.get("until")) : new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
   const points = [];
   let index = 0;
   for (let date = new Date(start); date < end && index < 120; date.setDate(date.getDate() + 1), index++) {
