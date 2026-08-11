@@ -1,5 +1,37 @@
 # Codex Usage 验收记录
 
+## v2.3.1 验收记录（2026-08-11）
+
+- 执行主机：Windows amd64
+- 候选版本：v2.3.1 · 可导航的逐小时历史、小时成本上下文与统一日期控件
+- 范围：Go 单元/集成测试与静态检查、Playwright 真实二进制及 synthetic Demo、Windows/Linux × amd64/arm64 交叉构建、Windows amd64 候选原生版本检查和 SHA-256；Linux 与 arm64 原生运行由 GitHub Actions 和对应平台负责。
+
+主要验收项：
+
+- 每小时历史：支持前一天、后一天、具体日期和“今天”导航，可查看任意本地日期的完整小时并逐点交互。
+- 小时上下文：选中小时下方重点显示 Standard API 等价成本，同时显示使用模型、模型 Token/估算费用和定价覆盖率；滑动选点采用防抖并忽略过期请求。
+- 每日日期直达：月历可直接选择具体日期，包括零用量日期，并自动跳转到对应月份。
+- 日期控件：每日与每小时共享统一组件，年份与月日分层显示，放大字体、日历图形和 50px 导航触控区域；底层保留原生日期面板和键盘焦点。
+- 响应式与无障碍：桌面与 390 × 844 移动端四种组合均完成视觉检查，无页面横向溢出；中英文、键盘、主题与 reduced-motion 回归通过。
+
+自动化结果：
+
+- `go test -count=1 -mod=readonly ./...`：通过。
+- `go vet -mod=readonly ./...`：通过。
+- Playwright Dashboard + synthetic Demo：15/15 通过。
+- 四平台交叉构建：Windows/Linux × amd64/arm64 全部生成成功，清单内四项 SHA-256 复算一致。
+
+### v2.3.1 本地候选构建产物
+
+| 平台 | SHA-256 |
+|---|---|
+| Windows amd64 | `939a23ff819d449bc3f3ded74252aeff39f5490a17ff7e219d4ed4243ced884b` |
+| Windows arm64 | `1c2884e37a8b3ce69b73caa92f800efbcf71cf4cc57909bd35322d26a906cb6e` |
+| Linux amd64 | `29819108510b2e5c2f49da7a0269b21804701295aa9856f17fbf0a3a1a40883c` |
+| Linux arm64 | `503644e2581087175a1d2ff2f97f9da59d874279e835118742b3478a74ca4e25` |
+
+Windows amd64 候选已原生运行并报告 `codex-usage 2.3.1 (9de4556-dirty, …) windows/amd64`。`-dirty` 表示版本准备文件尚未提交时构建；正式 Release 由 tag workflow 从干净提交重新测试和构建，最终哈希应以 Release 附带的 `SHA256SUMS` 为准。
+
 ## v2.3.0 验收记录（2026-08-11）
 
 - 执行主机：Windows amd64

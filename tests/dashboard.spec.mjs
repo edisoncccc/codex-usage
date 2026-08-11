@@ -140,31 +140,57 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   expect(consoleErrors).toEqual([]);
 });
 
-test("hourly usage is fixed to the last 60 minutes and keeps points aligned with the line", async ({ page }) => {
-  const summaryRequests = [];
+test("hourly usage inspects the selected point and navigates across local days", async ({ page }) => {
+  const hourlyRequests = [];
+  const hourlyCostRequests = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.pathname === "/api/v1/summary" && url.searchParams.has("since") && url.searchParams.has("until")) summaryRequests.push(url);
+    if (url.pathname === "/api/v1/timeseries" && url.searchParams.get("bucket") === "hour") hourlyRequests.push(url);
+    if (url.pathname === "/api/v1/cost-estimate" && url.searchParams.has("since") && url.searchParams.has("until")
+      && Date.parse(url.searchParams.get("until")) - Date.parse(url.searchParams.get("since")) === 60 * 60 * 1000) hourlyCostRequests.push(url);
   });
   await page.goto(dashboardURL, { waitUntil: "networkidle" });
   const trend = page.locator("#usageTrendPanel");
   await trend.getByRole("tab", { name: "每小时" }).click();
   await expect(page.getByRole("heading", { name: "每小时Token用量" })).toBeVisible();
-  await expect(trend.getByText("最近 60 分钟", { exact: true })).toBeVisible();
+  await expect(trend.getByText("最近 60 分钟", { exact: true })).toHaveCount(0);
   await expect(trend.getByText("上一小时", { exact: true })).toHaveCount(0);
-  await expect(page.locator("[data-hour-range]")).toHaveCount(0);
-  await expect(page.locator("#hourlyTotal")).not.toHaveText("—");
+  await expect(page.locator("#hourPointInspector")).toHaveCount(0);
+  await expect(page.locator("#hourlyDatePicker")).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
+  await expect(page.locator("#hourlyDateYear")).not.toHaveText("—");
+  await expect(page.locator("#hourlyDateLabel")).not.toHaveText("—");
+  const dateType = await page.locator("#hourlyDateLabel").evaluate((node) => ({
+    year: Number.parseFloat(getComputedStyle(document.querySelector("#hourlyDateYear")).fontSize),
+    date: Number.parseFloat(getComputedStyle(node).fontSize)
+  }));
+  expect(dateType.year).toBeGreaterThanOrEqual(11);
+  expect(dateType.date).toBeGreaterThanOrEqual(16);
+  await expect(page.locator("#hourlyTotal")).toHaveText("60");
+  await expect(page.locator("#hourlyCost")).toHaveText(/^\$/);
+  await expect(page.locator("#hourlyModels").getByText("gpt-5.4", { exact: true })).toBeVisible();
+  await expect(page.locator("#hourlyCostCoverage")).toHaveText("100.0%");
+  await expect(page.locator("#hourlyContext").getByText("不是真实账单", { exact: false })).toBeVisible();
+  const summaryType = await page.evaluate(() => ({
+    window: Number.parseFloat(getComputedStyle(document.querySelector("#hourlyWindowLabel")).fontSize),
+    ledger: Number.parseFloat(getComputedStyle(document.querySelector("#hourlyInput")).fontSize)
+  }));
+  expect(summaryType.window).toBeGreaterThanOrEqual(15);
+  expect(summaryType.ledger).toBeGreaterThanOrEqual(16);
   await expect(page.locator("#hourlyLine .hour-line-path")).toHaveCount(1);
   const hourPoints = page.locator("#hourlyPoints .hour-point");
-  await expect(hourPoints).toHaveCount(24);
+  const expectedHours = await page.evaluate(() => new Date().getHours() || 24);
+  await expect(hourPoints).toHaveCount(expectedHours);
   await expect(hourPoints.last()).toHaveClass(/selected/);
-  await expect(page.locator("#hourPointTotal")).toHaveText("60");
   await hourPoints.first().focus();
   await expect(hourPoints.first()).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator("#hourPointTotal")).toHaveText("0");
+  if (expectedHours > 1) {
+    await expect(page.locator("#hourlyTotal")).toHaveText("0");
+    await expect(page.locator("#hourlyCost")).toHaveText("$0.00");
+    await expect(page.locator("#hourlyModels")).toContainText("没有模型用量");
+  }
   await hourPoints.first().press("End");
   await expect(hourPoints.last()).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator("#hourPointTotal")).toHaveText("60");
+  await expect(page.locator("#hourlyTotal")).toHaveText("60");
   const alignment = await page.evaluate(() => {
     const svg = document.querySelector("#hourlyLine");
     const polyline = svg.querySelector(".hour-line-path");
@@ -181,13 +207,39 @@ test("hourly usage is fixed to the last 60 minutes and keeps points aligned with
   });
   expect(Math.max(...alignment.map(({ x }) => x))).toBeLessThan(0.5);
   expect(Math.max(...alignment.map(({ y }) => y))).toBeLessThan(0.5);
-  const rollingURL = summaryRequests.find((url) => Date.parse(url.searchParams.get("until")) - Date.parse(url.searchParams.get("since")) === 60 * 60 * 1000);
-  expect(rollingURL).toBeTruthy();
-  const rollingSince = Date.parse(rollingURL.searchParams.get("since"));
-  const rollingUntil = Date.parse(rollingURL.searchParams.get("until"));
-  expect(rollingUntil - rollingSince).toBe(60 * 60 * 1000);
-  expect(Math.abs(Date.now() - rollingUntil)).toBeLessThan(10_000);
   await expect(page.locator("#hourlyWindowLabel")).not.toHaveText("—");
+
+  const initialDate = await page.locator("#hourlyDatePicker").inputValue();
+  await page.locator("#previousHourDay").click();
+  const previousDate = await page.locator("#hourlyDatePicker").inputValue();
+  expect(previousDate).toBe(await page.evaluate((value) => {
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(year, month - 1, day);
+    date.setDate(date.getDate() - 1);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  }, initialDate));
+  await expect(hourPoints).toHaveCount(24);
+  await expect(hourPoints.last()).toHaveClass(/selected/);
+  await expect(page.locator("#currentHourDay")).toBeEnabled();
+  const arbitraryDate = await page.evaluate((value) => {
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(year, month - 1, day);
+    date.setDate(date.getDate() - 8);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  }, initialDate);
+  await page.locator("#hourlyDatePicker").fill(arbitraryDate);
+  await page.locator("#hourlyDatePicker").dispatchEvent("change");
+  await expect(page.locator("#hourlyDatePicker")).toHaveValue(arbitraryDate);
+  await expect(page.locator("#trendHourlyPane")).not.toHaveAttribute("aria-busy", "true");
+  await expect(hourPoints).toHaveCount(24);
+  await page.locator("#currentHourDay").click();
+  await expect(page.locator("#hourlyDatePicker")).toHaveValue(await page.evaluate(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  }));
+  await expect(page.locator("#currentHourDay")).toBeDisabled();
+  expect(hourlyRequests.some((url) => Date.parse(url.searchParams.get("until")) - Date.parse(url.searchParams.get("since")) === 24 * 60 * 60 * 1000)).toBeTruthy();
+  expect(hourlyCostRequests.length).toBeGreaterThan(0);
 });
 
 test("view switching exposes the target panel immediately", async ({ page }) => {
@@ -325,6 +377,15 @@ test("navigation, month drill-down, filter chips, pricing, and scan feedback wor
   await page.locator("#previousMonth").click();
   await expect(page.locator("#monthLabel")).not.toHaveText(initialMonth);
   await expect(page.locator("[data-calendar-date]").first()).toBeVisible();
+
+  const directDate = "2025-04-17";
+  await page.locator("#dailyDatePicker").fill(directDate);
+  await page.locator("#dailyDatePicker").dispatchEvent("change");
+  await expect(page.locator("#dailyDatePicker")).toHaveValue(directDate);
+  await expect(page.locator("#dailyDateYear")).toContainText("2025");
+  await expect(page.locator("#dailyDateLabel")).toContainText("4月17日");
+  await expect(page.locator(`[data-calendar-date="${directDate}"]`)).toHaveClass(/selected/);
+  await expect(page.locator("#selectedDateTitle")).toContainText("4月17日");
 
   await page.getByRole("tab", { name: "明细" }).click();
   await expect(page.getByRole("heading", { name: "明细与归属" })).toBeVisible();
@@ -464,7 +525,7 @@ test("mobile, tablet, themes, and reduced motion avoid page overflow", async ({ 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(dashboardURL, { waitUntil: "networkidle" });
   await page.locator("#usageTrendPanel").getByRole("tab", { name: "每小时" }).click();
-  await expect(page.locator("#hourlyPoints .hour-point")).toHaveCount(24);
+  await expect(page.locator("#hourlyPoints .hour-point")).toHaveCount(await page.evaluate(() => new Date().getHours() || 24));
   await expect.poll(() => page.locator(".hourly-chart-scroll").evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
   await page.getByRole("tab", { name: "明细" }).click();
   await expect(page.getByRole("heading", { name: "Session 明细" })).toBeVisible();

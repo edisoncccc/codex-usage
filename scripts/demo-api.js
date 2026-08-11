@@ -50,6 +50,7 @@
   const pad = (value) => String(value).padStart(2, "0");
   const dateKey = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
   const hourKey = (date) => `${dateKey(date)}T${pad(date.getHours())}`;
+  const rangeDate = (value) => new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00` : value);
   const scaledUsage = (usage, multiplier) => Object.fromEntries(Object.entries(usage).map(([key, value]) => [key, Math.round(value * multiplier)]));
   const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {
     status,
@@ -82,8 +83,8 @@
   function dailyPoints(url) {
     const since = url.searchParams.get("since");
     const until = url.searchParams.get("until");
-    const start = since ? new Date(`${since}T00:00:00`) : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
-    const end = until ? new Date(`${until}T00:00:00`) : new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const start = since ? rangeDate(since) : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
+    const end = until ? rangeDate(until) : new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
     const points = [];
     let index = 0;
     for (let date = new Date(start); date < end && index < 120; date.setDate(date.getDate() + 1), index++) {
@@ -216,7 +217,7 @@
     const endpoint = url.pathname.slice(url.pathname.indexOf("/api/v1/"));
     const method = String(init.method || (typeof input !== "string" && input.method) || "GET").toUpperCase();
     if (endpoint === "/api/v1/status") return jsonResponse({
-      version: "2.3.0-demo", scanning: false,
+      version: "2.3.1-demo", scanning: false,
       status: {
         machine: { id: "synthetic-machine", label: "Synthetic Windows · demo", hostname: "synthetic-host", os: "windows", arch: "amd64" },
         last_scan: now.toISOString(), accounting_mode: "jsonl_only", otel_active: false,

@@ -108,6 +108,8 @@ const state = {
   status: null,
   overview: null,
   hourlyLoaded: false,
+  hourlyDate: "",
+  hourlyNavigationDirection: 0,
   hourlyPoints: [],
   hourlyPointDate: "",
   pulsePoints: [],
@@ -123,7 +125,7 @@ const state = {
   statusQualityNotes: [],
   dataQualityNotes: [],
   sessionSearch: "",
-  requestSerial: { overview: 0, hourly: 0, daily: 0, day: 0, breakdown: 0, sessions: 0, estimates: 0 }
+  requestSerial: { overview: 0, hourly: 0, hourlyContext: 0, daily: 0, day: 0, breakdown: 0, sessions: 0, estimates: 0 }
 };
 
 const responseCache = new Map();
@@ -135,6 +137,7 @@ let cacheGeneration = 0;
 let statusPollTimer = null;
 let statusPollRunning = false;
 let sessionSearchTimer = null;
+let hourlyContextTimer = null;
 
 const reducedMotion = () => displayPreferences.motion === "reduce" || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const pad2 = (value) => String(value).padStart(2, "0");
@@ -153,17 +156,32 @@ const emptyUsage = () => ({ input: 0, cached_input: 0, cache_write_input: 0, out
 const usageTotal = (usage = {}) => Number(usage.total || (Number(usage.input || 0) + Number(usage.output || 0)) || 0);
 const hourKey = (date) => `${dateKey(date)}T${pad2(date.getHours())}`;
 
-function hourlyWindows(now = new Date()) {
+function latestCompleteHour(now = new Date()) {
   const currentHour = new Date(now);
   currentHour.setMinutes(0, 0, 0);
-  const previousStart = new Date(currentHour.getTime() - 60 * 60_000);
+  return new Date(currentHour.getTime() - 60 * 60_000);
+}
+
+function normalizeHourlyDate(value, now = new Date()) {
+  const fallback = dateKey(latestCompleteHour(now));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return fallback;
+  const parsed = dateFromKey(value);
+  if (Number.isNaN(parsed.getTime()) || dateKey(parsed) !== value || value > dateKey(now)) return fallback;
+  return value;
+}
+
+function hourlyWindow(selectedDate = state.hourlyDate, now = new Date()) {
+  const date = normalizeHourlyDate(selectedDate, now);
+  const chartStart = dateFromKey(date);
+  const dayEnd = addDays(chartStart, 1);
+  const currentHour = new Date(now);
+  currentHour.setMinutes(0, 0, 0);
+  const chartEnd = date === dateKey(now) && currentHour < dayEnd ? currentHour : dayEnd;
   return {
-    chartStart: new Date(currentHour.getTime() - 24 * 60 * 60_000),
-    chartEnd: currentHour,
-    previousStart,
-    previousEnd: currentHour,
-    rollingStart: new Date(now.getTime() - 60 * 60_000),
-    rollingEnd: now
+    date,
+    chartStart,
+    chartEnd,
+    completeHours: Math.max(0, Math.round((chartEnd.getTime() - chartStart.getTime()) / 60 / 60_000))
   };
 }
 
@@ -178,7 +196,7 @@ function formatHourWindow(start, end) {
 
 function fillCompleteHours(rawPoints, windows) {
   const byHour = new Map((rawPoints || []).map((point) => [point.date, point]));
-  return Array.from({ length: 24 }, (_, index) => {
+  return Array.from({ length: windows.completeHours }, (_, index) => {
     const start = new Date(windows.chartStart.getTime() + index * 60 * 60_000);
     const existing = byHour.get(hourKey(start));
     return { date: hourKey(start), start, usage: existing?.usage || emptyUsage() };
@@ -488,85 +506,233 @@ async function loadOverview({ preserve = false } = {}) {
 
 async function loadHourlyUsage({ preserve = false } = {}) {
   const serial = ++state.requestSerial.hourly;
-  const windows = hourlyWindows();
+  clearTimeout(hourlyContextTimer);
+  state.requestSerial.hourlyContext += 1;
+  const windows = hourlyWindow();
+  state.hourlyDate = windows.date;
+  syncHourlyNavigator(windows);
+  const chart = $("#hourlyChart");
+  const summary = $(".hourly-summary");
+  const context = $("#hourlyContext");
   if (!preserve) {
     setLoading($("#hourlyTotal"));
     $("#hourlyLedger").innerHTML = `<span class="hourly-placeholder">${escapeHTML(t("common.loading"))}</span>`;
+    setLoading($("#hourlyCost"));
+    $("#hourlyCostNote").textContent = t("hourly.costNote");
+    $("#hourlyModels").innerHTML = `<span class="hourly-placeholder">${escapeHTML(t("common.loading"))}</span>`;
+    $("#hourlyCostCoverage").textContent = "—";
+    $("#hourlyCostCoverageNote").textContent = "—";
     $("#hourlyLine").innerHTML = "";
     $("#hourlyAxis").innerHTML = "";
     $("#hourlyPoints").innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
-    $("#hourPointInspector").innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
+  } else {
+    chart.classList.add("is-updating");
+    summary.classList.add("is-updating");
+    context.classList.add("is-updating");
   }
+  summary.setAttribute("aria-busy", "true");
   $("#trendHourlyPane").setAttribute("aria-busy", "true");
   try {
-    const chartPromise = api(apiURL("/api/v1/timeseries", {
+    const series = await api(apiURL("/api/v1/timeseries", {
       since: windows.chartStart.toISOString(),
       until: windows.chartEnd.toISOString(),
       bucket: "hour"
     }));
-    const rollingPromise = api(apiURL("/api/v1/summary", {
-      since: windows.rollingStart.toISOString(),
-      until: windows.rollingEnd.toISOString()
-    }));
-    const [series, rolling] = await Promise.all([chartPromise, rollingPromise]);
     if (serial !== state.requestSerial.hourly) return;
     state.hourlyPoints = fillCompleteHours(series.points || [], windows);
     state.hourlyLoaded = true;
-    renderHourlyUsage(state.hourlyPoints, rolling, windows);
+    renderHourlyUsage(state.hourlyPoints, windows);
+    animateHourlyChart(state.hourlyNavigationDirection);
+    state.hourlyNavigationDirection = 0;
+    prefetchHourlyNeighbors(windows);
   } catch (error) {
-    if (serial === state.requestSerial.hourly) toast(t("dynamic.hourlyError", { error: error.message }), true);
+    if (serial === state.requestSerial.hourly) {
+      state.hourlyPoints = [];
+      renderHourlyUsage([], windows);
+      state.hourlyNavigationDirection = 0;
+      toast(t("dynamic.hourlyError", { error: error.message }), true);
+    }
   } finally {
-    if (serial === state.requestSerial.hourly) $("#trendHourlyPane").removeAttribute("aria-busy");
+    if (serial === state.requestSerial.hourly) {
+      chart.classList.remove("is-updating");
+      summary.classList.remove("is-updating");
+      summary.removeAttribute("aria-busy");
+      $("#trendHourlyPane").removeAttribute("aria-busy");
+    }
   }
 }
 
-function renderHourlyUsage(points, rolling, windows) {
-  const usage = rolling?.usage || emptyUsage();
-  const total = usageTotal(usage);
-  const label = formatHourWindow(windows.rollingStart, windows.rollingEnd);
-  $("#hourlyWindowLabel").textContent = label;
+function syncHourlyNavigator(windows) {
+  const picker = $("#hourlyDatePicker");
+  picker.value = windows.date;
+  picker.max = todayKey();
+  syncDatePickerDisplay("hourlyDate", windows.date);
+  $("#nextHourDay").disabled = windows.date >= todayKey();
+  $("#currentHourDay").disabled = windows.date === todayKey();
+  const displayDate = i18n.formatDate(windows.chartStart, { year: "numeric", month: "long", day: "numeric" });
+  $("#hourlyCaption").textContent = t("hourly.completeHours", { date: displayDate, count: windows.completeHours });
+  $("#hourlyPoints").setAttribute("aria-label", t("hourly.rulerAria", { date: displayDate }));
+}
+
+function prefetchHourlyNeighbors(windows) {
+  const dates = [dateKey(addDays(windows.date, -1)), dateKey(addDays(windows.date, 1))]
+    .filter((value) => value <= todayKey());
+  for (const date of dates) {
+    const neighbor = hourlyWindow(date);
+    api(apiURL("/api/v1/timeseries", {
+      since: neighbor.chartStart.toISOString(),
+      until: neighbor.chartEnd.toISOString(),
+      bucket: "hour"
+    })).catch(() => {});
+  }
+}
+
+function animateHourlyChart(direction) {
+  const chart = $("#hourlyChart");
+  chart.classList.remove("enter-previous", "enter-next", "is-updating");
+  if (!direction || reducedMotion()) return;
+  chart.classList.add(direction < 0 ? "enter-previous" : "enter-next");
+  requestAnimationFrame(() => requestAnimationFrame(() => chart.classList.remove("enter-previous", "enter-next")));
+}
+
+function navigateHourlyDate(value, direction = 0) {
+  const next = normalizeHourlyDate(value);
+  if (next === state.hourlyDate && state.hourlyLoaded) {
+    syncHourlyNavigator(hourlyWindow(next));
+    return;
+  }
+  state.hourlyNavigationDirection = direction || (next < state.hourlyDate ? -1 : 1);
+  state.hourlyDate = next;
+  state.hourlyPointDate = "";
+  syncHourlyNavigator(hourlyWindow(next));
+  loadHourlyUsage({ preserve: state.hourlyLoaded });
+}
+
+function renderHourlySelection(point) {
   const totalNode = $("#hourlyTotal");
+  if (!point) {
+    $("#hourlyWindowLabel").textContent = "—";
+    totalNode.textContent = "—";
+    totalNode.removeAttribute("title");
+    totalNode.classList.remove("loading");
+    $("#hourlyLedger").innerHTML = `<span class="hourly-placeholder">${escapeHTML(t("dynamic.hourlyEmpty"))}</span>`;
+    return;
+  }
+  const usage = point.usage || emptyUsage();
+  const total = usageTotal(usage);
+  $("#hourlyWindowLabel").textContent = formatHourWindow(point.start, new Date(point.start.getTime() + 60 * 60_000));
   totalNode.textContent = formatToken(total);
   totalNode.title = `${fullToken(total)} Total Token`;
   totalNode.classList.remove("loading");
   $("#hourlyLedger").innerHTML = [
-    ["Input", usage.input], ["Cached", usage.cached_input], ["Cache Write", usage.cache_write_input],
-    ["Output", usage.output], ["Reasoning", usage.reasoning_output]
-  ].map(([name, value]) => `<span><small>${name}</small><strong title="${fullToken(value)}">${formatToken(value)}</strong></span>`).join("");
-  renderHourlyLine(points);
-  $("#trendHourlyPane").title = t("hourly.updated", { time: localTime(new Date().toISOString()) });
+    ["hourlyInput", "Input", usage.input], ["hourlyCached", "Cached", usage.cached_input],
+    ["hourlyCacheWrite", "Cache Write", usage.cache_write_input], ["hourlyOutput", "Output", usage.output],
+    ["hourlyReasoning", "Reasoning", usage.reasoning_output]
+  ].map(([id, name, value]) => `<span><small>${name}</small><strong id="${id}" title="${fullToken(value)}">${formatToken(value)}</strong></span>`).join("");
 }
 
-function renderHourlyPointInspector(point) {
-  const inspector = $("#hourPointInspector");
-  if (!point) {
-    inspector.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.hourlyEmpty"))}</div>`;
+function finishHourlyContextUpdate() {
+  const context = $("#hourlyContext");
+  context.classList.remove("is-updating");
+  context.removeAttribute("aria-busy");
+}
+
+function renderHourlyContext(report, point) {
+  const estimate = report?.summary || {};
+  const pointUsage = point?.usage || emptyUsage();
+  const hasUsage = usageTotal(pointUsage) > 0 || estimateTokens(estimate) > 0;
+  const pricedTokens = Number(estimate.priced_tokens || 0);
+  const costNode = $("#hourlyCost");
+  costNode.textContent = !hasUsage ? formatUSD(0)
+    : estimateTokens(estimate) && !pricedTokens ? t("dynamic.unpriced")
+      : estimateDisplay(estimate);
+  costNode.title = hasUsage ? `${formatUSD(estimate.usd)} · ${estimateLabel(estimate)}` : t("hourly.noUsage");
+  costNode.classList.remove("loading");
+  const reasons = reasonSummary(estimate);
+  $("#hourlyCostNote").textContent = t("hourly.costNote");
+  $("#hourlyCostNote").title = reasons || t("hourly.costNote");
+
+  const models = (report?.models || []).filter((item) => usageTotal(item.usage) > 0);
+  const visibleModels = models.slice(0, 3);
+  $("#hourlyModels").innerHTML = visibleModels.length ? visibleModels.map((item) => {
+    const tokens = usageTotal(item.usage);
+    const modelEstimate = item.estimate || {};
+    const modelCost = estimateTokens(modelEstimate) && !Number(modelEstimate.priced_tokens || 0)
+      ? t("dynamic.unpriced") : estimateDisplay(modelEstimate);
+    return `<span class="hourly-model-chip" title="${escapeHTML(`${item.key} · ${fullToken(tokens)} Token · ${modelCost}`)}"><strong>${escapeHTML(item.key || t("common.unknownModel"))}</strong><small>${escapeHTML(`${formatToken(tokens)} · ${modelCost}`)}</small></span>`;
+  }).join("") + (models.length > visibleModels.length ? `<span class="hourly-model-more">${escapeHTML(t("hourly.moreModels", { count: i18n.formatNumber(models.length - visibleModels.length) }))}</span>` : "")
+    : `<span class="hourly-placeholder">${escapeHTML(t("hourly.noModels"))}</span>`;
+
+  $("#hourlyCostCoverage").textContent = hasUsage ? formatPercent(estimate.coverage_ratio) : "—";
+  $("#hourlyCostCoverageNote").textContent = !hasUsage ? t("hourly.noUsage")
+    : Number(estimate.unpriced_tokens || 0) > 0
+      ? t("dynamic.unpricedSuffix", { tokens: formatToken(estimate.unpriced_tokens) })
+      : t("hourly.catalog", { date: report?.catalog_as_of || "—" });
+  finishHourlyContextUpdate();
+}
+
+function renderHourlyContextError(error) {
+  $("#hourlyCost").textContent = "—";
+  $("#hourlyCost").removeAttribute("title");
+  $("#hourlyCost").classList.remove("loading");
+  $("#hourlyCostNote").textContent = t("dynamic.hourlyContextError", { error: error.message });
+  $("#hourlyCostNote").removeAttribute("title");
+  $("#hourlyModels").innerHTML = `<span class="hourly-placeholder">—</span>`;
+  $("#hourlyCostCoverage").textContent = "—";
+  $("#hourlyCostCoverageNote").textContent = "—";
+  finishHourlyContextUpdate();
+}
+
+function scheduleHourlyContext(point, { immediate = false } = {}) {
+  clearTimeout(hourlyContextTimer);
+  const serial = ++state.requestSerial.hourlyContext;
+  const context = $("#hourlyContext");
+  context.classList.add("is-updating");
+  context.setAttribute("aria-busy", "true");
+  if (!point || usageTotal(point.usage) === 0) {
+    renderHourlyContext({ summary: {}, models: [] }, point);
     return;
   }
-  const usage = point.usage || emptyUsage();
-  const end = new Date(point.start.getTime() + 60 * 60_000);
-  const values = [
-    ["hourPointWindow", t("hourly.pointWindow"), formatHourWindow(point.start, end), ""],
-    ["hourPointTotal", "Total", formatToken(usageTotal(usage)), fullToken(usageTotal(usage))],
-    ["hourPointInput", "Input", formatToken(usage.input), fullToken(usage.input)],
-    ["hourPointCached", "Cached", formatToken(usage.cached_input), fullToken(usage.cached_input)],
-    ["hourPointCacheWrite", "Cache Write", formatToken(usage.cache_write_input), fullToken(usage.cache_write_input)],
-    ["hourPointOutput", "Output", formatToken(usage.output), fullToken(usage.output)],
-    ["hourPointReasoning", "Reasoning", formatToken(usage.reasoning_output), fullToken(usage.reasoning_output)]
-  ];
-  inspector.innerHTML = values.map(([id, label, value, title]) => `<div><span>${escapeHTML(label)}</span><strong id="${id}"${title ? ` title="${escapeHTML(title)}"` : ""}>${escapeHTML(value)}</strong></div>`).join("");
+  const load = async () => {
+    const end = new Date(point.start.getTime() + 60 * 60_000);
+    try {
+      const report = await api(apiURL("/api/v1/cost-estimate", {
+        since: point.start.toISOString(),
+        until: end.toISOString()
+      }));
+      if (serial !== state.requestSerial.hourlyContext || state.hourlyPointDate !== point.date) return;
+      renderHourlyContext(report, point);
+    } catch (error) {
+      if (serial !== state.requestSerial.hourlyContext || state.hourlyPointDate !== point.date) return;
+      renderHourlyContextError(error);
+      toast(t("dynamic.hourlyContextError", { error: error.message }), true);
+    }
+  };
+  if (immediate) void load();
+  else hourlyContextTimer = setTimeout(() => { void load(); }, 110);
+}
+
+function renderHourlyUsage(points, windows) {
+  syncHourlyNavigator(windows);
+  renderHourlyLine(points);
+  $("#trendHourlyPane").title = t("hourly.updated", { time: localTime(new Date().toISOString()) });
 }
 
 function renderHourlyLine(points) {
   const line = $("#hourlyLine");
   const pointLayer = $("#hourlyPoints");
   const axis = $("#hourlyAxis");
-  pointLayer.setAttribute("aria-label", t("hourly.rulerAria"));
+  cancelAnimationFrame(pointLayer.hourlyScrubFrame || 0);
+  const selectedWindow = hourlyWindow(state.hourlyDate);
+  const displayDate = i18n.formatDate(selectedWindow.chartStart, { year: "numeric", month: "long", day: "numeric" });
+  pointLayer.setAttribute("aria-label", t("hourly.rulerAria", { date: displayDate }));
   if (!points.length) {
     line.innerHTML = "";
     axis.innerHTML = "";
+    pointLayer.onpointermove = null;
     pointLayer.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.hourlyEmpty"))}</div>`;
-    renderHourlyPointInspector(null);
+    renderHourlySelection(null);
+    scheduleHourlyContext(null, { immediate: true });
     return;
   }
   const plot = { left: 28, right: 972, top: 16, bottom: 142 };
@@ -579,7 +745,7 @@ function renderHourlyLine(points) {
   });
   const polyline = coordinates.map(({ x, y }) => `${x.toFixed(2)},${y.toFixed(2)}`).join(" ");
   const area = `M ${coordinates[0].x.toFixed(2)} ${plot.bottom} L ${polyline.replaceAll(",", " ")} L ${coordinates.at(-1).x.toFixed(2)} ${plot.bottom} Z`;
-  line.innerHTML = `<path class="hour-line-area" d="${area}"></path><polyline class="hour-line-path" points="${polyline}"></polyline>`;
+  line.innerHTML = `<path class="hour-line-area" d="${area}"></path><polyline class="hour-line-path" points="${polyline}"></polyline><line class="hour-selection-guide" id="hourSelectionGuide" x1="0" x2="0" y1="${plot.top}" y2="${plot.bottom}"></line>`;
 
   const availableDates = new Set(points.map((point) => point.date));
   if (!state.hourlyPointDate || !availableDates.has(state.hourlyPointDate)) state.hourlyPointDate = points.at(-1).date;
@@ -594,7 +760,7 @@ function renderHourlyLine(points) {
     return `<time class="${edge}" datetime="${escapeHTML(point.date)}:00" style="--label-x:${(x / 10).toFixed(3)}%">${escapeHTML(clock)}</time>`;
   }).join("");
 
-  const selectPoint = (index) => {
+  const selectPoint = (index, { immediateContext = false } = {}) => {
     const selectedPoint = points[index];
     if (!selectedPoint) return;
     state.hourlyPointDate = selectedPoint.date;
@@ -604,13 +770,17 @@ function renderHourlyLine(points) {
       button.setAttribute("aria-pressed", String(selected));
       button.tabIndex = selected ? 0 : -1;
     });
-    renderHourlyPointInspector(selectedPoint);
+    const guide = $("#hourSelectionGuide");
+    guide?.setAttribute("x1", coordinates[index].x.toFixed(2));
+    guide?.setAttribute("x2", coordinates[index].x.toFixed(2));
+    renderHourlySelection(selectedPoint);
+    scheduleHourlyContext(selectedPoint, { immediate: immediateContext });
   };
   $$('[data-hour-point]', pointLayer).forEach((button) => {
     const index = Number(button.dataset.hourPoint);
     button.addEventListener("mouseenter", () => selectPoint(index));
-    button.addEventListener("focus", () => selectPoint(index));
-    button.addEventListener("click", () => selectPoint(index));
+    button.addEventListener("focus", () => selectPoint(index, { immediateContext: true }));
+    button.addEventListener("click", () => selectPoint(index, { immediateContext: true }));
     button.addEventListener("keydown", (event) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
@@ -618,7 +788,19 @@ function renderHourlyLine(points) {
       $(`[data-hour-point="${next}"]`, pointLayer)?.focus();
     });
   });
-  renderHourlyPointInspector(points.find((point) => point.date === state.hourlyPointDate));
+  let scrubIndex = -1;
+  pointLayer.onpointermove = (event) => {
+    if (event.pointerType && event.pointerType !== "mouse" && event.pointerType !== "pen") return;
+    const rect = pointLayer.getBoundingClientRect();
+    if (!rect.width) return;
+    const localX = (event.clientX - rect.left) / rect.width * 1000;
+    const next = coordinates.reduce((best, coordinate, index) => Math.abs(coordinate.x - localX) < Math.abs(coordinates[best].x - localX) ? index : best, 0);
+    if (next === scrubIndex) return;
+    scrubIndex = next;
+    cancelAnimationFrame(pointLayer.hourlyScrubFrame || 0);
+    pointLayer.hourlyScrubFrame = requestAnimationFrame(() => selectPoint(next));
+  };
+  selectPoint(Math.max(0, points.findIndex((point) => point.date === state.hourlyPointDate)), { immediateContext: true });
   requestAnimationFrame(() => {
     const selected = $('[data-hour-point].selected', pointLayer);
     const scroller = $(".hourly-chart-scroll");
@@ -766,6 +948,7 @@ async function loadDaily({ preserve = false } = {}) {
   const serial = ++state.requestSerial.daily;
   const bounds = monthBounds();
   $("#monthLabel").textContent = i18n.formatDate(state.monthCursor, { year: "numeric", month: "long" });
+  syncDailyNavigator();
   if (!preserve) $("#calendarGrid").innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.monthLoading"))}</div>`;
   $("#view-daily").setAttribute("aria-busy", "true");
   try {
@@ -791,6 +974,7 @@ async function loadDaily({ preserve = false } = {}) {
     state.dailyInitialSelection = false;
     state.monthReport = report;
     chooseDailySelection(report.points || []);
+    syncDailyNavigator();
     renderCalendar(report);
     if (state.selectedDate) loadDailySelection(state.selectedDate);
   } catch (error) {
@@ -801,14 +985,64 @@ async function loadDaily({ preserve = false } = {}) {
 }
 
 function chooseDailySelection(points) {
-  const dates = new Set(points.map((point) => point.date));
-  if (state.selectedDate && dates.has(state.selectedDate)) return;
+  const selected = state.selectedDate && dateFromKey(state.selectedDate);
+  if (selected && !Number.isNaN(selected.getTime())
+    && selected.getFullYear() === state.monthCursor.getFullYear()
+    && selected.getMonth() === state.monthCursor.getMonth()) return;
   const today = points.find((point) => point.date === todayKey());
   if (today && usageTotal(today.usage) > 0) {
     state.selectedDate = today.date;
     return;
   }
   state.selectedDate = [...points].reverse().find((point) => usageTotal(point.usage) > 0)?.date || today?.date || points[0]?.date || "";
+}
+
+function syncDailyNavigator() {
+  const picker = $("#dailyDatePicker");
+  const fallback = dateKey(state.monthCursor);
+  picker.value = state.selectedDate || fallback;
+  picker.max = todayKey();
+  syncDatePickerDisplay("dailyDate", picker.value);
+  const currentMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  $("#nextMonth").disabled = state.monthCursor >= currentMonth;
+  $("#currentDay").disabled = state.selectedDate === todayKey();
+}
+
+function syncDatePickerDisplay(prefix, value) {
+  const date = dateFromKey(value);
+  if (!value || Number.isNaN(date.getTime()) || dateKey(date) !== value) return;
+  $(`#${prefix}Year`).textContent = i18n.formatDate(date, { year: "numeric" });
+  $(`#${prefix}Label`).textContent = i18n.formatDate(date, { month: "short", day: "numeric" });
+}
+
+function enableNativeDatePicker(picker) {
+  const open = () => {
+    try { picker.showPicker?.(); } catch {}
+  };
+  picker.addEventListener("click", open);
+  picker.addEventListener("keydown", (event) => {
+    if (!["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    open();
+  });
+}
+
+function navigateDailyDate(value) {
+  const parsed = dateFromKey(value);
+  if (!value || Number.isNaN(parsed.getTime()) || dateKey(parsed) !== value || value > todayKey()) {
+    syncDailyNavigator();
+    return;
+  }
+  const sameMonth = parsed.getFullYear() === state.monthCursor.getFullYear() && parsed.getMonth() === state.monthCursor.getMonth();
+  state.dailyInitialSelection = false;
+  if (sameMonth && state.monthReport) {
+    selectCalendarDate(value);
+    syncDailyNavigator();
+    return;
+  }
+  state.monthCursor = new Date(parsed.getFullYear(), parsed.getMonth(), 1);
+  state.selectedDate = value;
+  loadDaily();
 }
 
 function renderCalendar(report) {
@@ -856,8 +1090,12 @@ function calendarKeydown(event) {
 }
 
 function selectCalendarDate(date) {
-  if (!date || date === state.selectedDate) return;
+  if (!date || date === state.selectedDate) {
+    syncDailyNavigator();
+    return;
+  }
   state.selectedDate = date;
+  syncDailyNavigator();
   $$('[data-calendar-date]').forEach((button) => {
     const selected = button.dataset.calendarDate === date;
     button.classList.toggle("selected", selected);
@@ -1334,6 +1572,11 @@ function setupEvents() {
   $("#brandButton").addEventListener("click", () => switchView("overview"));
   $$('[data-trend-view]').forEach((button) => button.addEventListener("click", () => switchTrendView(button.dataset.trendView)));
   $("#usageTrendPanel").querySelector('[role="tablist"]').addEventListener("keydown", (event) => tablistKeydown(event, $$('[data-trend-view]'), (button) => switchTrendView(button.dataset.trendView)));
+  $("#previousHourDay").addEventListener("click", () => navigateHourlyDate(dateKey(addDays(state.hourlyDate, -1)), -1));
+  $("#nextHourDay").addEventListener("click", () => navigateHourlyDate(dateKey(addDays(state.hourlyDate, 1)), 1));
+  $("#currentHourDay").addEventListener("click", () => navigateHourlyDate(todayKey(), 1));
+  $("#hourlyDatePicker").addEventListener("change", (event) => navigateHourlyDate(event.target.value));
+  enableNativeDatePicker($("#hourlyDatePicker"));
   $$('[data-overview-range]').forEach((button) => button.addEventListener("click", () => {
     state.overviewRange = button.dataset.overviewRange;
     $$('[data-overview-range]').forEach((item) => {
@@ -1375,6 +1618,9 @@ function setupEvents() {
     state.selectedDate = "";
     loadDaily();
   });
+  $("#dailyDatePicker").addEventListener("change", (event) => navigateDailyDate(event.target.value));
+  enableNativeDatePicker($("#dailyDatePicker"));
+  $("#currentDay").addEventListener("click", () => navigateDailyDate(todayKey()));
   $("#filterButton").addEventListener("click", () => {
     syncFilterForm();
     openDialog($("#filterSheet"));
