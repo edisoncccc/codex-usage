@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,6 +84,8 @@ func TestDashboardAPIAndExport(t *testing.T) {
 		"/api/v1/breakdown?dimension=model",
 		"/api/v1/dimensions",
 		"/api/v1/sessions?limit=10",
+		"/api/v1/sessions?limit=10&include_estimate=0",
+		"/api/v1/session-estimates?limit=10",
 		"/api/v1/cost-estimate?bucket=day",
 		"/api/v1/pricing",
 		"/api/v1/export?format=json",
@@ -167,6 +170,63 @@ func TestDashboardAPIAndExport(t *testing.T) {
 		t.Fatalf("unexpected searched session estimate: %#v", sessionPayload.Items)
 	}
 
+	response, err = http.Get(httpServer.URL + "/api/v1/sessions?limit=10&q=private-project&include_estimate=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var baseSessionPayload struct {
+		Items []struct {
+			SessionID string          `json:"session_id"`
+			Estimate  json.RawMessage `json:"estimate"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&baseSessionPayload); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(baseSessionPayload.Items) != 1 || baseSessionPayload.Items[0].SessionID != "session-1" || baseSessionPayload.Items[0].Estimate != nil {
+		t.Fatalf("base sessions unexpectedly included pricing: %#v", baseSessionPayload.Items)
+	}
+	if timing := response.Header.Get("Server-Timing"); !strings.Contains(timing, `sessions;`) || !strings.Contains(timing, `desc="hit"`) {
+		t.Fatalf("base sessions timing did not report a cache hit: %q", timing)
+	}
+
+	response, err = http.Get(httpServer.URL + "/api/v1/session-estimates?limit=10&q=private-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var estimatePayload struct {
+		Items []sessionEstimateResponseItem `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&estimatePayload); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(estimatePayload.Items) != 1 || estimatePayload.Items[0].SessionID != "session-1" || estimatePayload.Items[0].Estimate.PricedTokens != 100 {
+		t.Fatalf("unexpected deferred session estimate: %#v", estimatePayload.Items)
+	}
+	if timing := response.Header.Get("Server-Timing"); !strings.Contains(timing, `pricing;`) || !strings.Contains(timing, `desc="hit"`) {
+		t.Fatalf("deferred estimate timing did not report a cache hit: %q", timing)
+	}
+
+	response, err = http.Get(httpServer.URL + "/api/v1/session-estimates?limit=10&session_id=session-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unpricedSessionPayload struct {
+		Items []sessionEstimateResponseItem `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&unpricedSessionPayload); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(unpricedSessionPayload.Items) != 1 || unpricedSessionPayload.Items[0].Estimate.UnpricedTokens != 20 {
+		t.Fatalf("unexpected unpriced session estimate: %#v", unpricedSessionPayload.Items)
+	}
+
 	request, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/api/v1/pricing/overrides", strings.NewReader(
 		`{"overrides":{"codex-auto-review":{"alias_of":"gpt-5.6-luna"}}}`,
 	))
@@ -196,6 +256,22 @@ func TestDashboardAPIAndExport(t *testing.T) {
 		t.Fatalf("override was not applied without restart: %#v", overriddenCost.Summary)
 	}
 
+	response, err = http.Get(httpServer.URL + "/api/v1/session-estimates?limit=10&session_id=session-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var overriddenSessionPayload struct {
+		Items []sessionEstimateResponseItem `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&overriddenSessionPayload); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if len(overriddenSessionPayload.Items) != 1 || overriddenSessionPayload.Items[0].Estimate.PricedTokens != 20 || overriddenSessionPayload.Items[0].Estimate.UnpricedTokens != 0 {
+		t.Fatalf("pricing override did not invalidate session estimate cache: %#v", overriddenSessionPayload.Items)
+	}
+
 	request, _ = http.NewRequest(http.MethodPost, httpServer.URL+"/api/v1/rescan", strings.NewReader("{}"))
 	request.Header.Set("Origin", "https://evil.example")
 	response, err = http.DefaultClient.Do(request)
@@ -216,6 +292,101 @@ func TestDashboardAPIAndExport(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin pricing update was not blocked: %d", response.StatusCode)
+	}
+}
+
+func TestSafeOriginRequiresSameLoopbackOrigin(t *testing.T) {
+	tests := []struct {
+		name         string
+		target       string
+		origin       string
+		secFetchSite string
+		allowed      bool
+	}{
+		{name: "same IPv4 origin", target: "http://127.0.0.1:43189/api/v1/rescan", origin: "http://127.0.0.1:43189", allowed: true},
+		{name: "same localhost origin", target: "http://localhost:43189/api/v1/rescan", origin: "http://localhost:43189", allowed: true},
+		{name: "different loopback port", target: "http://127.0.0.1:43189/api/v1/rescan", origin: "http://127.0.0.1:43200"},
+		{name: "HTTPS origin for HTTP service", target: "http://127.0.0.1:43189/api/v1/rescan", origin: "https://127.0.0.1:43189"},
+		{name: "non-loopback origin", target: "http://127.0.0.1:43189/api/v1/rescan", origin: "http://example.test:43189"},
+		{name: "origin with path", target: "http://127.0.0.1:43189/api/v1/rescan", origin: "http://127.0.0.1:43189/path"},
+		{name: "non-browser client", target: "http://127.0.0.1:43189/api/v1/rescan", allowed: true},
+		{name: "cross-site request without origin", target: "http://127.0.0.1:43189/api/v1/rescan", secFetchSite: "cross-site"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, test.target, nil)
+			if test.origin != "" {
+				request.Header.Set("Origin", test.origin)
+			}
+			if test.secFetchSite != "" {
+				request.Header.Set("Sec-Fetch-Site", test.secFetchSite)
+			}
+			if got := safeOrigin(request); got != test.allowed {
+				t.Fatalf("safeOrigin()=%v, want %v", got, test.allowed)
+			}
+		})
+	}
+}
+
+func TestRescanRequiresExplicitRebuildApproval(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "approval.jsonl")
+	meta := `{"timestamp":"2026-08-09T01:00:00Z","type":"session_meta","payload":{"id":"approval-session","cwd":"C:\\work"}}` + "\n"
+	tokens := `{"timestamp":"2026-08-09T01:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":80,"output_tokens":20,"total_tokens":100},"last_token_usage":{"input_tokens":80,"output_tokens":20,"total_tokens":100}}}}` + "\n"
+	if err := os.WriteFile(path, []byte(meta+tokens), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	scanner := &usage.Scanner{Store: st}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Store: st, Scanner: scanner, Homes: func() ([]string, error) { return []string{home}, nil }}
+	httpServer := httptest.NewServer(srv.Handler())
+	defer httpServer.Close()
+
+	response, err := http.Post(httpServer.URL+"/api/v1/rescan", "application/json", strings.NewReader(`{"rebuild":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conflict map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&conflict); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusConflict || conflict["rebuild_required"] != true {
+		t.Fatalf("rescan did not request approval: status=%d payload=%#v", response.StatusCode, conflict)
+	}
+	summary, _ := st.Summary(context.Background(), model.Filter{})
+	if summary.GrandTotal != 100 {
+		t.Fatalf("history changed before approval: %+v", summary)
+	}
+
+	response, err = http.Post(httpServer.URL+"/api/v1/rescan", "application/json", strings.NewReader(`{"rebuild":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("approved rebuild failed: status=%d", response.StatusCode)
+	}
+	summary, _ = st.Summary(context.Background(), model.Filter{})
+	if summary.GrandTotal != 0 {
+		t.Fatalf("approved rebuild did not use current JSONL: %+v", summary)
 	}
 }
 
