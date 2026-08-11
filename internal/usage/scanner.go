@@ -80,19 +80,18 @@ func (s *Scanner) Scan(ctx context.Context, homes []string, rebuild bool) (ScanR
 		if err := s.Store.ResetHistorical(ctx); err != nil {
 			return ScanResult{}, err
 		}
+	} else if reason, required, err := s.Store.HistoricalRebuildReason(ctx); err != nil {
+		return ScanResult{}, err
+	} else if required {
+		rebuildErr := &RebuildRequiredError{Kind: "schema_upgrade_rebuild", Detail: reason}
+		_ = s.Store.AddWarning(ctx, rebuildErr.Kind, rebuildErr.Path, rebuildErr.Error())
+		return ScanResult{Homes: len(homes), Warnings: 1}, rebuildErr
 	}
 	result, err := s.scanPass(ctx, homes)
-	var changed *historicalRewriteError
+	var changed *RebuildRequiredError
 	if errors.As(err, &changed) {
-		if resetErr := s.Store.ResetHistorical(ctx); resetErr != nil {
-			return result, resetErr
-		}
-		result, err = s.scanPass(ctx, homes)
-		if err == nil {
-			result.Warnings++
-			_ = s.Store.AddWarning(ctx, changed.Kind, changed.Path,
-				changed.Detail+"；已清除派生索引并从全部 JSONL 自动重建")
-		}
+		result.Warnings++
+		_ = s.Store.AddWarning(ctx, changed.Kind, changed.Path, changed.Error())
 	}
 	result.ElapsedMillis = time.Since(started).Milliseconds()
 	return result, err
@@ -163,7 +162,7 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, err
 			result.Duplicates += fileResult.Duplicates
 			result.Warnings += fileResult.Warnings
 			if err != nil {
-				var changed *historicalRewriteError
+				var changed *RebuildRequiredError
 				if errors.As(err, &changed) {
 					return result, err
 				}
@@ -188,13 +187,17 @@ type fileScanResult struct {
 	Warnings       int64
 }
 
-type historicalRewriteError struct {
+// RebuildRequiredError means continuing safely requires deleting and deriving
+// the historical ledger again. Detection itself never performs that deletion.
+type RebuildRequiredError struct {
 	Kind   string
 	Path   string
 	Detail string
 }
 
-func (e *historicalRewriteError) Error() string { return e.Detail }
+func (e *RebuildRequiredError) Error() string {
+	return e.Detail + "；现有统计已保留，需要用户确认后才能重建"
+}
 
 func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.SessionInfo, info os.FileInfo) (fileScanResult, error) {
 	var result fileScanResult
@@ -209,10 +212,10 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 		}
 		switch {
 		case cursor.Offset > info.Size() || cursor.Size > info.Size():
-			return result, &historicalRewriteError{Kind: "rollout_truncated", Path: path,
+			return result, &RebuildRequiredError{Kind: "rollout_truncated", Path: path,
 				Detail: fmt.Sprintf("文件从 %d 缩短到 %d", cursor.Size, info.Size())}
 		case cursor.Size == info.Size() && cursor.ModifiedNanos != 0 && cursor.ModifiedNanos != info.ModTime().UnixNano():
-			return result, &historicalRewriteError{Kind: "rollout_rewritten", Path: path,
+			return result, &RebuildRequiredError{Kind: "rollout_rewritten", Path: path,
 				Detail: "文件大小未变但修改时间变化"}
 		}
 		probeBytes := cursor.Size
@@ -224,7 +227,7 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 			return result, hashErr
 		}
 		if cursor.PrefixHash != "" && prefix != cursor.PrefixHash {
-			return result, &historicalRewriteError{Kind: "rollout_rewritten", Path: path,
+			return result, &RebuildRequiredError{Kind: "rollout_rewritten", Path: path,
 				Detail: "文件已在原有扫描范围内重写"}
 		}
 		if cursor.ForkedFromID != "" && cursor.ReplayOffset == 0 && info.Size() > cursor.Size {
@@ -234,7 +237,7 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 			}
 			if inspection.ReplayOffset > 0 {
 				if cursor.Offset > 0 {
-					return result, &historicalRewriteError{Kind: "fork_replay_detected", Path: path,
+					return result, &RebuildRequiredError{Kind: "fork_replay_detected", Path: path,
 						Detail: "fork 文件补全了父线程历史重放边界"}
 				}
 				cursor.Offset = inspection.ReplayOffset
@@ -343,7 +346,7 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 			continue
 		}
 		if parseErr := s.processRecord(ctx, record, recordStart, path, home, meta, &cursor, &result); parseErr != nil {
-			var changed *historicalRewriteError
+			var changed *RebuildRequiredError
 			if errors.As(parseErr, &changed) {
 				return result, parseErr
 			}
@@ -490,7 +493,7 @@ func (s *Scanner) processRecord(
 			// explicit replay boundary.
 			if cursor.ReplayOffset == implicitForkReplayOffset &&
 				(cursor.ForkedFromID == "" || candidateID == cursor.ForkedFromID) {
-				return &historicalRewriteError{Kind: "fork_replay_detected", Path: path,
+				return &RebuildRequiredError{Kind: "fork_replay_detected", Path: path,
 					Detail: "单 metadata fork 后续补全了父线程历史重放边界"}
 			}
 			return nil

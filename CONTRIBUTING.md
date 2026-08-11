@@ -24,6 +24,8 @@ npx playwright install chromium
 npm test
 ```
 
+`npm test` 会在临时目录自动构建并启动真实 Go 二进制；如需复用已有产物，可设置 `CODEX_USAGE_BIN`。
+
 ## Pull Request
 
 1. 从 `main` 创建短生命周期分支。

@@ -5,30 +5,57 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 
 let processHandle;
 let stateDir;
 let codexHomeDir;
+let testBinaryDir;
 let baseURL;
 let dashboardURL;
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+async function buildTestBinary() {
+  testBinaryDir = await mkdtemp(path.join(tmpdir(), "codex-usage-e2e-bin-"));
+  const binary = path.join(testBinaryDir, process.platform === "win32" ? "codex-usage.exe" : "codex-usage");
+  const build = spawn(process.env.GO_BINARY || "go", ["build", "-trimpath", "-o", binary, "./cmd/codex-usage"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+    windowsHide: true
+  });
+  await new Promise((resolve, reject) => {
+    build.once("error", reject);
+    build.once("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`go build failed (code=${code}, signal=${signal || "none"})`));
+    });
+  });
+  return binary;
+}
 
 test.beforeAll(async () => {
-  const binary = process.env.CODEX_USAGE_BIN;
-  if (!binary) throw new Error("CODEX_USAGE_BIN must point to a built codex-usage binary");
+  const binary = process.env.CODEX_USAGE_BIN || await buildTestBinary();
   stateDir = await mkdtemp(path.join(tmpdir(), "codex-usage-e2e-"));
   const port = 45000 + (process.pid % 1000);
   codexHomeDir = await mkdtemp(path.join(tmpdir(), "codex-usage-codex-home-"));
   const codexHome = codexHomeDir;
   const now = new Date();
+  const currentHour = new Date(now);
+  currentHour.setMinutes(0, 0, 0);
+  const previousHourTimestamp = new Date(currentHour.getTime() - 30 * 60_000).toISOString();
   const sessionDir = path.join(codexHome, "sessions", String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0"));
   await mkdir(sessionDir, { recursive: true });
   const timestamp = now.toISOString();
   const fixture = [
-    { timestamp, type: "session_meta", payload: { id: "e2e-session", cwd: "C:\\work\\codex-usage-e2e", originator: "codex_desktop" } },
-    { timestamp, type: "turn_context", payload: { turn_id: "turn-1", cwd: "C:\\work\\codex-usage-e2e", model: "gpt-5.4" } },
+    { timestamp: previousHourTimestamp, type: "session_meta", payload: { id: "e2e-session", cwd: "C:\\work\\codex-usage-e2e", originator: "codex_desktop" } },
+    { timestamp: previousHourTimestamp, type: "turn_context", payload: { turn_id: "turn-1", cwd: "C:\\work\\codex-usage-e2e", model: "gpt-5.4" } },
+    { timestamp: previousHourTimestamp, type: "event_msg", payload: { type: "token_count", info: {
+      total_token_usage: { input_tokens: 48, cached_input_tokens: 12, cache_write_input_tokens: 0, output_tokens: 12, reasoning_output_tokens: 3, total_tokens: 60 },
+      last_token_usage: { input_tokens: 48, cached_input_tokens: 12, cache_write_input_tokens: 0, output_tokens: 12, reasoning_output_tokens: 3, total_tokens: 60 }
+    } } },
     { timestamp, type: "event_msg", payload: { type: "token_count", info: {
       total_token_usage: { input_tokens: 80, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 5, total_tokens: 100 },
-      last_token_usage: { input_tokens: 80, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 5, total_tokens: 100 }
+      last_token_usage: { input_tokens: 32, cached_input_tokens: 8, cache_write_input_tokens: 0, output_tokens: 8, reasoning_output_tokens: 2, total_tokens: 40 }
     } } }
   ];
   await writeFile(path.join(sessionDir, "rollout-e2e.jsonl"), `${fixture.map((item) => JSON.stringify(item)).join("\n")}\n`);
@@ -53,7 +80,7 @@ test.beforeAll(async () => {
     try {
       const response = await fetch(`${baseURL}/healthz`);
       if (response.ok) {
-        const summary = await fetch(`${baseURL}/api/v1/summary?since=today`);
+        const summary = await fetch(`${baseURL}/api/v1/summary?since=7d`);
         if (summary.ok && (await summary.json()).grand_total >= 100) return;
       }
     } catch {}
@@ -73,6 +100,7 @@ test.afterAll(async () => {
   }
   if (stateDir) await rm(stateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   if (codexHomeDir) await rm(codexHomeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  if (testBinaryDir) await rm(testBinaryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test("overview is calm, local-only, and exposes honest cost coverage", async ({ page }) => {
@@ -88,7 +116,14 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   await expect(page.getByRole("heading", { name: "本机用量概览" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "概览" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByText("过去 7 个本地自然日")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "每日脉冲带" })).toBeVisible();
+  const trend = page.locator("#usageTrendPanel");
+  await expect(trend.getByRole("heading", { name: "每日Token用量" })).toBeVisible();
+  await expect(trend.getByRole("tab", { name: "每日" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#trendHourlyPane")).toBeHidden();
+  await expect(page.locator("#trendDailyPane")).toBeVisible();
+  await trend.getByRole("tab", { name: "每小时" }).click();
+  await expect(trend.getByRole("heading", { name: "每小时Token用量" })).toBeVisible();
+  await expect(trend.getByRole("tab", { name: "每小时" })).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#view-overview").getByText("Standard API 等价成本", { exact: true })).toBeVisible();
   await expect(page.locator("#machineId")).not.toHaveText("—");
   await expect(page.locator("#overviewCoverage")).toContainText("已定价 100.0% Token");
@@ -103,6 +138,115 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1440);
   expect(externalRequests).toEqual([]);
   expect(consoleErrors).toEqual([]);
+});
+
+test("hourly usage is fixed to the last 60 minutes and keeps points aligned with the line", async ({ page }) => {
+  const summaryRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/summary" && url.searchParams.has("since") && url.searchParams.has("until")) summaryRequests.push(url);
+  });
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+  const trend = page.locator("#usageTrendPanel");
+  await trend.getByRole("tab", { name: "每小时" }).click();
+  await expect(page.getByRole("heading", { name: "每小时Token用量" })).toBeVisible();
+  await expect(trend.getByText("最近 60 分钟", { exact: true })).toBeVisible();
+  await expect(trend.getByText("上一小时", { exact: true })).toHaveCount(0);
+  await expect(page.locator("[data-hour-range]")).toHaveCount(0);
+  await expect(page.locator("#hourlyTotal")).not.toHaveText("—");
+  await expect(page.locator("#hourlyLine .hour-line-path")).toHaveCount(1);
+  const hourPoints = page.locator("#hourlyPoints .hour-point");
+  await expect(hourPoints).toHaveCount(24);
+  await expect(hourPoints.last()).toHaveClass(/selected/);
+  await expect(page.locator("#hourPointTotal")).toHaveText("60");
+  await hourPoints.first().focus();
+  await expect(hourPoints.first()).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#hourPointTotal")).toHaveText("0");
+  await hourPoints.first().press("End");
+  await expect(hourPoints.last()).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#hourPointTotal")).toHaveText("60");
+  const alignment = await page.evaluate(() => {
+    const svg = document.querySelector("#hourlyLine");
+    const polyline = svg.querySelector(".hour-line-path");
+    const svgRect = svg.getBoundingClientRect();
+    const coordinates = polyline.getAttribute("points").trim().split(/\s+/).map((pair) => pair.split(",").map(Number));
+    return [...document.querySelectorAll("#hourlyPoints .hour-point")].map((button, index) => {
+      const rect = button.getBoundingClientRect();
+      const [x, y] = coordinates[index];
+      return {
+        x: Math.abs(rect.left + rect.width / 2 - (svgRect.left + x / 1000 * svgRect.width)),
+        y: Math.abs(rect.top + rect.height / 2 - (svgRect.top + y / 180 * svgRect.height))
+      };
+    });
+  });
+  expect(Math.max(...alignment.map(({ x }) => x))).toBeLessThan(0.5);
+  expect(Math.max(...alignment.map(({ y }) => y))).toBeLessThan(0.5);
+  const rollingURL = summaryRequests.find((url) => Date.parse(url.searchParams.get("until")) - Date.parse(url.searchParams.get("since")) === 60 * 60 * 1000);
+  expect(rollingURL).toBeTruthy();
+  const rollingSince = Date.parse(rollingURL.searchParams.get("since"));
+  const rollingUntil = Date.parse(rollingURL.searchParams.get("until"));
+  expect(rollingUntil - rollingSince).toBe(60 * 60 * 1000);
+  expect(Math.abs(Date.now() - rollingUntil)).toBeLessThan(10_000);
+  await expect(page.locator("#hourlyWindowLabel")).not.toHaveText("—");
+});
+
+test("view switching exposes the target panel immediately", async ({ page }) => {
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+  const elapsed = await page.evaluate(async () => {
+    const panel = document.querySelector("#view-daily");
+    const start = performance.now();
+    document.querySelector('[data-view="daily"]').click();
+    if (!panel.hidden) return performance.now() - start;
+    await new Promise((resolve) => {
+      const observer = new MutationObserver(() => {
+        if (panel.hidden) return;
+        observer.disconnect();
+        resolve();
+      });
+      observer.observe(panel, { attributes: true, attributeFilter: ["hidden"] });
+    });
+    return performance.now() - start;
+  });
+  expect(elapsed).toBeLessThan(100);
+  await expect(page.locator("#view-daily")).toBeVisible();
+});
+
+test("details renders breakdown before delayed sessions and dimension changes stay local", async ({ page }) => {
+  let sessionRequests = 0;
+  let estimateRequests = 0;
+  await page.route("**/api/v1/sessions?**", async (route) => {
+    sessionRequests++;
+    expect(new URL(route.request().url()).searchParams.get("include_estimate")).toBe("0");
+    await delay(1200);
+    await route.continue();
+  });
+  await page.route("**/api/v1/session-estimates?**", async (route) => {
+    estimateRequests++;
+    await delay(1200);
+    await route.continue();
+  });
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+
+  const started = Date.now();
+  await page.getByRole("tab", { name: "明细" }).click();
+  await expect(page.locator("#detailBreakdown .breakdown-row").first()).toBeVisible({ timeout: 1000 });
+  expect(Date.now() - started).toBeLessThan(1100);
+  await expect(page.locator("#sessionRows")).toContainText("正在加载本机 Session");
+  await expect(page.locator("#sessionRows .session-row").first()).toBeVisible({ timeout: 3000 });
+  await expect(page.locator("#sessionRows .session-cost").first()).toHaveClass(/pending/);
+  await expect(page.locator("#sessionRows .session-cost").first()).not.toHaveClass(/pending/, { timeout: 3000 });
+  expect(estimateRequests).toBe(1);
+
+  const requestsBeforeDimensionChange = sessionRequests;
+  const sourceBreakdown = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/v1/breakdown" && url.searchParams.get("dimension") === "source";
+  });
+  await page.getByRole("tab", { name: "来源" }).click();
+  await sourceBreakdown;
+  await expect(page.locator("#breakdownTitle")).toHaveText("按来源");
+  await page.waitForTimeout(100);
+  expect(sessionRequests).toBe(requestsBeforeDimensionChange);
 });
 
 test("filter dimensions load lazily once instead of running startup breakdowns", async ({ page }) => {
@@ -173,7 +317,7 @@ test("display settings improve the default scale and persist font, density, them
 test("navigation, month drill-down, filter chips, pricing, and scan feedback work", async ({ page }) => {
   await page.goto(dashboardURL, { waitUntil: "networkidle" });
 
-  const dailyTab = page.getByRole("tab", { name: "每日" });
+  const dailyTab = page.locator(".primary-nav").getByRole("tab", { name: "每日" });
   await dailyTab.focus();
   await dailyTab.press("Enter");
   await expect(page.getByRole("heading", { name: "每日用量" })).toBeVisible();
@@ -186,7 +330,8 @@ test("navigation, month drill-down, filter chips, pricing, and scan feedback wor
   await expect(page.getByRole("heading", { name: "明细与归属" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Session 明细" })).toBeVisible();
   await expect(page.getByText("等价 API 价格", { exact: true })).toBeVisible();
-  await expect(page.locator(".session-cost strong").first()).not.toHaveText("—");
+  await expect(page.locator(".session-cost").first()).not.toHaveClass(/pending/);
+  await expect(page.locator(".session-cost strong").first()).toHaveText(/^\$/);
 
   const modelDrill = page.locator('[data-drill-value="gpt-5.4"]');
   await modelDrill.click();
@@ -263,22 +408,64 @@ test("revisiting a range or view reuses the current data revision", async ({ pag
   await page.waitForTimeout(100);
   expect(dataRequests.filter((item) => item === allCostKey).length).toBe(firstAllCount);
 
-  await page.getByRole("tab", { name: "每日" }).click();
+  await page.locator(".primary-nav").getByRole("tab", { name: "每日" }).click();
   await expect(page.getByRole("heading", { name: "每日用量" })).toBeVisible();
   const monthCostKey = dataRequests.find((item) => item.startsWith("/api/v1/cost-estimate?since=") && item.includes("&bucket=day"));
   expect(monthCostKey).toBeTruthy();
   const firstMonthCount = dataRequests.filter((item) => item === monthCostKey).length;
   await page.getByRole("tab", { name: "明细" }).click();
   await expect(page.getByRole("heading", { name: "明细与归属" })).toBeVisible();
-  await page.getByRole("tab", { name: "每日" }).click();
+  await page.locator(".primary-nav").getByRole("tab", { name: "每日" }).click();
   await expect(page.getByRole("heading", { name: "每日用量" })).toBeVisible();
   await page.waitForTimeout(100);
   expect(dataRequests.filter((item) => item === monthCostKey).length).toBe(firstMonthCount);
 });
 
+test("historical rebuild requires explicit dashboard approval", async ({ page }) => {
+  const requests = [];
+  await page.route("**/api/v1/rescan", async (route) => {
+    const payload = route.request().postDataJSON();
+    requests.push(payload);
+    if (!payload.rebuild) {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "现有统计已保留，需要用户确认后才能重建",
+          rebuild_required: true,
+          kind: "rollout_truncated",
+          detail: "文件从 1024 缩短到 512"
+        })
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ homes: 1, files: 1, events_inserted: 1, duplicates: 0, warnings: 0 })
+    });
+  });
+  await page.goto(dashboardURL);
+
+  await page.locator("#scanButton").click();
+  await expect(page.locator("#rebuildDialog")).toBeVisible();
+  await expect(page.locator("#rebuildDetail")).toHaveText("文件从 1024 缩短到 512");
+  await page.getByRole("button", { name: "保留现有统计" }).click();
+  await expect(page.locator("#rebuildDialog")).toBeHidden();
+  expect(requests).toEqual([{ rebuild: false }]);
+
+  await page.locator("#scanButton").click();
+  await page.locator("#confirmRebuild").click();
+  await expect(page.getByText(/扫描完成：新增/)).toBeVisible();
+  expect(requests).toEqual([{ rebuild: false }, { rebuild: false }, { rebuild: true }]);
+});
+
 test("mobile, tablet, themes, and reduced motion avoid page overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(dashboardURL, { waitUntil: "networkidle" });
+  await page.locator("#usageTrendPanel").getByRole("tab", { name: "每小时" }).click();
+  await expect(page.locator("#hourlyPoints .hour-point")).toHaveCount(24);
+  await expect.poll(() => page.locator(".hourly-chart-scroll").evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
   await page.getByRole("tab", { name: "明细" }).click();
   await expect(page.getByRole("heading", { name: "Session 明细" })).toBeVisible();
   expect(await page.locator(".session-row").count()).toBeGreaterThan(0);
@@ -302,7 +489,7 @@ test("mobile, tablet, themes, and reduced motion avoid page overflow", async ({ 
   expect(duration).toBeLessThanOrEqual(.001);
 });
 
-test("mutation endpoints block foreign origins", async ({ request }) => {
+test("mutation endpoints require the same loopback origin", async ({ request }) => {
   for (const [method, endpoint, data] of [
     ["post", "/api/v1/rescan", {}],
     ["put", "/api/v1/pricing/overrides", { overrides: {} }]
@@ -313,6 +500,16 @@ test("mutation endpoints block foreign origins", async ({ request }) => {
     });
     expect(response.status()).toBe(403);
   }
+  const otherLoopbackPort = await request.post(`${baseURL}/api/v1/rescan`, {
+    headers: { Origin: `${baseURL.slice(0, baseURL.lastIndexOf(":"))}:49999` },
+    data: {}
+  });
+  expect(otherLoopbackPort.status()).toBe(403);
+  const crossSiteWithoutOrigin = await request.post(`${baseURL}/api/v1/rescan`, {
+    headers: { "Sec-Fetch-Site": "cross-site" },
+    data: {}
+  });
+  expect(crossSiteWithoutOrigin.status()).toBe(403);
 });
 
 test("localization catalogs, precedence, persistence, dates, numbers, and ARIA stay aligned", async ({ page }) => {
@@ -324,6 +521,9 @@ test("localization catalogs, precedence, persistence, dates, numbers, and ARIA s
   await expect(page.locator("#machinePill")).toHaveAttribute("aria-label", /Current machine:/);
   await expect(page.locator("#overviewSubtitle")).toHaveText("Past 7 local calendar days");
   await expect(page.locator("#overviewTotal")).toContainText(/\d/);
+  await expect(page.locator("#exportButton")).toHaveAttribute("aria-controls", "exportDialog");
+  await expect(page.locator("#pricingButton")).toHaveAttribute("aria-controls", "pricingDialog");
+  await expect(page.locator("#warningButton")).toHaveAttribute("aria-controls", "warningsDialog");
   const catalogs = await page.evaluate(() => {
     const values = window.CodexUsageI18n.catalogs;
     const zh = Object.keys(values["zh-CN"]).sort();
@@ -336,7 +536,7 @@ test("localization catalogs, precedence, persistence, dates, numbers, and ARIA s
     await expect(page.getByText(leaked, { exact: true })).toHaveCount(0);
   }
 
-  await page.getByRole("tab", { name: "Daily" }).click();
+  await page.locator(".primary-nav").getByRole("tab", { name: "Daily" }).click();
   await expect(page.locator("#monthLabel")).toContainText(/[A-Za-z]/);
   await page.locator("#localeButton").click();
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");

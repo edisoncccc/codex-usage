@@ -100,12 +100,17 @@ function resetDisplayPreferences() {
 
 const state = {
   view: "overview",
+  viewVisited: { overview: true, daily: false, details: false },
   overviewRange: "7d",
   detailRange: "30d",
   detailDimension: "model",
   filters: {},
   status: null,
   overview: null,
+  hourlyLoaded: false,
+  hourlyPoints: [],
+  hourlyPointDate: "",
+  pulsePoints: [],
   pulseDate: "",
   monthCursor: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   selectedDate: "",
@@ -118,7 +123,7 @@ const state = {
   statusQualityNotes: [],
   dataQualityNotes: [],
   sessionSearch: "",
-  requestSerial: { overview: 0, daily: 0, day: 0, details: 0 }
+  requestSerial: { overview: 0, hourly: 0, daily: 0, day: 0, breakdown: 0, sessions: 0, estimates: 0 }
 };
 
 const responseCache = new Map();
@@ -146,6 +151,39 @@ const addDays = (value, amount) => {
 const todayKey = () => dateKey(new Date());
 const emptyUsage = () => ({ input: 0, cached_input: 0, cache_write_input: 0, output: 0, reasoning_output: 0, total: 0 });
 const usageTotal = (usage = {}) => Number(usage.total || (Number(usage.input || 0) + Number(usage.output || 0)) || 0);
+const hourKey = (date) => `${dateKey(date)}T${pad2(date.getHours())}`;
+
+function hourlyWindows(now = new Date()) {
+  const currentHour = new Date(now);
+  currentHour.setMinutes(0, 0, 0);
+  const previousStart = new Date(currentHour.getTime() - 60 * 60_000);
+  return {
+    chartStart: new Date(currentHour.getTime() - 24 * 60 * 60_000),
+    chartEnd: currentHour,
+    previousStart,
+    previousEnd: currentHour,
+    rollingStart: new Date(now.getTime() - 60 * 60_000),
+    rollingEnd: now
+  };
+}
+
+function formatClock(value) {
+  return value.toLocaleTimeString(i18n.getLocale(), { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function formatHourWindow(start, end) {
+  const dateTime = (value) => `${i18n.formatDate(value, { month: "short", day: "numeric" })} ${formatClock(value)}`;
+  return `${dateTime(start)}–${dateKey(start) === dateKey(end) ? formatClock(end) : dateTime(end)}`;
+}
+
+function fillCompleteHours(rawPoints, windows) {
+  const byHour = new Map((rawPoints || []).map((point) => [point.date, point]));
+  return Array.from({ length: 24 }, (_, index) => {
+    const start = new Date(windows.chartStart.getTime() + index * 60 * 60_000);
+    const existing = byHour.get(hourKey(start));
+    return { date: hourKey(start), start, usage: existing?.usage || emptyUsage() };
+  });
+}
 
 function rangeBounds(range) {
   if (range === "all") return { label: rangeLabel("all") };
@@ -222,7 +260,10 @@ async function api(path, options = {}) {
     }
     if (!response.ok) {
       const message = payload && typeof payload === "object" ? payload.error : payload;
-      throw new Error(message || `${response.status} ${response.statusText}`);
+      const error = new Error(message || `${response.status} ${response.statusText}`);
+      error.status = response.status;
+      error.payload = payload;
+      throw error;
     }
     if (cacheable && requestGeneration === cacheGeneration) responseCache.set(key, { payload, expires: Date.now() + DATA_CACHE_TTL });
     return payload;
@@ -385,6 +426,7 @@ function syncFilterForm() {
 }
 
 function resetDataSelections() {
+  state.hourlyPointDate = "";
   state.pulseDate = "";
   state.selectedDate = "";
   state.dailyInitialSelection = true;
@@ -424,6 +466,7 @@ async function loadOverview({ preserve = false } = {}) {
     setLoading($("#overviewTotal"));
     setLoading($("#overviewCost"));
   }
+  loadHourlyUsage({ preserve: preserve || state.hourlyLoaded });
   $("#view-overview").setAttribute("aria-busy", "true");
   let firstError = null;
   await Promise.all([
@@ -441,6 +484,162 @@ async function loadOverview({ preserve = false } = {}) {
   if (serial !== state.requestSerial.overview) return;
   $("#view-overview").removeAttribute("aria-busy");
   if (firstError) toast(t("dynamic.overviewError", { error: firstError.message }), true);
+}
+
+async function loadHourlyUsage({ preserve = false } = {}) {
+  const serial = ++state.requestSerial.hourly;
+  const windows = hourlyWindows();
+  if (!preserve) {
+    setLoading($("#hourlyTotal"));
+    $("#hourlyLedger").innerHTML = `<span class="hourly-placeholder">${escapeHTML(t("common.loading"))}</span>`;
+    $("#hourlyLine").innerHTML = "";
+    $("#hourlyAxis").innerHTML = "";
+    $("#hourlyPoints").innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
+    $("#hourPointInspector").innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
+  }
+  $("#trendHourlyPane").setAttribute("aria-busy", "true");
+  try {
+    const chartPromise = api(apiURL("/api/v1/timeseries", {
+      since: windows.chartStart.toISOString(),
+      until: windows.chartEnd.toISOString(),
+      bucket: "hour"
+    }));
+    const rollingPromise = api(apiURL("/api/v1/summary", {
+      since: windows.rollingStart.toISOString(),
+      until: windows.rollingEnd.toISOString()
+    }));
+    const [series, rolling] = await Promise.all([chartPromise, rollingPromise]);
+    if (serial !== state.requestSerial.hourly) return;
+    state.hourlyPoints = fillCompleteHours(series.points || [], windows);
+    state.hourlyLoaded = true;
+    renderHourlyUsage(state.hourlyPoints, rolling, windows);
+  } catch (error) {
+    if (serial === state.requestSerial.hourly) toast(t("dynamic.hourlyError", { error: error.message }), true);
+  } finally {
+    if (serial === state.requestSerial.hourly) $("#trendHourlyPane").removeAttribute("aria-busy");
+  }
+}
+
+function renderHourlyUsage(points, rolling, windows) {
+  const usage = rolling?.usage || emptyUsage();
+  const total = usageTotal(usage);
+  const label = formatHourWindow(windows.rollingStart, windows.rollingEnd);
+  $("#hourlyWindowLabel").textContent = label;
+  const totalNode = $("#hourlyTotal");
+  totalNode.textContent = formatToken(total);
+  totalNode.title = `${fullToken(total)} Total Token`;
+  totalNode.classList.remove("loading");
+  $("#hourlyLedger").innerHTML = [
+    ["Input", usage.input], ["Cached", usage.cached_input], ["Cache Write", usage.cache_write_input],
+    ["Output", usage.output], ["Reasoning", usage.reasoning_output]
+  ].map(([name, value]) => `<span><small>${name}</small><strong title="${fullToken(value)}">${formatToken(value)}</strong></span>`).join("");
+  renderHourlyLine(points);
+  $("#trendHourlyPane").title = t("hourly.updated", { time: localTime(new Date().toISOString()) });
+}
+
+function renderHourlyPointInspector(point) {
+  const inspector = $("#hourPointInspector");
+  if (!point) {
+    inspector.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.hourlyEmpty"))}</div>`;
+    return;
+  }
+  const usage = point.usage || emptyUsage();
+  const end = new Date(point.start.getTime() + 60 * 60_000);
+  const values = [
+    ["hourPointWindow", t("hourly.pointWindow"), formatHourWindow(point.start, end), ""],
+    ["hourPointTotal", "Total", formatToken(usageTotal(usage)), fullToken(usageTotal(usage))],
+    ["hourPointInput", "Input", formatToken(usage.input), fullToken(usage.input)],
+    ["hourPointCached", "Cached", formatToken(usage.cached_input), fullToken(usage.cached_input)],
+    ["hourPointCacheWrite", "Cache Write", formatToken(usage.cache_write_input), fullToken(usage.cache_write_input)],
+    ["hourPointOutput", "Output", formatToken(usage.output), fullToken(usage.output)],
+    ["hourPointReasoning", "Reasoning", formatToken(usage.reasoning_output), fullToken(usage.reasoning_output)]
+  ];
+  inspector.innerHTML = values.map(([id, label, value, title]) => `<div><span>${escapeHTML(label)}</span><strong id="${id}"${title ? ` title="${escapeHTML(title)}"` : ""}>${escapeHTML(value)}</strong></div>`).join("");
+}
+
+function renderHourlyLine(points) {
+  const line = $("#hourlyLine");
+  const pointLayer = $("#hourlyPoints");
+  const axis = $("#hourlyAxis");
+  pointLayer.setAttribute("aria-label", t("hourly.rulerAria"));
+  if (!points.length) {
+    line.innerHTML = "";
+    axis.innerHTML = "";
+    pointLayer.innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.hourlyEmpty"))}</div>`;
+    renderHourlyPointInspector(null);
+    return;
+  }
+  const plot = { left: 28, right: 972, top: 16, bottom: 142 };
+  const max = Math.max(...points.map((point) => usageTotal(point.usage)), 1);
+  const coordinates = points.map((point, index) => {
+    const x = plot.left + (plot.right - plot.left) * (points.length === 1 ? .5 : index / (points.length - 1));
+    const total = usageTotal(point.usage);
+    const y = total ? plot.bottom - (plot.bottom - plot.top) * total / max : plot.bottom;
+    return { point, index, total, x, y };
+  });
+  const polyline = coordinates.map(({ x, y }) => `${x.toFixed(2)},${y.toFixed(2)}`).join(" ");
+  const area = `M ${coordinates[0].x.toFixed(2)} ${plot.bottom} L ${polyline.replaceAll(",", " ")} L ${coordinates.at(-1).x.toFixed(2)} ${plot.bottom} Z`;
+  line.innerHTML = `<path class="hour-line-area" d="${area}"></path><polyline class="hour-line-path" points="${polyline}"></polyline>`;
+
+  const availableDates = new Set(points.map((point) => point.date));
+  if (!state.hourlyPointDate || !availableDates.has(state.hourlyPointDate)) state.hourlyPointDate = points.at(-1).date;
+  pointLayer.innerHTML = coordinates.map(({ point, index, total, x, y }) => {
+    const windowLabel = formatHourWindow(point.start, new Date(point.start.getTime() + 60 * 60_000));
+    const selected = point.date === state.hourlyPointDate;
+    return `<button class="hour-point pressable ${selected ? "selected" : ""} ${total ? "" : "zero"}" type="button" data-hour-point="${index}" style="left:${(x / 10).toFixed(3)}%;top:${y.toFixed(2)}px" aria-pressed="${selected}" tabindex="${selected ? "0" : "-1"}" aria-label="${escapeHTML(t("hourly.barAria", { time: windowLabel, tokens: fullToken(total) }))}" title="${escapeHTML(t("hourly.barAria", { time: windowLabel, tokens: fullToken(total) }))}"></button>`;
+  }).join("");
+  axis.innerHTML = coordinates.filter(({ index }) => index % 3 === 0 || index === points.length - 1).map(({ point, index, x }) => {
+    const clock = formatClock(point.start);
+    const edge = index === 0 ? "edge-start" : index === points.length - 1 ? "edge-end" : "";
+    return `<time class="${edge}" datetime="${escapeHTML(point.date)}:00" style="--label-x:${(x / 10).toFixed(3)}%">${escapeHTML(clock)}</time>`;
+  }).join("");
+
+  const selectPoint = (index) => {
+    const selectedPoint = points[index];
+    if (!selectedPoint) return;
+    state.hourlyPointDate = selectedPoint.date;
+    $$('[data-hour-point]', pointLayer).forEach((button) => {
+      const selected = Number(button.dataset.hourPoint) === index;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    });
+    renderHourlyPointInspector(selectedPoint);
+  };
+  $$('[data-hour-point]', pointLayer).forEach((button) => {
+    const index = Number(button.dataset.hourPoint);
+    button.addEventListener("mouseenter", () => selectPoint(index));
+    button.addEventListener("focus", () => selectPoint(index));
+    button.addEventListener("click", () => selectPoint(index));
+    button.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? points.length - 1 : Math.max(0, Math.min(points.length - 1, index + (event.key === "ArrowRight" ? 1 : -1)));
+      $(`[data-hour-point="${next}"]`, pointLayer)?.focus();
+    });
+  });
+  renderHourlyPointInspector(points.find((point) => point.date === state.hourlyPointDate));
+  requestAnimationFrame(() => {
+    const selected = $('[data-hour-point].selected', pointLayer);
+    const scroller = $(".hourly-chart-scroll");
+    if (selected && selected.offsetLeft + selected.offsetWidth > scroller.clientWidth + scroller.scrollLeft) {
+      scroller.scrollTo({ left: selected.offsetLeft - scroller.clientWidth + selected.offsetWidth + 12, behavior: reducedMotion() ? "auto" : "smooth" });
+    }
+  });
+}
+
+function switchTrendView(next) {
+  if (!["hourly", "daily"].includes(next)) return;
+  $$('[data-trend-view]').forEach((button) => {
+    const selected = button.dataset.trendView === next;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  $("#trendHourlyPane").hidden = next !== "hourly";
+  $("#trendDailyPane").hidden = next !== "daily";
+  if (next === "hourly" && state.hourlyPoints.length) renderHourlyLine(state.hourlyPoints);
+  if (next === "daily" && state.pulsePoints.length) renderPulse(state.pulsePoints);
 }
 
 function renderOverviewSummary(summary) {
@@ -474,6 +673,7 @@ function renderOverviewCost(cost) {
 }
 
 function renderPulse(allPoints) {
+  state.pulsePoints = allPoints;
   let points = allPoints;
   const limited = points.length > 90;
   if (limited) points = points.slice(-90);
@@ -715,29 +915,63 @@ function renderDayDetail(point, report, loadingModels = false) {
   $("#dayModels").innerHTML = models.length ? models.map((item) => `<div class="mini-model-row"><span title="${escapeHTML(item.key)}">${escapeHTML(item.key)}</span><strong title="${fullToken(usageTotal(item.usage))}">${formatToken(usageTotal(item.usage))}</strong></div>`).join("") : `<div class="empty-state">${escapeHTML(t("dynamic.noModelsDay"))}</div>`;
 }
 
-async function loadDetails({ preserve = false } = {}) {
-  const serial = ++state.requestSerial.details;
+async function loadBreakdown({ preserve = false } = {}) {
+  const serial = ++state.requestSerial.breakdown;
   const bounds = rangeBounds(state.detailRange);
   const dimension = state.detailDimension;
   $("#breakdownTitle").textContent = t("dynamic.breakdownBy", { dimension: dimensionLabel(dimension) });
-  if (!preserve) {
-    $("#detailBreakdown").innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.breakdownLoading", { dimension: dimensionLabel(dimension) }))}</div>`;
-    $("#sessionRows").innerHTML = `<div class="empty-state">${escapeHTML(t("details.sessionsLoading"))}</div>`;
-  }
-  $("#view-details").setAttribute("aria-busy", "true");
+  if (!preserve) $("#detailBreakdown").innerHTML = `<div class="empty-state">${escapeHTML(t("dynamic.breakdownLoading", { dimension: dimensionLabel(dimension) }))}</div>`;
+  $("#breakdownPanel").setAttribute("aria-busy", "true");
   try {
-    const [breakdown, sessions] = await Promise.all([
-      api(apiURL("/api/v1/breakdown", { ...bounds, dimension, limit: 100 })),
-      api(apiURL("/api/v1/sessions", { ...bounds, limit: 100, compact: 1, q: state.sessionSearch }))
-    ]);
-    if (serial !== state.requestSerial.details) return;
+    const breakdown = await api(apiURL("/api/v1/breakdown", { ...bounds, dimension, limit: 100 }));
+    if (serial !== state.requestSerial.breakdown) return;
     renderBreakdown(breakdown.items || [], dimension);
-    renderSessions(sessions.items || []);
   } catch (error) {
-    if (serial === state.requestSerial.details) toast(t("dynamic.detailsError", { error: error.message }), true);
+    if (serial === state.requestSerial.breakdown) toast(t("dynamic.breakdownError", { error: error.message }), true);
   } finally {
-    if (serial === state.requestSerial.details) $("#view-details").removeAttribute("aria-busy");
+    if (serial === state.requestSerial.breakdown) $("#breakdownPanel").removeAttribute("aria-busy");
   }
+}
+
+async function loadSessions({ preserve = false } = {}) {
+  const serial = ++state.requestSerial.sessions;
+  const estimateSerial = ++state.requestSerial.estimates;
+  const bounds = rangeBounds(state.detailRange);
+  const query = { ...bounds, limit: 100, compact: 1, q: state.sessionSearch };
+  const rowsURL = apiURL("/api/v1/sessions", { ...query, include_estimate: 0 });
+  const estimatesURL = apiURL("/api/v1/session-estimates", query);
+  if (!preserve) $("#sessionRows").innerHTML = `<div class="empty-state">${escapeHTML(t("details.sessionsLoading"))}</div>`;
+  $("#sessionsPanel").setAttribute("aria-busy", "true");
+  try {
+    const sessions = await api(rowsURL);
+    if (serial !== state.requestSerial.sessions) return;
+    const items = sessions.items || [];
+    renderSessions(items, { estimatesPending: items.length > 0 });
+    if (items.length) loadSessionEstimates(estimatesURL, serial, estimateSerial);
+  } catch (error) {
+    if (serial === state.requestSerial.sessions) toast(t("dynamic.sessionsError", { error: error.message }), true);
+  } finally {
+    if (serial === state.requestSerial.sessions) $("#sessionsPanel").removeAttribute("aria-busy");
+  }
+}
+
+async function loadSessionEstimates(url, sessionSerial, estimateSerial) {
+  try {
+    const payload = await api(url);
+    if (sessionSerial !== state.requestSerial.sessions || estimateSerial !== state.requestSerial.estimates) return;
+    patchSessionEstimates(payload.items || []);
+  } catch (error) {
+    if (sessionSerial !== state.requestSerial.sessions || estimateSerial !== state.requestSerial.estimates) return;
+    markSessionEstimatesUnavailable();
+    toast(t("dynamic.sessionEstimateError", { error: error.message }), true);
+  }
+}
+
+async function loadDetails({ preserve = false, breakdown = true, sessions = true } = {}) {
+  const tasks = [];
+  if (breakdown) tasks.push(loadBreakdown({ preserve }));
+  if (sessions) tasks.push(loadSessions({ preserve }));
+  await Promise.all(tasks);
 }
 
 function renderBreakdown(items, dimension) {
@@ -771,7 +1005,56 @@ function renderBreakdown(items, dimension) {
   }));
 }
 
-function renderSessions(items) {
+function sessionEstimatePresentation(estimate = {}) {
+  const totalEstimateTokens = estimateTokens(estimate);
+  const pricedTokens = Number(estimate.priced_tokens || 0);
+  const cost = totalEstimateTokens && !pricedTokens ? t("dynamic.unpriced") : estimateDisplay(estimate);
+  const partialCoverage = pricedTokens > 0 && Number(estimate.coverage_ratio || 0) < 1
+    ? formatPercent(estimate.coverage_ratio) : "";
+  const title = [estimateLabel(estimate), reasonSummary(estimate)].filter(Boolean).join(" · ");
+  return { cost, partialCoverage, title };
+}
+
+function renderSessionEstimate(cell, estimate) {
+  const presentation = sessionEstimatePresentation(estimate);
+  cell.classList.remove("pending", "unavailable");
+  cell.removeAttribute("aria-busy");
+  cell.title = presentation.title;
+  cell.innerHTML = `<small class="session-mobile-label">API</small><strong>${escapeHTML(presentation.cost)}</strong>${presentation.partialCoverage ? `<small>${escapeHTML(presentation.partialCoverage)}</small>` : ""}`;
+}
+
+function patchSessionEstimates(items) {
+  const rows = new Map($$('[data-session-id]', $("#sessionRows")).map((row) => [row.dataset.sessionId, row]));
+  const received = new Set();
+  for (const item of items) {
+    const row = rows.get(item.session_id);
+    if (!row) continue;
+    const cell = $('[data-session-cost]', row);
+    if (cell) {
+      received.add(item.session_id);
+      renderSessionEstimate(cell, item.estimate || {});
+    }
+  }
+  for (const [sessionID, row] of rows) {
+    if (received.has(sessionID)) continue;
+    const cell = $('[data-session-cost].pending', row);
+    if (cell) renderSessionEstimateUnavailable(cell);
+  }
+}
+
+function renderSessionEstimateUnavailable(cell) {
+  cell.classList.remove("pending");
+  cell.classList.add("unavailable");
+  cell.removeAttribute("aria-busy");
+  cell.title = t("details.costUnavailable");
+  cell.innerHTML = `<small class="session-mobile-label">API</small><strong>${escapeHTML(t("details.costUnavailable"))}</strong>`;
+}
+
+function markSessionEstimatesUnavailable() {
+  $$('[data-session-cost].pending', $("#sessionRows")).forEach(renderSessionEstimateUnavailable);
+}
+
+function renderSessions(items, { estimatesPending = false } = {}) {
   const container = $("#sessionRows");
   if (!items.length) {
     const key = state.sessionSearch ? "dynamic.sessionsSearchEmpty" : "dynamic.sessionsEmpty";
@@ -779,21 +1062,18 @@ function renderSessions(items) {
     return;
   }
   container.innerHTML = items.map((item) => {
-    const estimate = item.estimate || {};
-    const totalEstimateTokens = estimateTokens(estimate);
-    const pricedTokens = Number(estimate.priced_tokens || 0);
-    const cost = totalEstimateTokens && !pricedTokens ? t("dynamic.unpriced") : estimateDisplay(estimate);
-    const partialCoverage = pricedTokens > 0 && Number(estimate.coverage_ratio || 0) < 1
-      ? formatPercent(estimate.coverage_ratio) : "";
-    const costTitle = [estimateLabel(estimate), reasonSummary(estimate)].filter(Boolean).join(" · ");
+    const presentation = sessionEstimatePresentation(item.estimate || {});
     const active = state.filters.session_id === item.session_id;
-    return `<article class="session-row">
+    const costCell = estimatesPending
+      ? `<div class="session-metric session-cost pending" data-session-cost aria-busy="true"><small class="session-mobile-label">API</small><strong>${escapeHTML(t("details.costPending"))}</strong></div>`
+      : `<div class="session-metric session-cost" data-session-cost title="${escapeHTML(presentation.title)}"><small class="session-mobile-label">API</small><strong>${escapeHTML(presentation.cost)}</strong>${presentation.partialCoverage ? `<small>${escapeHTML(presentation.partialCoverage)}</small>` : ""}</div>`;
+    return `<article class="session-row" data-session-id="${escapeHTML(item.session_id)}">
     <div class="session-cell"><strong title="${escapeHTML(item.title || item.session_id)}">${escapeHTML(item.title || t("dynamic.untitledThread"))}</strong><small title="${escapeHTML(item.session_id)}">${escapeHTML(shortId(item.session_id))}</small></div>
     <div class="session-cell"><span title="${escapeHTML(item.project_path || t("common.notRecorded"))}">${escapeHTML(shortPath(item.project_path))}</span><small title="${escapeHTML(item.project_path || "")}">${escapeHTML(item.project_path || t("common.notRecorded"))}</small></div>
     <div class="session-cell"><strong title="${escapeHTML(item.model || t("common.unknownModel"))}">${escapeHTML(item.model || t("common.unknownModel"))}</strong><span>${escapeHTML(item.source || t("common.unknownSource"))}</span></div>
     <div class="session-cell"><span class="agent-badge">${escapeHTML(item.agent_type || "main")}</span><span class="confidence-badge ${escapeHTML(item.confidence)}">${confidenceLabel(item.confidence)}</span></div>
     <div class="session-metric session-token" title="${fullToken(usageTotal(item.usage))} Token"><small class="session-mobile-label">Token</small><strong>${formatToken(usageTotal(item.usage))}</strong></div>
-    <div class="session-metric session-cost" title="${escapeHTML(costTitle)}"><small class="session-mobile-label">API</small><strong>${escapeHTML(cost)}</strong>${partialCoverage ? `<small>${escapeHTML(partialCoverage)}</small>` : ""}</div>
+    ${costCell}
     <div class="session-cell"><span>${escapeHTML(localTime(item.last_usage))}</span></div>
     <button class="session-filter pressable ${active ? "active" : ""}" type="button" data-session-filter="${escapeHTML(item.session_id)}" aria-pressed="${active}">${escapeHTML(t(active ? "details.cancelSessionFilter" : "details.onlySession"))}</button>
   </article>`;
@@ -814,7 +1094,7 @@ function applySessionSearch() {
   $("#sessionSearchClear").classList.toggle("hidden", !value);
   if (value === state.sessionSearch) return;
   state.sessionSearch = value;
-  loadDetails();
+  loadSessions();
 }
 
 async function loadCurrentView(options = {}) {
@@ -823,10 +1103,11 @@ async function loadCurrentView(options = {}) {
   return loadOverview(options);
 }
 
-async function switchView(next) {
+function switchView(next) {
   if (!next || next === state.view) return;
   const currentPanel = $(`[data-view-panel="${state.view}"]`);
   const nextPanel = $(`[data-view-panel="${next}"]`);
+  const preserve = Boolean(state.viewVisited[next]);
   state.view = next;
   $$('.nav-tab').forEach((tab) => {
     const selected = tab.dataset.view === next;
@@ -835,14 +1116,13 @@ async function switchView(next) {
     tab.tabIndex = selected ? 0 : -1;
   });
   history.replaceState(null, "", `#${next}`);
-  loadCurrentView();
-  currentPanel.classList.add("leaving");
-  await new Promise((resolve) => setTimeout(resolve, reducedMotion() ? 0 : 180));
   currentPanel.hidden = true;
-  currentPanel.classList.remove("active", "leaving");
+  currentPanel.classList.remove("active", "entering");
   nextPanel.hidden = false;
   nextPanel.classList.add("active", "entering");
-  requestAnimationFrame(() => setTimeout(() => nextPanel.classList.remove("entering"), reducedMotion() ? 0 : 220));
+  state.viewVisited[next] = true;
+  loadCurrentView({ preserve });
+  requestAnimationFrame(() => setTimeout(() => nextPanel.classList.remove("entering"), reducedMotion() ? 0 : 140));
 }
 
 function openDialog(dialog) {
@@ -1052,6 +1332,8 @@ function setupEvents() {
   $$('.nav-tab').forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $(".primary-nav").addEventListener("keydown", (event) => tablistKeydown(event, $$('.nav-tab'), (button) => switchView(button.dataset.view)));
   $("#brandButton").addEventListener("click", () => switchView("overview"));
+  $$('[data-trend-view]').forEach((button) => button.addEventListener("click", () => switchTrendView(button.dataset.trendView)));
+  $("#usageTrendPanel").querySelector('[role="tablist"]').addEventListener("keydown", (event) => tablistKeydown(event, $$('[data-trend-view]'), (button) => switchTrendView(button.dataset.trendView)));
   $$('[data-overview-range]').forEach((button) => button.addEventListener("click", () => {
     state.overviewRange = button.dataset.overviewRange;
     $$('[data-overview-range]').forEach((item) => {
@@ -1059,6 +1341,7 @@ function setupEvents() {
       item.classList.toggle("selected", selected);
       item.setAttribute("aria-pressed", String(selected));
     });
+    state.hourlyPointDate = "";
     state.pulseDate = "";
     loadOverview();
   }));
@@ -1079,7 +1362,7 @@ function setupEvents() {
       item.setAttribute("aria-selected", String(selected));
       item.tabIndex = selected ? 0 : -1;
     });
-    loadDetails();
+    loadBreakdown();
   }));
   $(".dimension-tabs").addEventListener("keydown", (event) => tablistKeydown(event, $$('[data-dimension]'), (button) => button.click()));
   $("#previousMonth").addEventListener("click", () => {
@@ -1146,24 +1429,41 @@ function setupEvents() {
   });
   $("#savePricing").addEventListener("click", savePricing);
   $("#exportButton").addEventListener("click", () => { setExportLinks(); openDialog($("#exportDialog")); });
-  $("#scanButton").addEventListener("click", async () => {
+  const runScan = async (rebuild = false) => {
     const button = $("#scanButton");
+    const rebuildButton = $("#confirmRebuild");
     button.disabled = true;
+    rebuildButton.disabled = true;
     $(".scan-icon").classList.add("spin");
     try {
       const refreshFilterOptions = Boolean(state.filterOptions);
-      const result = await api("/api/v1/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const result = await api("/api/v1/rescan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rebuild })
+      });
       invalidateDataCache();
       state.filterOptions = null;
       toast(t("scan.complete", { inserted: i18n.formatNumber(result.events_inserted || 0), duplicates: i18n.formatNumber(result.duplicates || 0) }));
       await loadStatus();
       await Promise.all([refreshFilterOptions ? loadFilterOptions({ force: true }) : Promise.resolve(), loadCurrentView()]);
     } catch (error) {
-      toast(error.message, true);
+      if (!rebuild && error.payload?.rebuild_required) {
+        $("#rebuildDetail").textContent = error.payload.detail || error.message;
+        openDialog($("#rebuildDialog"));
+      } else {
+        toast(error.message, true);
+      }
     } finally {
       button.disabled = false;
+      rebuildButton.disabled = false;
       $(".scan-icon").classList.remove("spin");
     }
+  };
+  $("#scanButton").addEventListener("click", () => runScan(false));
+  $("#confirmRebuild").addEventListener("click", async () => {
+    closeDialog($("#rebuildDialog"));
+    await runScan(true);
   });
   $("#themeButton").addEventListener("click", () => {
     const dark = displayPreferences.theme === "system"
@@ -1225,6 +1525,7 @@ async function boot() {
   if (["daily", "details"].includes(requestedView)) {
     const initial = state.view;
     state.view = requestedView;
+    state.viewVisited[requestedView] = true;
     $(`[data-view-panel="${initial}"]`).hidden = true;
     $(`[data-view-panel="${requestedView}"]`).hidden = false;
     $$('.nav-tab').forEach((tab) => {

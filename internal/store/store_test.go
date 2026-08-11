@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,50 @@ import (
 	"github.com/zJay26/codex-usage/internal/model"
 	"github.com/zJay26/codex-usage/internal/pricing"
 )
+
+func BenchmarkEventExportTraversal(b *testing.B) {
+	path := os.Getenv("CODEX_USAGE_BENCH_DB")
+	if path == "" {
+		b.Skip("set CODEX_USAGE_BENCH_DB to a disposable database copy")
+	}
+	st, err := Open(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.Close()
+	b.Run("offset-pages", func(b *testing.B) {
+		for range b.N {
+			count := 0
+			for offset := 0; ; offset += 5000 {
+				items, err := st.Events(context.Background(), EventQuery{Limit: 5000, Offset: offset})
+				if err != nil {
+					b.Fatal(err)
+				}
+				count += len(items)
+				if len(items) < 5000 {
+					break
+				}
+			}
+			if count == 0 {
+				b.Fatal("no export events")
+			}
+		}
+	})
+	b.Run("single-snapshot", func(b *testing.B) {
+		for range b.N {
+			count := 0
+			if err := st.WalkEvents(context.Background(), model.Filter{}, func(model.UsageEvent) error {
+				count++
+				return nil
+			}); err != nil {
+				b.Fatal(err)
+			}
+			if count == 0 {
+				b.Fatal("no export events")
+			}
+		}
+	})
+}
 
 func BenchmarkPricingEventTraversal(b *testing.B) {
 	path := os.Getenv("CODEX_USAGE_BENCH_DB")
@@ -93,6 +138,78 @@ func BenchmarkDashboardQueries(b *testing.B) {
 			}
 		}
 	})
+	b.Run("breakdown-model-7d", func(b *testing.B) {
+		for range b.N {
+			if _, err := st.Breakdown(context.Background(), filter, "model", 100); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("breakdown-thread-7d", func(b *testing.B) {
+		for range b.N {
+			if _, err := st.Breakdown(context.Background(), filter, "thread", 100); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("sessions-7d", func(b *testing.B) {
+		for range b.N {
+			if _, err := st.Sessions(context.Background(), filter, 100, 0); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func TestHourlyTimeseriesUsesInclusiveSinceAndExclusiveUntil(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	base := time.Date(2026, 8, 10, 10, 59, 59, 0, time.Local)
+	events := []model.UsageEvent{
+		{ID: "before", Timestamp: base, SessionID: "hourly", Usage: model.TokenUsage{Input: 7, Output: 3, Total: 10}},
+		{ID: "start", Timestamp: base.Add(time.Second), SessionID: "hourly", Usage: model.TokenUsage{Input: 12, CachedInput: 4, Output: 8, ReasoningOutput: 3, Total: 20}},
+		{ID: "inside", Timestamp: base.Add(time.Hour), SessionID: "hourly", Usage: model.TokenUsage{Input: 20, CachedInput: 5, Output: 10, ReasoningOutput: 2, Total: 30}},
+		{ID: "until", Timestamp: base.Add(time.Hour + time.Second), SessionID: "hourly", Usage: model.TokenUsage{Input: 30, Output: 10, Total: 40}},
+	}
+	for _, event := range events {
+		event.Provenance = model.ProvenanceSessionJSONL
+		event.Confidence = model.ConfidenceExact
+		if _, err := st.InsertEvent(ctx, event, event.ID+".jsonl"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	since := time.Date(2026, 8, 10, 11, 0, 0, 0, time.Local)
+	until := since.Add(time.Hour)
+	filter := model.Filter{Since: since, Until: until}
+	points, err := st.Timeseries(ctx, filter, "hour")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 1 {
+		t.Fatalf("expected one complete hour, got %#v", points)
+	}
+	point := points[0]
+	if point.Date != "2026-08-10T11" {
+		t.Fatalf("unexpected local-hour key %q", point.Date)
+	}
+	if point.Usage.Total != 50 || point.Usage.Input != 32 || point.Usage.Output != 18 ||
+		point.Usage.CachedInput != 9 || point.Usage.ReasoningOutput != 5 {
+		t.Fatalf("unexpected hourly usage: %#v", point.Usage)
+	}
+
+	summary, err := st.Summary(ctx, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.GrandTotal != 50 {
+		t.Fatalf("summary and hourly bucket drifted: %#v", summary)
+	}
 }
 
 func TestReadPoolRemainsAvailableWhileWriterConnectionIsBusy(t *testing.T) {
@@ -142,6 +259,10 @@ func TestPricingAggregatesMatchRawEventsAndDimensions(t *testing.T) {
 		{ID: "zero-total", Timestamp: base.Add(time.Hour), SessionID: "s3", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 3, Output: 2}},
 		{ID: "invalid", Timestamp: base.Add(25 * time.Hour), SessionID: "s3", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 8, CachedInput: 9, Output: 4, Total: 12}},
 		{ID: "internal", Timestamp: base.Add(24 * time.Hour), SessionID: "s4", Model: "internal", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 8, Output: 2, Total: 10}},
+		// Individually invalid totals whose opposite errors cancel after SUM. They
+		// must remain separate or aggregate pricing would incorrectly accept both.
+		{ID: "mismatch-high", Timestamp: base.Add(2 * time.Hour), SessionID: "s5", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 10, Total: 12}},
+		{ID: "mismatch-low", Timestamp: base.Add(3 * time.Hour), SessionID: "s5", Model: "gpt-5.4", Source: "desktop", ProjectPath: "/p1", Usage: model.TokenUsage{Input: 10, Total: 8}},
 	}
 	for _, event := range events {
 		event.Provenance = model.ProvenanceSessionJSONL
@@ -162,7 +283,7 @@ func TestPricingAggregatesMatchRawEventsAndDimensions(t *testing.T) {
 		t.Fatalf("aggregate pricing drifted\nraw=%#v\naggregated=%#v", raw.Report(), aggregated.Report())
 	}
 	rawSessions := map[string]*pricing.Builder{}
-	for _, sessionID := range []string{"s1", "s2", "s3", "s4"} {
+	for _, sessionID := range []string{"s1", "s2", "s3", "s4", "s5"} {
 		rawSessions[sessionID], _ = pricing.NewBuilder(nil)
 	}
 	if err := st.WalkPricingEvents(ctx, model.Filter{}, func(event model.UsageEvent) error {
@@ -174,7 +295,7 @@ func TestPricingAggregatesMatchRawEventsAndDimensions(t *testing.T) {
 	for sessionID := range rawSessions {
 		aggregatedSessions[sessionID], _ = pricing.NewBuilder(nil)
 	}
-	if err := st.WalkSessionPricingAggregates(ctx, model.Filter{}, []string{"s1", "s2", "s3", "s4"}, func(event model.UsageEvent) error {
+	if err := st.WalkSessionPricingAggregates(ctx, model.Filter{}, []string{"s1", "s2", "s3", "s4", "s5"}, func(event model.UsageEvent) error {
 		return aggregatedSessions[event.SessionID].Add(event)
 	}); err != nil {
 		t.Fatal(err)
@@ -199,6 +320,74 @@ func TestPricingAggregatesMatchRawEventsAndDimensions(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].SessionID != "s2" {
 		t.Fatalf("session search mismatch: %#v", sessions)
+	}
+}
+
+func TestWalkEventsUsesStableOrderAndPropagatesCallbackErrors(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	at := time.Date(2026, 8, 10, 1, 2, 3, 0, time.UTC)
+	for _, event := range []model.UsageEvent{
+		{ID: "b", Timestamp: at, ObservedAt: at, Model: "gpt-5.4"},
+		{ID: "a", Timestamp: at, ObservedAt: at, Model: "gpt-5.4"},
+		{ID: "ignored", Timestamp: at.Add(time.Hour), ObservedAt: at.Add(time.Hour), Model: "internal"},
+		{ID: "c", Timestamp: at, ObservedAt: at, Model: "gpt-5.4"},
+	} {
+		event.Provenance = model.ProvenanceSessionJSONL
+		event.Confidence = model.ConfidenceExact
+		event.Usage = model.TokenUsage{Input: 8, Output: 2, Total: 10}
+		if _, err := st.InsertEvent(ctx, event, event.ID+".jsonl"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ids []string
+	if err := st.WalkEvents(ctx, model.Filter{Model: "gpt-5.4"}, func(event model.UsageEvent) error {
+		ids = append(ids, event.ID)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ids, []string{"c", "b", "a"}) {
+		t.Fatalf("unstable event order: %v", ids)
+	}
+	sentinel := errors.New("stop export")
+	if err := st.WalkEvents(ctx, model.Filter{}, func(model.UsageEvent) error { return sentinel }); !errors.Is(err, sentinel) {
+		t.Fatalf("callback error was not propagated: %v", err)
+	}
+}
+
+func TestSessionMetadataAdvancesRevisionOnlyWhenChanged(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	info := model.SessionInfo{SessionID: "session", Title: "before", UpdatedAt: time.Unix(10, 0)}
+	before := st.Revision()
+	if err := st.UpsertSession(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	afterInsert := st.Revision()
+	if afterInsert <= before {
+		t.Fatalf("session insert did not advance revision: before=%d after=%d", before, afterInsert)
+	}
+	if err := st.UpsertSession(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Revision(); got != afterInsert {
+		t.Fatalf("no-op session upsert advanced revision: before=%d after=%d", afterInsert, got)
+	}
+	info.Title = "after"
+	if err := st.UpsertSession(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Revision(); got <= afterInsert {
+		t.Fatalf("session metadata update did not advance revision: before=%d after=%d", afterInsert, got)
 	}
 }
 
@@ -230,7 +419,7 @@ func TestWarningsAreGroupedByKindAndPath(t *testing.T) {
 	}
 }
 
-func TestV2MigrationPurgesDerivedRowsAndDropsOTelTables(t *testing.T) {
+func TestV2MigrationPreservesDerivedRowsUntilApprovedRebuild(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
 	st, err := Open(path)
@@ -269,19 +458,32 @@ func TestV2MigrationPurgesDerivedRowsAndDropsOTelTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.GrandTotal != 0 || summary.EventCount != 0 {
-		t.Fatalf("legacy derived rows survived migration: %+v", summary)
+	if summary.GrandTotal != 10 || summary.EventCount != 1 {
+		t.Fatalf("legacy derived rows were changed before approval: %+v", summary)
+	}
+	if reason, pending, err := st.HistoricalRebuildReason(ctx); err != nil || !pending || reason == "" {
+		t.Fatalf("migration did not request an approved rebuild: pending=%v reason=%q err=%v", pending, reason, err)
 	}
 	var count int
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'otel_%'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
-		t.Fatalf("legacy OTel tables remain: %d", count)
+	if count != 2 {
+		t.Fatalf("legacy tables were removed before approval: %d", count)
+	}
+	if err := st.ResetHistorical(ctx); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ = st.Summary(ctx, model.Filter{})
+	if summary.GrandTotal != 0 || summary.EventCount != 0 {
+		t.Fatalf("approved rebuild did not clear derived rows: %+v", summary)
+	}
+	if _, pending, err := st.HistoricalRebuildReason(ctx); err != nil || pending {
+		t.Fatalf("approved rebuild left pending marker: pending=%v err=%v", pending, err)
 	}
 }
 
-func TestV3MigrationAddsEventSegmentAndPurgesDerivedRows(t *testing.T) {
+func TestV3MigrationAddsEventSegmentAndWaitsForApproval(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
 	st, err := Open(path)
@@ -319,8 +521,11 @@ func TestV3MigrationAddsEventSegmentAndPurgesDerivedRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.EventCount != 0 || summary.GrandTotal != 0 {
-		t.Fatalf("v3 derived rows survived v4 migration: %+v", summary)
+	if summary.EventCount != 1 || summary.GrandTotal != 10 {
+		t.Fatalf("v3 derived rows were changed before approval: %+v", summary)
+	}
+	if reason, pending, err := st.HistoricalRebuildReason(ctx); err != nil || !pending || reason == "" {
+		t.Fatalf("migration did not request an approved rebuild: pending=%v reason=%q err=%v", pending, reason, err)
 	}
 	var segmentColumns int
 	rows, err := st.db.Query(`PRAGMA table_info(usage_events)`)
@@ -345,7 +550,7 @@ func TestV3MigrationAddsEventSegmentAndPurgesDerivedRows(t *testing.T) {
 	}
 }
 
-func TestV4MigrationForcesRebuildForSingleMetadataForkParser(t *testing.T) {
+func TestV4MigrationPreservesHistoryUntilSingleMetadataRebuildApproved(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "usage.sqlite")
 	st, err := Open(path)
@@ -390,11 +595,14 @@ func TestV4MigrationForcesRebuildForSingleMetadataForkParser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.EventCount != 0 || summary.GrandTotal != 0 {
-		t.Fatalf("v4 derived rows survived v5 migration: %+v", summary)
+	if summary.EventCount != 1 || summary.GrandTotal != 10 {
+		t.Fatalf("v4 derived rows were changed before approval: %+v", summary)
 	}
-	if _, ok, err := st.GetCursor(ctx, "single-meta-fork.jsonl"); err != nil || ok {
-		t.Fatalf("v4 cursor survived v5 migration: ok=%v err=%v", ok, err)
+	if _, ok, err := st.GetCursor(ctx, "single-meta-fork.jsonl"); err != nil || !ok {
+		t.Fatalf("v4 cursor was removed before approval: ok=%v err=%v", ok, err)
+	}
+	if reason, pending, err := st.HistoricalRebuildReason(ctx); err != nil || !pending || reason == "" {
+		t.Fatalf("migration did not request an approved rebuild: pending=%v reason=%q err=%v", pending, reason, err)
 	}
 	var version string
 	if err := st.db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version); err != nil {
@@ -402,6 +610,12 @@ func TestV4MigrationForcesRebuildForSingleMetadataForkParser(t *testing.T) {
 	}
 	if version != "5" {
 		t.Fatalf("schema version = %q, want 5", version)
+	}
+	if err := st.ResetHistorical(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := st.GetCursor(ctx, "single-meta-fork.jsonl"); err != nil || ok {
+		t.Fatalf("approved rebuild did not clear v4 cursor: ok=%v err=%v", ok, err)
 	}
 }
 

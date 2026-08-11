@@ -33,7 +33,7 @@
         <button class="icon-button pressable" id="themeButton" type="button" aria-label="切换明暗主题" title="切换明暗主题" data-i18n-aria-label="action.theme" data-i18n-title="action.theme"><span aria-hidden="true">◐</span></button>
         <button class="icon-button pressable settings-button" id="settingsButton" type="button" aria-haspopup="dialog" aria-controls="settingsDialog" aria-label="打开显示设置" title="打开显示设置" data-i18n-aria-label="action.settings" data-i18n-title="action.settings"><span class="settings-glyph" aria-hidden="true"><i></i><i></i><i></i></span></button>
         <button class="action-button pressable" id="filterButton" type="button" aria-haspopup="dialog" aria-controls="filterSheet"><span data-i18n="action.filter">筛选</span><b class="count-badge hidden" id="filterCount">0</b></button>
-        <button class="action-button quiet pressable" id="exportButton" type="button" aria-haspopup="dialog"><span data-i18n="action.export">导出</span></button>
+        <button class="action-button quiet pressable" id="exportButton" type="button" aria-haspopup="dialog" aria-controls="exportDialog"><span data-i18n="action.export">导出</span></button>
         <button class="action-button primary pressable" id="scanButton" type="button"><span class="scan-icon" aria-hidden="true">↻</span><span data-i18n="action.scan">扫描</span></button>
       </div>
     </div>
@@ -47,7 +47,7 @@
     <section class="coverage-banner hidden" id="coverageBanner" aria-live="polite">
       <span class="coverage-icon" aria-hidden="true">!</span>
       <div><strong data-i18n="quality.title">数据质量需要留意</strong><p id="coverageText"></p></div>
-      <button class="text-button pressable" id="warningButton" type="button" data-i18n="action.viewDetails">查看详情</button>
+      <button class="text-button pressable" id="warningButton" type="button" aria-haspopup="dialog" aria-controls="warningsDialog" data-i18n="action.viewDetails">查看详情</button>
     </section>
 
     <div class="filter-context hidden" id="filterContext" aria-label="已应用筛选" data-i18n-aria-label="filter.applied">
@@ -78,23 +78,61 @@
         </article>
         <div class="hero-divider" aria-hidden="true"></div>
         <article class="hero-metric cost-metric">
-          <div class="metric-label-row"><span class="metric-label" data-i18n="overview.cost">Standard API 等价成本</span><button class="text-button copper pressable" id="pricingButton" type="button" aria-haspopup="dialog" data-i18n="overview.pricing">定价设置</button></div>
+          <div class="metric-label-row"><span class="metric-label" data-i18n="overview.cost">Standard API 等价成本</span><button class="text-button copper pressable" id="pricingButton" type="button" aria-haspopup="dialog" aria-controls="pricingDialog" data-i18n="overview.pricing">定价设置</button></div>
           <strong class="hero-value cost loading" id="overviewCost">—</strong>
           <div class="coverage-line"><span class="coverage-track" aria-hidden="true"><i id="overviewCoverageBar"></i></span><span id="overviewCoverage" data-i18n="overview.estimating">正在估算…</span></div>
           <p class="metric-note" id="overviewCostNote" data-i18n="overview.notBill">不是 OpenAI 真实账单</p>
         </article>
       </section>
 
-      <section class="pulse-panel surface" aria-labelledby="pulseTitle">
-        <div class="section-head"><h2 id="pulseTitle" data-i18n="pulse.title">每日脉冲带</h2></div>
-        <div class="pulse-scroll" id="pulseScroll">
-          <div class="pulse-belt" id="pulseBelt" role="listbox" aria-label="每日 Token 用量" data-i18n-aria-label="pulse.aria"></div>
+      <section class="trend-panel surface" id="usageTrendPanel" aria-label="Token 用量趋势" data-i18n-aria-label="trend.aria">
+        <div class="trend-switcher segmented" role="tablist" aria-label="趋势显示方式" data-i18n-aria-label="trend.modeAria">
+          <button class="pressable" id="trendHourlyTab" type="button" role="tab" aria-selected="false" aria-controls="trendHourlyPane" tabindex="-1" data-trend-view="hourly" data-i18n="trend.hourly">每小时</button>
+          <button class="pressable selected" id="trendDailyTab" type="button" role="tab" aria-selected="true" aria-controls="trendDailyPane" tabindex="0" data-trend-view="daily" data-i18n="trend.daily">每日</button>
         </div>
-        <div class="pulse-inspector" id="pulseInspector" aria-live="polite">
-          <div><span data-i18n="pulse.selectedDate">选中日期</span><strong id="pulseDate">—</strong></div>
-          <div><span>Total</span><strong id="pulseTotal">—</strong></div>
-          <div><span>Input / Output</span><strong id="pulseIO">—</strong></div>
-          <div><span data-i18n="pulse.cost">等价成本</span><strong class="copper" id="pulseCost">—</strong></div>
+
+        <div class="trend-pane" id="trendHourlyPane" role="tabpanel" aria-labelledby="trendHourlyTab" hidden>
+          <div class="hourly-head">
+            <div>
+              <h2 id="hourlyTitle" data-i18n="hourly.title">每小时Token用量</h2>
+              <p data-i18n="hourly.caption">最近 24 个完整小时</p>
+            </div>
+            <span class="hourly-window-badge" data-i18n="hourly.rolling">最近 60 分钟</span>
+          </div>
+          <div class="hourly-summary" aria-live="polite">
+            <div class="hourly-total-block">
+              <span data-i18n="hourly.window">统计时段</span>
+              <strong id="hourlyWindowLabel">—</strong>
+              <b class="loading" id="hourlyTotal">—</b>
+            </div>
+            <div class="hourly-ledger" id="hourlyLedger"><span class="hourly-placeholder" data-i18n="common.loading">正在读取…</span></div>
+          </div>
+          <div class="hourly-chart-scroll">
+            <div class="hourly-chart" id="hourlyChart">
+              <svg class="hourly-line" id="hourlyLine" viewBox="0 0 1000 180" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <div class="hourly-points" id="hourlyPoints" role="group" aria-label="最近 24 个完整小时的 Token 用量折线图" data-i18n-aria-label="hourly.rulerAria"><div class="empty-state" data-i18n="common.loading">正在读取…</div></div>
+              <div class="hourly-axis" id="hourlyAxis" aria-hidden="true"></div>
+            </div>
+          </div>
+          <div class="hour-point-inspector" id="hourPointInspector" aria-live="polite"><div class="empty-state" data-i18n="common.loading">正在读取…</div></div>
+        </div>
+
+        <div class="trend-pane" id="trendDailyPane" role="tabpanel" aria-labelledby="trendDailyTab">
+          <div class="section-head trend-daily-head">
+            <div>
+              <h2 id="pulseTitle" data-i18n="pulse.title">每日Token用量</h2>
+              <p id="pulseCaption" data-i18n="pulse.caption">连续本地自然日 · 零用量日保留位置</p>
+            </div>
+          </div>
+          <div class="pulse-scroll" id="pulseScroll">
+            <div class="pulse-belt" id="pulseBelt" role="listbox" aria-label="每日 Token 用量" data-i18n-aria-label="pulse.aria"></div>
+          </div>
+          <div class="pulse-inspector" id="pulseInspector" aria-live="polite">
+            <div><span data-i18n="pulse.selectedDate">选中日期</span><strong id="pulseDate">—</strong></div>
+            <div><span>Total</span><strong id="pulseTotal">—</strong></div>
+            <div><span>Input / Output</span><strong id="pulseIO">—</strong></div>
+            <div><span data-i18n="pulse.cost">等价成本</span><strong class="copper" id="pulseCost">—</strong></div>
+          </div>
         </div>
       </section>
 
@@ -167,12 +205,12 @@
         <button class="pressable" type="button" role="tab" aria-selected="false" aria-controls="detailBreakdown" tabindex="-1" data-dimension="thread">Thread</button>
       </div>
 
-      <section class="surface detail-breakdown" aria-labelledby="breakdownTitle">
+      <section class="surface detail-breakdown" id="breakdownPanel" aria-labelledby="breakdownTitle">
         <div class="section-head compact"><h2 id="breakdownTitle" data-i18n="details.breakdownTitle">按模型</h2><span class="section-meta" id="breakdownMeta">—</span></div>
         <div class="breakdown-list" id="detailBreakdown"><div class="empty-state" data-i18n="details.breakdownLoading">正在读取归属数据…</div></div>
       </section>
 
-      <section class="surface sessions-panel" aria-labelledby="sessionsTitle">
+      <section class="surface sessions-panel" id="sessionsPanel" aria-labelledby="sessionsTitle">
         <div class="section-head sessions-toolbar">
           <h2 id="sessionsTitle" data-i18n="details.sessionsTitle">Session 明细</h2>
           <div class="session-search" role="search">
@@ -273,6 +311,15 @@
       <div class="dialog-head"><h2 id="exportTitle" data-i18n="export.title">导出当前筛选</h2><button class="dialog-close pressable" type="button" data-close aria-label="关闭导出" data-i18n-aria-label="action.closeExport">×</button></div>
       <p class="dialog-intro" data-i18n="export.intro">逐事件导出包含本机项目路径与 Thread 标题，不包含任何对话内容。费用估算不会写入导出文件。</p>
       <div class="dialog-actions"><a class="action-button quiet pressable" id="exportJson" download data-i18n="export.json">下载 JSON</a><a class="action-button primary pressable" id="exportCsv" download data-i18n="export.csv">下载 CSV</a></div>
+    </div>
+  </dialog>
+
+  <dialog class="modal-dialog" id="rebuildDialog" aria-labelledby="rebuildTitle">
+    <div class="dialog-frame">
+      <div class="dialog-head"><h2 id="rebuildTitle" data-i18n="rebuild.title">需要重建统计数据</h2><button class="dialog-close pressable" type="button" data-close aria-label="关闭重建确认" data-i18n-aria-label="action.closeRebuild">×</button></div>
+      <p class="dialog-intro" data-i18n="rebuild.intro">检测到本地 JSONL 历史发生变化。重建会先清空当前派生统计，再仅从当前仍存在的 JSONL 重新计算；已删除的 JSONL 数据可能从统计中消失。</p>
+      <p class="dialog-intro" id="rebuildDetail"></p>
+      <div class="dialog-actions"><button class="action-button quiet pressable" type="button" data-close data-i18n="rebuild.keep">保留现有统计</button><button class="action-button primary pressable" id="confirmRebuild" type="button" data-i18n="rebuild.confirm">同意并重建</button></div>
     </div>
   </dialog>
 
