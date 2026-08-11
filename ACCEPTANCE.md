@@ -1,5 +1,42 @@
 # Codex Usage 验收记录
 
+## v2.3.2 验收记录（2026-08-11）
+
+- 执行主机：Windows amd64
+- 候选版本：v2.3.2 · Windows 安装器残留进程恢复与安全升级
+- 范围：Windows 进程发现/停止回归测试、Go 单元/集成测试与静态检查、Playwright Dashboard 与 synthetic Demo、Windows/Linux × amd64/arm64 交叉构建、Windows amd64 真实缺失 PID 文件升级和 SHA-256；Linux 与 arm64 原生运行由 GitHub Actions 和对应平台负责。
+
+主要验收项：
+
+- 精确停止：Windows 安装器按安装目录中可执行文件的完整路径枚举后台进程，不再只依赖可能缺失或陈旧的 PID 文件，也不会仅凭同名进程误杀。
+- 可恢复失败：只有确认旧进程退出后才删除登录启动项、PID 文件和启动脚本；停止失败会中止覆盖并保留原有服务元数据。
+- 权限提示：遇到跨权限级别的 `Access is denied` 时，错误会包含具体 PID 和“以管理员身份运行”重试说明。
+- 接口一致：安装、卸载和启动失败清理均向平台层传入明确的已安装 EXE 路径；Linux 与其他平台保持原有行为和构建兼容性。
+
+真实升级验证：
+
+- 将当前 43189 服务的 PID 文件临时移走后运行 v2.3.2 Windows amd64 候选；安装器仍准确找到并停止旧 PID 26884，替换后由新 PID 56996 监听 `127.0.0.1:43189`。
+- PID 文件和 HKCU 登录启动项均重新创建，候选报告 `codex-usage 2.3.2 (fa53e97-dirty, …) windows/amd64`。
+- 升级前后 Session 数均为 565；事件数由 73,879 正常增长到 73,895，现有本地统计库和配置得到保留。
+
+自动化结果：
+
+- `go test -count=1 -mod=readonly ./...`：通过。
+- `go vet -mod=readonly ./...`：通过。
+- Playwright Dashboard + synthetic Demo：15/15 通过。
+- 四平台交叉构建：Windows/Linux × amd64/arm64 全部生成成功；清单四项 SHA-256 已独立复算并逐项一致。
+
+### v2.3.2 本地候选构建产物
+
+| 平台 | SHA-256 |
+|---|---|
+| Windows amd64 | `52a5f11443f680e99b55033b8f3a58f6e8b0a3788baa2ebcddeea61e6bba8ca7` |
+| Windows arm64 | `806537f00cdb9272545d98f2410bc31d053b6d2e164184d7553dcdbe40ac875c` |
+| Linux amd64 | `30b18e8d60b3219638d7f8ac18363e4eafb0949089254f25fddf18fafad75c7d` |
+| Linux arm64 | `122490e0f73e36afe50b83ee18ef6872fe6d06e4fa07c8489752a46508fc6280` |
+
+Windows amd64 候选已原生运行并报告 `codex-usage 2.3.2 (fa53e97-dirty, 2026-08-11T14:50:11Z) windows/amd64`。`-dirty` 表示候选由发布准备提交前的工作树构建；正式 Release 将由 tag workflow 从干净提交重新测试和构建，最终哈希以 Release 附带的 `SHA256SUMS` 为准。
+
 ## v2.3.1 验收记录（2026-08-11）
 
 - 执行主机：Windows amd64

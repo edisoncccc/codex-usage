@@ -31,7 +31,7 @@ import (
 )
 
 var (
-	Version   = "2.3.1"
+	Version   = "2.3.2"
 	Commit    = "dev"
 	BuildDate = "unknown"
 )
@@ -541,7 +541,9 @@ func (c CLI) install(args []string) error {
 	source, _ = filepath.Abs(source)
 	destination, _ := filepath.Abs(paths.InstalledEXE)
 	if _, statErr := os.Stat(destination); statErr == nil {
-		_ = platform.UninstallService(paths.StateDir)
+		if err := platform.UninstallService(destination, paths.StateDir); err != nil {
+			return fmt.Errorf(c.tr("install.stopCurrent"), err)
+		}
 	}
 	previous, err := config.ResolvePreviousPaths()
 	if err != nil {
@@ -638,7 +640,7 @@ func (c CLI) install(args []string) error {
 		time.Sleep(180 * time.Millisecond)
 	}
 	if !healthOK(serviceURL) {
-		_ = platform.UninstallService(paths.StateDir)
+		_ = platform.UninstallService(destination, paths.StateDir)
 		return errors.New(c.tr("install.health"))
 	}
 	if serviceResult.Detail != "" {
@@ -673,7 +675,7 @@ func (c CLI) uninstall(args []string) error {
 		cfg = config.Default()
 	}
 	homes, _ := config.CodexHomes(cfg)
-	if err := platform.UninstallService(paths.StateDir); err != nil {
+	if err := platform.UninstallService(paths.InstalledEXE, paths.StateDir); err != nil {
 		return err
 	}
 	for _, home := range homes {

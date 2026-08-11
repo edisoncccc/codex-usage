@@ -92,7 +92,7 @@ func LockDown(path string) error { return os.Chmod(path, 0o700) }
 
 func SetPrivateUmask() { syscall.Umask(0o077) }
 
-func UninstallService(stateDir string) error {
+func UninstallService(_ string, stateDir string) error {
 	if _, err := exec.LookPath("systemctl"); err == nil {
 		_, _ = exec.Command("systemctl", "--user", "disable", "--now", "codex-usage.service").CombinedOutput()
 	}
