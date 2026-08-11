@@ -13,7 +13,7 @@ body:
     attributes:
       label: Version
       description: Output of `codex-usage version`.
-      placeholder: codex-usage 2.3.2 (...)
+      placeholder: codex-usage 2.3.3 (...)
     validations:
       required: true
   - type: dropdown

@@ -31,7 +31,7 @@ import (
 )
 
 var (
-	Version   = "2.3.2"
+	Version   = "2.3.3"
 	Commit    = "dev"
 	BuildDate = "unknown"
 )
@@ -635,7 +635,7 @@ func (c CLI) install(args []string) error {
 		return err
 	}
 	serviceURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
-	deadline := time.Now().Add(12 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) && !healthOK(serviceURL) {
 		time.Sleep(180 * time.Millisecond)
 	}
