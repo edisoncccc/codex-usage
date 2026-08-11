@@ -159,6 +159,12 @@ test("hourly usage inspects the selected point and navigates across local days",
   await expect(page.locator("#hourlyDatePicker")).toHaveValue(/^\d{4}-\d{2}-\d{2}$/);
   await expect(page.locator("#hourlyDateYear")).not.toHaveText("—");
   await expect(page.locator("#hourlyDateLabel")).not.toHaveText("—");
+  const dateType = await page.locator("#hourlyDateLabel").evaluate((node) => ({
+    year: Number.parseFloat(getComputedStyle(document.querySelector("#hourlyDateYear")).fontSize),
+    date: Number.parseFloat(getComputedStyle(node).fontSize)
+  }));
+  expect(dateType.year).toBeGreaterThanOrEqual(11);
+  expect(dateType.date).toBeGreaterThanOrEqual(16);
   await expect(page.locator("#hourlyTotal")).toHaveText("60");
   await expect(page.locator("#hourlyCost")).toHaveText(/^\$/);
   await expect(page.locator("#hourlyModels").getByText("gpt-5.4", { exact: true })).toBeVisible();
