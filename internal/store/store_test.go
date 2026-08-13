@@ -608,8 +608,8 @@ func TestV4MigrationPreservesHistoryUntilSingleMetadataRebuildApproved(t *testin
 	if err := st.db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != "5" {
-		t.Fatalf("schema version = %q, want 5", version)
+	if version != "6" {
+		t.Fatalf("schema version = %q, want 6", version)
 	}
 	if err := st.ResetHistorical(ctx); err != nil {
 		t.Fatal(err)

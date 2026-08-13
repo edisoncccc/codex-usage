@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { once } from "node:events";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -14,6 +15,17 @@ let testBinaryDir;
 let baseURL;
 let dashboardURL;
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+async function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
 
 async function buildTestBinary() {
   testBinaryDir = await mkdtemp(path.join(tmpdir(), "codex-usage-e2e-bin-"));
@@ -36,7 +48,7 @@ async function buildTestBinary() {
 test.beforeAll(async () => {
   const binary = process.env.CODEX_USAGE_BIN || await buildTestBinary();
   stateDir = await mkdtemp(path.join(tmpdir(), "codex-usage-e2e-"));
-  const port = 45000 + (process.pid % 1000);
+  const port = await findFreePort();
   codexHomeDir = await mkdtemp(path.join(tmpdir(), "codex-usage-codex-home-"));
   const codexHome = codexHomeDir;
   const now = new Date();
@@ -299,6 +311,63 @@ test("details renders breakdown before delayed sessions and dimension changes st
   await expect(page.locator("#breakdownTitle")).toHaveText("按来源");
   await page.waitForTimeout(100);
   expect(sessionRequests).toBe(requestsBeforeDimensionChange);
+});
+
+test("details supports today and an arbitrary local date from both date controls", async ({ page }) => {
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "明细" }).click();
+
+  const dates = await page.evaluate(() => {
+    const key = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    const today = new Date();
+    const tomorrow = new Date(today);
+    const selected = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    selected.setDate(selected.getDate() - 10);
+    return { today: key(today), tomorrow: key(tomorrow), selected: key(selected) };
+  });
+
+  const todayResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/v1/breakdown" && url.searchParams.get("since") === dates.today && url.searchParams.get("until") === dates.tomorrow;
+  });
+  await page.locator('[data-detail-range="today"]').click();
+  await todayResponse;
+  await expect(page.locator('[data-detail-range="today"]')).toHaveAttribute("aria-pressed", "true");
+
+  const pickerResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/v1/breakdown" && url.searchParams.get("date") === dates.selected;
+  });
+  await page.locator("#detailDatePicker").fill(dates.selected);
+  await page.locator("#detailDatePicker").dispatchEvent("change");
+  const picked = new URL((await pickerResponse).url());
+  expect(picked.searchParams.has("since")).toBeFalsy();
+  expect(picked.searchParams.has("until")).toBeFalsy();
+  await expect(page.locator("#detailDatePicker")).toHaveValue(dates.selected);
+  await expect(page.locator("[data-detail-range][aria-pressed=true]")).toHaveCount(0);
+  await expect(page.locator(".filter-chip")).toContainText("日期 ·");
+
+  await page.locator("#filterButton").click();
+  await expect(page.locator("#filterDate")).toHaveValue(dates.selected);
+  const filterResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/v1/breakdown" && url.searchParams.get("date") === dates.today;
+  });
+  await page.locator("#filterDate").fill(dates.today);
+  await page.locator("#applyFilters").click();
+  await filterResponse;
+  await expect(page.locator("#detailDatePicker")).toHaveValue(dates.today);
+
+  const presetResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/v1/breakdown" && url.searchParams.get("date") === null && url.searchParams.get("since") !== null;
+  });
+  await page.locator('[data-detail-range="7d"]').click();
+  await presetResponse;
+  await expect(page.locator('[data-detail-range="7d"]')).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#detailDatePicker")).toHaveValue("");
+  await expect(page.locator(".filter-chip")).toHaveCount(0);
 });
 
 test("filter dimensions load lazily once instead of running startup breakdowns", async ({ page }) => {

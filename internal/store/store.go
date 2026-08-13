@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	schemaVersion               = 5
+	schemaVersion               = 6
 	historicalRebuildReasonKey  = "historical_rebuild_required"
 	pricingAggregatableEventSQL = `e.input_tokens>=0 AND e.cached_input_tokens>=0 AND e.cache_write_input_tokens>=0
 		AND e.output_tokens>=0 AND e.reasoning_output_tokens>=0 AND e.total_tokens>=0

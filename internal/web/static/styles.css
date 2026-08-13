@@ -224,6 +224,11 @@ h1, h2, h3 { font-family: var(--display); text-wrap: balance; }
 .segmented { display: inline-flex; flex-wrap: nowrap; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-muted); }
 .segmented button { min-width: 56px; padding: 7px 12px; border: 0; border-radius: 7px; color: var(--text-soft); background: transparent; cursor: pointer; font-size: var(--type-ui); }
 .segmented button.selected { color: var(--text); background: var(--surface-raised); box-shadow: 0 1px 5px rgba(20, 30, 32, .08); font-weight: 650; }
+.details-range-tools { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
+.details-date-picker { min-width: 154px; height: 42px; grid-template-columns: minmax(0, 1fr) 26px; gap: 8px; padding: 5px 10px 5px 12px; border-radius: 10px; background: var(--surface-muted); box-shadow: none; }
+.details-date-picker .date-picker-copy strong { margin-top: 0; font-size: var(--type-ui); font-weight: 650; }
+.details-date-picker .date-picker-glyph { transform: scale(.88); }
+.details-date-picker.selected { border-color: color-mix(in srgb, var(--teal) 58%, var(--line)); background: var(--teal-soft); }
 
 .surface { border: 1px solid var(--line); border-radius: 17px; background: var(--surface); }
 .hero-metrics { min-height: var(--density-hero-min); display: grid; grid-template-columns: minmax(0, 1.14fr) 1px minmax(0, .86fr); align-items: stretch; overflow: hidden; }
@@ -585,8 +590,10 @@ select:focus, input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px col
   .nav-tab { flex: 1; }
   .shell { padding-top: var(--density-shell-top); }
   .view-heading { align-items: start; flex-direction: column; gap: 16px; }
+  .details-range-tools { width: 100%; align-items: stretch; flex-direction: column; }
   .range-control { align-self: stretch; }
   .range-control button { flex: 1; }
+  .details-date-picker { width: 100%; }
   .month-nav { width: 100%; }
   .month-nav .date-picker-shell { min-width: 0; flex: 1; }
   .hero-value { font-size: clamp(2.625rem, 15vw, 4rem); }
