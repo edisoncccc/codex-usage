@@ -4,6 +4,7 @@ const i18n = window.CodexUsageI18n;
 const t = (key, values) => i18n.t(key, values);
 
 const FILTER_FIELDS = {
+  date: { selector: "#filterDate", labelKey: "filter.date" },
   model: { selector: "#filterModel", labelKey: "filter.model" },
   source: { selector: "#filterSource", labelKey: "filter.source" },
   agent_type: { selector: "#filterAgent", labelKey: "filter.agent" },
@@ -214,6 +215,28 @@ function rangeBounds(range) {
   };
 }
 
+function syncRangeControls() {
+  const selectedDate = state.filters.date || "";
+  $$('[data-overview-range]').forEach((button) => {
+    const selected = !selectedDate && button.dataset.overviewRange === state.overviewRange;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  $$('[data-detail-range]').forEach((button) => {
+    const selected = !selectedDate && button.dataset.detailRange === state.detailRange;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  const picker = $("#detailDatePicker");
+  if (!picker) return;
+  picker.value = selectedDate;
+  picker.max = todayKey();
+  $(".details-date-picker").classList.toggle("selected", Boolean(selectedDate));
+  $("#detailDateLabel").textContent = selectedDate
+    ? i18n.formatDate(dateFromKey(selectedDate), { year: "numeric", month: "short", day: "numeric" })
+    : t("details.pickDate");
+}
+
 function monthBounds(cursor = state.monthCursor) {
   const start = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
   const end = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
@@ -302,6 +325,10 @@ function invalidateDataCache() {
 function filterQuery(extra = {}, filters = state.filters) {
   const query = new URLSearchParams();
   const values = { ...filters, ...extra };
+  if (filters.date) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(values.since || ""))) delete values.since;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(values.until || ""))) delete values.until;
+  }
   for (const [key, value] of Object.entries(values)) {
     if (key === "label") continue;
     if (value !== undefined && value !== null && value !== "" && value !== "all") query.set(key, value);
@@ -424,7 +451,8 @@ function renderFilterChips() {
   $("#filterCount").classList.toggle("hidden", entries.length === 0);
   $("#filterCount").textContent = entries.length;
   $("#filterChips").innerHTML = entries.map(([key, value]) => {
-    const display = key === "project" ? shortPath(value)
+    const display = key === "date" ? i18n.formatDate(dateFromKey(value), { year: "numeric", month: "short", day: "numeric" })
+      : key === "project" ? shortPath(value)
       : key === "confidence" ? confidenceLabel(value)
         : key === "session_id" ? shortId(value) : value;
     const label = fieldLabel(key);
@@ -437,20 +465,32 @@ function renderFilterChips() {
     syncFilterForm();
     loadCurrentView();
   }));
+  syncRangeControls();
 }
 
 function syncFilterForm() {
   for (const [key, meta] of Object.entries(FILTER_FIELDS)) $(meta.selector).value = state.filters[key] || "";
+  $("#filterDate").max = todayKey();
 }
 
 function resetDataSelections() {
   state.hourlyPointDate = "";
   state.pulseDate = "";
+  const filteredDate = state.filters.date || "";
+  const parsed = dateFromKey(filteredDate);
+  if (filteredDate && !Number.isNaN(parsed.getTime()) && dateKey(parsed) === filteredDate) {
+    state.hourlyDate = filteredDate;
+    state.monthCursor = new Date(parsed.getFullYear(), parsed.getMonth(), 1);
+    state.selectedDate = filteredDate;
+    state.dailyInitialSelection = false;
+    return;
+  }
   state.selectedDate = "";
   state.dailyInitialSelection = true;
 }
 
 function applyFiltersFromForm() {
+  if (!$("#filterForm").reportValidity()) return;
   const filters = {};
   for (const [key, meta] of Object.entries(FILTER_FIELDS)) {
     const value = $(meta.selector).value;
@@ -479,7 +519,9 @@ function setLoading(element, label = null) {
 async function loadOverview({ preserve = false } = {}) {
   const serial = ++state.requestSerial.overview;
   const bounds = rangeBounds(state.overviewRange);
-  $("#overviewSubtitle").textContent = bounds.label;
+  $("#overviewSubtitle").textContent = state.filters.date
+    ? i18n.formatDate(dateFromKey(state.filters.date), { year: "numeric", month: "long", day: "numeric" })
+    : bounds.label;
   if (!preserve) {
     setLoading($("#overviewTotal"));
     setLoading($("#overviewCost"));
@@ -1579,24 +1621,35 @@ function setupEvents() {
   enableNativeDatePicker($("#hourlyDatePicker"));
   $$('[data-overview-range]').forEach((button) => button.addEventListener("click", () => {
     state.overviewRange = button.dataset.overviewRange;
-    $$('[data-overview-range]').forEach((item) => {
-      const selected = item === button;
-      item.classList.toggle("selected", selected);
-      item.setAttribute("aria-pressed", String(selected));
-    });
-    state.hourlyPointDate = "";
-    state.pulseDate = "";
+    delete state.filters.date;
+    resetDataSelections();
+    renderFilterChips();
+    syncFilterForm();
     loadOverview();
   }));
   $$('[data-detail-range]').forEach((button) => button.addEventListener("click", () => {
     state.detailRange = button.dataset.detailRange;
-    $$('[data-detail-range]').forEach((item) => {
-      const selected = item === button;
-      item.classList.toggle("selected", selected);
-      item.setAttribute("aria-pressed", String(selected));
-    });
+    delete state.filters.date;
+    resetDataSelections();
+    renderFilterChips();
+    syncFilterForm();
     loadDetails();
   }));
+  $("#detailDatePicker").addEventListener("change", (event) => {
+    const value = event.target.value;
+    const parsed = dateFromKey(value);
+    if (value && (Number.isNaN(parsed.getTime()) || dateKey(parsed) !== value || value > todayKey())) {
+      syncRangeControls();
+      return;
+    }
+    if (value) state.filters.date = value;
+    else delete state.filters.date;
+    resetDataSelections();
+    renderFilterChips();
+    syncFilterForm();
+    loadDetails();
+  });
+  enableNativeDatePicker($("#detailDatePicker"));
   $$('[data-dimension]').forEach((button) => button.addEventListener("click", () => {
     state.detailDimension = button.dataset.dimension;
     $$('[data-dimension]').forEach((item) => {

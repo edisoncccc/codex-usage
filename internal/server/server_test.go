@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -439,6 +440,36 @@ func TestParseSince(t *testing.T) {
 	}
 	if _, err := ParseSince("banana"); err == nil {
 		t.Fatal("expected invalid since error")
+	}
+}
+
+func TestParseFilterDateUsesOneLocalNaturalDay(t *testing.T) {
+	filter, err := parseFilter(url.Values{"date": {"2026-07-30"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filter.SinceDate != "2026-07-30" || filter.UntilDate != "2026-07-31" {
+		t.Fatalf("unexpected local date bounds: since=%q until=%q", filter.SinceDate, filter.UntilDate)
+	}
+	if filter.Since.In(time.Local).Format("2006-01-02") != "2026-07-30" ||
+		filter.Until.In(time.Local).Format("2006-01-02") != "2026-07-31" {
+		t.Fatalf("unexpected local time interval: since=%v until=%v", filter.Since, filter.Until)
+	}
+
+	filter, err = parseFilter(url.Values{
+		"date":  {"2026-07-30"},
+		"since": {"2026-07-30T12:00:00+08:00"},
+		"until": {"2026-07-30T13:00:00+08:00"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filter.SinceDate != "" || filter.UntilDate != "" || filter.Until.Sub(filter.Since) != time.Hour {
+		t.Fatalf("date did not preserve the narrower absolute interval: %#v", filter)
+	}
+
+	if _, err := parseFilter(url.Values{"date": {"2026-07-40"}}); err == nil {
+		t.Fatal("expected invalid date error")
 	}
 }
 

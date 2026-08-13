@@ -1,13 +1,25 @@
 import { test, expect } from "@playwright/test";
 import { once } from "node:events";
+import { createServer } from "node:net";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 let server;
 let baseURL;
 
+async function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const { port } = probe.address();
+      probe.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
 test.beforeAll(async () => {
-  const port = 46000 + (process.pid % 1000);
+  const port = await findFreePort();
   baseURL = `http://127.0.0.1:${port}/codex-usage/`;
   server = spawn(process.execPath, ["scripts/serve-static.mjs", "dist/pages", String(port), "codex-usage"], { stdio: "ignore", windowsHide: true });
   const deadline = Date.now() + 10_000;

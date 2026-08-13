@@ -51,6 +51,19 @@
   const dateKey = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
   const hourKey = (date) => `${dateKey(date)}T${pad(date.getHours())}`;
   const rangeDate = (value) => new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00` : value);
+  function requestedBounds(url, fallbackStart = null, fallbackEnd = null) {
+    let start = url.searchParams.get("since") ? rangeDate(url.searchParams.get("since")) : null;
+    let end = url.searchParams.get("until") ? rangeDate(url.searchParams.get("until")) : null;
+    const selectedDate = url.searchParams.get("date");
+    if (/^\d{4}-\d{2}-\d{2}$/.test(selectedDate || "")) {
+      const dayStart = rangeDate(selectedDate);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setDate(dayEnd.getDate() + 1);
+      if (!start || dayStart > start) start = dayStart;
+      if (!end || dayEnd < end) end = dayEnd;
+    }
+    return { start: start || fallbackStart, end: end || fallbackEnd };
+  }
   const scaledUsage = (usage, multiplier) => Object.fromEntries(Object.entries(usage).map(([key, value]) => [key, Math.round(value * multiplier)]));
   const jsonResponse = (value, status = 200) => new Response(JSON.stringify(value), {
     status,
@@ -66,9 +79,8 @@
   }
 
   function summary(url) {
-    const since = url.searchParams.get("since");
-    const until = url.searchParams.get("until");
-    const dayScale = since && until ? Math.min(1, Math.max(1 / 24, (new Date(until) - new Date(since)) / 86_400_000) / 30) : 1;
+    const { start, end } = requestedBounds(url);
+    const dayScale = start && end ? Math.min(1, Math.max(1 / 24, (end - start) / 86_400_000) / 30) : 1;
     const usage = scaledUsage(baseUsage, dayScale * filterScale(url));
     return {
       usage,
@@ -81,10 +93,11 @@
   }
 
   function dailyPoints(url) {
-    const since = url.searchParams.get("since");
-    const until = url.searchParams.get("until");
-    const start = since ? rangeDate(since) : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
-    const end = until ? rangeDate(until) : new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const { start, end } = requestedBounds(
+      url,
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29),
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+    );
     const points = [];
     let index = 0;
     for (let date = new Date(start); date < end && index < 120; date.setDate(date.getDate() + 1), index++) {
@@ -120,8 +133,7 @@
   function hourlyPoints(url) {
     const currentHour = new Date(now);
     currentHour.setMinutes(0, 0, 0);
-    const start = url.searchParams.get("since") ? new Date(url.searchParams.get("since")) : new Date(currentHour.getTime() - 24 * 60 * 60_000);
-    const end = url.searchParams.get("until") ? new Date(url.searchParams.get("until")) : currentHour;
+    const { start, end } = requestedBounds(url, new Date(currentHour.getTime() - 24 * 60 * 60_000), currentHour);
     const points = [];
     let index = 0;
     for (let date = new Date(start); date < end && index < 168; date = new Date(date.getTime() + 60 * 60_000), index++) {
@@ -217,7 +229,7 @@
     const endpoint = url.pathname.slice(url.pathname.indexOf("/api/v1/"));
     const method = String(init.method || (typeof input !== "string" && input.method) || "GET").toUpperCase();
     if (endpoint === "/api/v1/status") return jsonResponse({
-      version: "2.3.3-demo", scanning: false,
+      version: "2.3.4-demo", scanning: false,
       status: {
         machine: { id: "synthetic-machine", label: "Synthetic Windows · demo", hostname: "synthetic-host", os: "windows", arch: "amd64" },
         last_scan: now.toISOString(), accounting_mode: "jsonl_only", otel_active: false,

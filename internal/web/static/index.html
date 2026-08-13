@@ -222,10 +222,18 @@
     <section class="view-panel" id="view-details" role="tabpanel" aria-labelledby="tab-details" data-view-panel="details" hidden>
       <div class="view-heading details-heading">
         <div><h1 data-i18n="details.title">明细与归属</h1></div>
-        <div class="segmented range-control" role="group" aria-label="明细时间范围" data-i18n-aria-label="details.rangeAria">
-          <button class="pressable" type="button" data-detail-range="7d" aria-pressed="false" data-i18n="range.7d">7 日</button>
-          <button class="pressable selected" type="button" data-detail-range="30d" aria-pressed="true" data-i18n="range.30d">30 日</button>
-          <button class="pressable" type="button" data-detail-range="all" aria-pressed="false" data-i18n="range.all">全部</button>
+        <div class="details-range-tools">
+          <div class="segmented range-control" role="group" aria-label="明细时间范围" data-i18n-aria-label="details.rangeAria">
+            <button class="pressable" type="button" data-detail-range="today" aria-pressed="false" data-i18n="range.today">今日</button>
+            <button class="pressable" type="button" data-detail-range="7d" aria-pressed="false" data-i18n="range.7d">7 日</button>
+            <button class="pressable selected" type="button" data-detail-range="30d" aria-pressed="true" data-i18n="range.30d">30 日</button>
+            <button class="pressable" type="button" data-detail-range="all" aria-pressed="false" data-i18n="range.all">全部</button>
+          </div>
+          <label class="date-picker-shell details-date-picker" for="detailDatePicker">
+            <span class="date-picker-copy" aria-hidden="true"><strong id="detailDateLabel" data-i18n="details.pickDate">指定日期</strong></span>
+            <span class="date-picker-glyph" aria-hidden="true"></span>
+            <input class="date-picker-native" id="detailDatePicker" type="date" aria-label="选择明细日期" data-i18n-aria-label="details.dateAria">
+          </label>
         </div>
       </div>
 
@@ -263,6 +271,7 @@
     <div class="dialog-frame">
       <div class="dialog-head"><h2 id="filterTitle" data-i18n="filter.title">筛选当前电脑的数据</h2><button class="dialog-close pressable" type="button" data-close aria-label="关闭筛选" data-i18n-aria-label="action.closeFilter">×</button></div>
       <form class="filter-form" id="filterForm">
+        <label><span data-i18n="filter.date">日期</span><input id="filterDate" type="date" aria-label="筛选日期" data-i18n-aria-label="filter.dateAria"></label>
         <label><span data-i18n="filter.model">模型</span><select id="filterModel"><option value="" data-i18n="filter.allModels">全部模型</option></select></label>
         <label><span data-i18n="filter.source">来源</span><select id="filterSource"><option value="" data-i18n="filter.allSources">全部来源</option></select></label>
         <label><span data-i18n="filter.agent">Agent</span><select id="filterAgent"><option value="" data-i18n="filter.allAgents">全部 Agent</option><option value="main" data-i18n="filter.agent.main">主任务</option><option value="subagent" data-i18n="filter.agent.subagent">Subagent</option><option value="guardian" data-i18n="filter.agent.guardian">Guardian</option><option value="memory" data-i18n="filter.agent.memory">Memory</option></select></label>

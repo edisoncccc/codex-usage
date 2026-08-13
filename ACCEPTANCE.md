@@ -1,5 +1,16 @@
 # Codex Usage 验收记录
 
+## v2.3.4 验收记录（2026-08-13）
+
+- 执行主机：Windows amd64
+- 候选版本：v2.3.4 · Subagent 重放统计修复与单日明细筛选
+- 根因验证：新版 Sol Ultra Subagent rollout 会在子会话 metadata 后复制父会话完整历史；旧解析器从父 metadata 后开始计数，因而把复制的累计快照重复归入每个 Subagent。
+- 修复：以子会话 UUIDv7 和首个属于子会话的 `task_started` 识别新版重放边界，同时保留旧版显式边界和单 metadata fork 的兼容逻辑；schema 升至 v6，已有统计库升级后保留原数据并要求用户明确确认历史重建。
+- 真实数据隔离重建：目标会话由旧库的 5,995,325,771 Token 降至 481,613,779，其中 43 个 Subagent 由 5,719,963,622 降至 206,251,630；同一时点今日总量由 17,048,471,992 降至 856,625,886。
+- 明细页：新增“今日”、任意单日日期选择器，以及“筛选”中的日期条件；后端统一支持 `date=YYYY-MM-DD`。
+- 自动化：`go test ./...`、`go vet ./...`、Playwright Dashboard + synthetic Demo 16/16、`git diff --check` 均通过。
+- 部署验证：独立状态目录完成 621 个 rollout 全量扫描，43190 健康检查与 Dashboard 返回 HTTP 200；测试服务随后按要求关闭，未修改 43189 正式服务。
+
 ## v2.3.3 验收记录（2026-08-11）
 
 - 执行主机：Windows amd64

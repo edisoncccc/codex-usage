@@ -583,6 +583,35 @@ func parseFilter(query url.Values) (model.Filter, error) {
 			filter.UntilDate = value
 		}
 	}
+	if value := query.Get("date"); value != "" {
+		if !isDateOnly(value) {
+			return filter, fmt.Errorf("date: 无效日期 %q", value)
+		}
+		dayStart, _ := time.ParseInLocation("2006-01-02", value, time.Local)
+		dayEnd := dayStart.AddDate(0, 0, 1)
+		sinceValue, untilValue := query.Get("since"), query.Get("until")
+		hasAbsoluteBounds := (sinceValue != "" && sinceValue != "all" && !isDateOnly(sinceValue)) ||
+			(untilValue != "" && !isDateOnly(untilValue))
+		if hasAbsoluteBounds {
+			filter.SinceDate, filter.UntilDate = "", ""
+			if filter.Since.IsZero() || dayStart.After(filter.Since) {
+				filter.Since = dayStart
+			}
+			if filter.Until.IsZero() || dayEnd.Before(filter.Until) {
+				filter.Until = dayEnd
+			}
+		} else {
+			if filter.SinceDate == "" || value > filter.SinceDate {
+				filter.SinceDate = value
+				filter.Since = dayStart
+			}
+			dayEndValue := dayEnd.Format("2006-01-02")
+			if filter.UntilDate == "" || dayEndValue < filter.UntilDate {
+				filter.UntilDate = dayEndValue
+				filter.Until = dayEnd
+			}
+		}
+	}
 	filter.Model = query.Get("model")
 	filter.Source = query.Get("source")
 	filter.AgentType = query.Get("agent_type")

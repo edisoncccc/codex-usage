@@ -418,6 +418,97 @@ func TestForkReplayPrefixIsSkippedAndFileOwnerNeverChanges(t *testing.T) {
 	}
 }
 
+func TestModernForkReplayBeforeChildTaskIsSkipped(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	parentID := "019ff753-9210-7a41-9670-8f8d3a738a9d"
+	childID := "019ffaca-c65e-78a3-8383-70d9d427eaf3"
+	parent := strings.Join([]string{
+		fmt.Sprintf(`{"timestamp":"2026-08-13T01:00:00Z","type":"session_meta","payload":{"id":%q,"cwd":"/parent"}}`, parentID),
+		tokenLine("2026-08-13T01:00:01Z", usage(240, 180, 0, 60, 10, 300), usage(240, 180, 0, 60, 10, 300)),
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "z-parent.jsonl"), []byte(parent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	childPath := filepath.Join(dir, "a-modern-child.jsonl")
+	replayed := strings.Join([]string{
+		fmt.Sprintf(`{"timestamp":"2026-08-13T02:00:00Z","type":"session_meta","payload":{"id":%q,"forked_from_id":%q,"cwd":"/child","source":{"subagent":{"thread_spawn":{"parent_thread_id":%q}}}}}`, childID, parentID, parentID),
+		fmt.Sprintf(`{"timestamp":"2026-08-13T02:00:00Z","type":"session_meta","payload":{"id":%q,"cwd":"/parent"}}`, parentID),
+		`{"timestamp":"2026-08-13T02:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"019ff753-96f5-7ba1-9874-706a1c2e5a07"}}`,
+		tokenLine("2026-08-13T02:00:00Z", usage(120, 90, 0, 30, 5, 150), usage(120, 90, 0, 30, 5, 150)),
+		`{"timestamp":"2026-08-13T02:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"019ff974-bc57-7d93-8712-3627856b327a"}}`,
+		tokenLine("2026-08-13T02:00:00Z", usage(240, 180, 0, 60, 10, 300), usage(120, 90, 0, 30, 5, 150)),
+	}, "\n") + "\n"
+	if err := os.WriteFile(childPath, []byte(replayed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	scanner := &Scanner{Store: st}
+	first, err := scanner.Scan(context.Background(), []string{home}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.GrandTotal != 300 || first.EventsInserted != 1 {
+		t.Fatalf("modern replay was exposed before the child task boundary: scan=%+v summary=%+v", first, summary)
+	}
+	cursor, ok, err := st.GetCursor(context.Background(), childPath)
+	if err != nil || !ok || cursor.Offset != 0 || cursor.ReplayOffset != 0 {
+		t.Fatalf("modern replay cursor should remain pending: ok=%v cursor=%+v err=%v", ok, cursor, err)
+	}
+
+	file, err := os.OpenFile(childPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation := strings.Join([]string{
+		`{"timestamp":"2026-08-13T02:00:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"019ffaca-cac2-7122-bd5c-e30f9b7c3715"}}`,
+		`{"timestamp":"2026-08-13T02:00:02Z","type":"turn_context","payload":{"turn_id":"019ffaca-cac2-7122-bd5c-e30f9b7c3715","cwd":"/child","model":"gpt-5.6-sol"}}`,
+		tokenLine("2026-08-13T02:00:03Z", usage(264, 198, 0, 66, 11, 330), usage(24, 18, 0, 6, 1, 30)),
+		tokenLine("2026-08-13T02:00:04Z", usage(280, 210, 0, 70, 12, 350), usage(16, 12, 0, 4, 1, 20)),
+	}, "\n") + "\n"
+	_, writeErr := file.WriteString(continuation)
+	closeErr := file.Close()
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	second, err := scanner.Scan(context.Background(), []string{home}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err = st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.GrandTotal != 350 || second.EventsInserted != 2 {
+		t.Fatalf("modern child continuation was not isolated from replay: scan=%+v summary=%+v", second, summary)
+	}
+	sessions, err := st.Sessions(context.Background(), model.Filter{}, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range sessions {
+		if session.SessionID == childID && (session.Usage.Total != 50 || session.AgentType != "subagent") {
+			t.Fatalf("modern child attribution mismatch: %+v", session)
+		}
+	}
+}
+
 func TestSingleMetadataForkFixturesUseImplicitFirstSnapshotBaseline(t *testing.T) {
 	tests := []struct {
 		name        string

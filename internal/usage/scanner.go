@@ -412,8 +412,9 @@ type turnContextPayload struct {
 }
 
 type eventPayload struct {
-	Type string          `json:"type"`
-	Info json.RawMessage `json:"info"`
+	Type   string          `json:"type"`
+	TurnID string          `json:"turn_id"`
+	Info   json.RawMessage `json:"info"`
 }
 
 type tokenInfo struct {
@@ -699,13 +700,18 @@ type rolloutInspection struct {
 	implicitCandidate bool
 	implicitOffset    int64
 	implicitBaseline  model.TokenUsage
+	legacyOffset      int64
+	legacyBaseline    model.TokenUsage
+	modernPrefix      bool
 }
 
 // inspectRollout reads only metadata and token_count records. A fork file owns
-// the first session_meta; a later parent session_meta terminates the copied
-// history prefix. Some fork writers omit that later parent metadata entirely;
-// for those files, the first total-last snapshot establishes an implicit
-// inherited baseline and the first last_token_usage remains child usage.
+// the first session_meta. Older writers put a copied parent session_meta after
+// the replayed token prefix. Newer multi-agent writers put it before a complete
+// parent transcript snapshot; the child's first UUIDv7 task_started record then
+// terminates that replay. Some writers omit both explicit boundaries; for those
+// files, the first total-last snapshot establishes an implicit inherited
+// baseline and the first last_token_usage remains child usage.
 func (s *Scanner) inspectRollout(ctx context.Context, path string) (rolloutInspection, error) {
 	var out rolloutInspection
 	file, err := os.Open(path)
@@ -748,14 +754,28 @@ func (s *Scanner) inspectRollout(ctx context.Context, path string) (rolloutInspe
 							}
 						} else if candidate != "" && candidate != out.OwnerID &&
 							(out.ForkedFromID == "" || candidate == out.ForkedFromID) {
-							out.ReplayOffset = offset
-							return out, nil
+							if out.Baseline.IsZero() {
+								// Modern subagent rollouts copy the parent metadata first,
+								// then replay the complete parent transcript. Wait for the
+								// child task_started boundary instead of counting that replay.
+								out.modernPrefix = true
+							} else if out.legacyOffset == 0 {
+								// Legacy rollouts put the parent metadata after their copied
+								// token prefix. Preserve both the offset and baseline here.
+								out.legacyOffset = offset
+								out.legacyBaseline = out.Baseline
+							}
 						}
 					}
 				case "event_msg":
 					if out.OwnerID != "" && out.ForkedFromID != "" {
 						var payload eventPayload
-						if json.Unmarshal(env.Payload, &payload) == nil && payload.Type == "token_count" && len(payload.Info) > 0 {
+						if json.Unmarshal(env.Payload, &payload) == nil && payload.Type == "task_started" &&
+							uuidV7AtOrAfter(payload.TurnID, out.OwnerID) {
+							out.ReplayOffset = offset
+							return out, nil
+						}
+						if payload.Type == "token_count" && len(payload.Info) > 0 {
 							var info tokenInfo
 							if json.Unmarshal(payload.Info, &info) == nil {
 								current := info.Total.withMissingSubsets(out.Baseline)
@@ -782,12 +802,48 @@ func (s *Scanner) inspectRollout(ctx context.Context, path string) (rolloutInspe
 }
 
 func (in rolloutInspection) finalize() rolloutInspection {
+	if in.ReplayOffset == 0 && in.legacyOffset > 0 {
+		in.ReplayOffset = in.legacyOffset
+		in.Baseline = in.legacyBaseline
+		return in
+	}
+	if in.modernPrefix {
+		// A modern fork may be observed while its replay prefix is still being
+		// written. Keep it pending rather than exposing copied parent usage.
+		in.ReplayOffset = 0
+		in.Baseline = model.TokenUsage{}
+		return in
+	}
 	if in.ReplayOffset == 0 && in.ForkedFromID != "" && in.implicitCandidate {
 		in.ReplayOffset = in.implicitOffset
 		in.Baseline = in.implicitBaseline
 		in.Implicit = true
 	}
 	return in
+}
+
+func uuidV7AtOrAfter(candidate, owner string) bool {
+	if len(candidate) != 36 || len(owner) != 36 || candidate[14] != '7' || owner[14] != '7' {
+		return false
+	}
+	for _, index := range []int{8, 13, 18, 23} {
+		if candidate[index] != '-' || owner[index] != '-' {
+			return false
+		}
+	}
+	for index := 0; index < 36; index++ {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if !isHex(candidate[index]) || !isHex(owner[index]) {
+			return false
+		}
+	}
+	return strings.Compare(strings.ToLower(candidate), strings.ToLower(owner)) >= 0
+}
+
+func isHex(value byte) bool {
+	return value >= '0' && value <= '9' || value >= 'a' && value <= 'f' || value >= 'A' && value <= 'F'
 }
 
 func (in rolloutInspection) persistedReplayOffset() int64 {
@@ -927,7 +983,7 @@ func walkRollouts(home string) []string {
 
 // readSelectiveRecord streams a JSONL record. It keeps only a small probe for
 // irrelevant records and never allocates an entire prompt/reply/tool-output
-// line. Relevant metadata/token records are capped separately.
+// line. Relevant metadata, task-boundary, and token records are capped separately.
 func readSelectiveRecord(reader *bufio.Reader, maxRelevant int) (record []byte, consumed int64, complete, tooLarge bool, finalErr error) {
 	var probe []byte
 	var kept []byte
@@ -1002,6 +1058,7 @@ func readSelectiveRecord(reader *bufio.Reader, maxRelevant int) (record []byte, 
 func interestingProbe(probe []byte) bool {
 	return bytes.Contains(probe, []byte(`"session_meta"`)) ||
 		bytes.Contains(probe, []byte(`"turn_context"`)) ||
+		bytes.Contains(probe, []byte(`"task_started"`)) ||
 		bytes.Contains(probe, []byte(`"token_count"`))
 }
 
