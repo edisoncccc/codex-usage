@@ -469,6 +469,22 @@ func TestModernForkReplayBeforeChildTaskIsSkipped(t *testing.T) {
 		t.Fatalf("modern replay cursor should remain pending: ok=%v cursor=%+v err=%v", ok, cursor, err)
 	}
 
+	pending, err := scanner.Scan(context.Background(), []string{home}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err = st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.EventsInserted != 0 || summary.GrandTotal != 300 {
+		t.Fatalf("unchanged pending modern fork exposed replay history: scan=%+v summary=%+v", pending, summary)
+	}
+	cursor, ok, err = st.GetCursor(context.Background(), childPath)
+	if err != nil || !ok || cursor.Offset != 0 || cursor.ReplayOffset != 0 {
+		t.Fatalf("unchanged pending modern fork advanced unexpectedly: ok=%v cursor=%+v err=%v", ok, cursor, err)
+	}
+
 	file, err := os.OpenFile(childPath, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
