@@ -85,7 +85,7 @@ function costEstimate(url) {
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://127.0.0.1:${port}`);
   if (url.pathname === "/api/v1/status") return json(response, {
-    version: "2.3.4-preview", scanning: false,
+    version: "2.3.5-preview", scanning: false,
     status: {
       machine: { id: "62c0172d-36c4-4ec9-a074-02b9ec2b45e1", label: "WORKSTATION-19 · windows", hostname: "WORKSTATION-19", os: "windows", arch: "amd64" },
       last_scan: now.toISOString(), accounting_mode: "jsonl_only", otel_active: false,

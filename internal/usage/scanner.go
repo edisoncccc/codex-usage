@@ -206,7 +206,9 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 		return result, err
 	}
 	if exists {
+		pendingForkReplay := cursor.ForkedFromID != "" && cursor.ReplayOffset == 0 && cursor.Offset == 0
 		if cursor.Offset >= info.Size() && cursor.Size == info.Size() &&
+			!pendingForkReplay &&
 			cursor.ModifiedNanos == info.ModTime().UnixNano() {
 			return result, nil
 		}
@@ -230,16 +232,12 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 			return result, &RebuildRequiredError{Kind: "rollout_rewritten", Path: path,
 				Detail: "文件已在原有扫描范围内重写"}
 		}
-		if cursor.ForkedFromID != "" && cursor.ReplayOffset == 0 && info.Size() > cursor.Size {
+		if pendingForkReplay {
 			inspection, inspectErr := s.inspectRollout(ctx, path)
 			if inspectErr != nil {
 				return result, inspectErr
 			}
 			if inspection.ReplayOffset > 0 {
-				if cursor.Offset > 0 {
-					return result, &RebuildRequiredError{Kind: "fork_replay_detected", Path: path,
-						Detail: "fork 文件补全了父线程历史重放边界"}
-				}
 				cursor.Offset = inspection.ReplayOffset
 				cursor.ReplayOffset = inspection.persistedReplayOffset()
 				cursor.Cumulative = inspection.Baseline
