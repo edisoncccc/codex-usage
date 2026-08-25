@@ -24,7 +24,7 @@
 7. 使用官方 Go 1.26.6、稳定测试二进制、`go vet`、最终服务二进制、Playwright 和 JavaScript 语法检查完成发布前验证。
 8. 运行累计差异、隐私、产物、README 资源及禁止下载链接检查，并创建本会话交接。
 
-基线后的提交序列如下：
+本文件首次提交前的提交序列如下：
 
 | 提交 | 信息 |
 |---|---|
@@ -40,6 +40,8 @@
 | `0c7c7a4218ff263d230ffb70507fe3d35d104695` | `docs: refine README runtime examples` |
 | `e2ee315dc6e5d6bf83c53b10b873f42ed2aef228` | `docs: fix publication check whitespace` |
 | `160f9a26d87a2ade538b8bf5067d0c3352b497c3` | `docs: preserve spec metadata line breaks` |
+
+本文件首次提交为 `50efb60632f5ac2ff8c45356bb3f4671249da39a`，提交信息为 `docs: record the public fork handoff`；它不属于上表的“首次提交前”序列。
 
 ## 修改文件
 
@@ -66,7 +68,7 @@
   - `internal/web/static/styles.css`
   - `tests/dashboard.spec.mjs`
 
-测试二进制、最终服务 EXE、Playwright 输出和合成 Pages 构建均位于仓库已忽略的路径，不属于公开提交。
+测试二进制、最终服务 EXE 和 Playwright 输出均位于仓库已忽略的路径，不属于公开提交。
 
 ## 运行命令与结果
 
@@ -118,6 +120,67 @@
 - README 中上游 Release、`releases/latest/download` 及个人 Fork Release 下载链接扫描：无匹配。
 - 创建本文件前 `git status --short`：无输出，工作树干净。
 - 本文件暂存后，`git diff --cached --name-only` 仅列出本会话文档，`git diff --cached --check` 为 exit 0；本文件自身的 staged 隐私扫描无匹配。完整 staged 索引的 raw/refined 隐私与产物计数仍分别为 `1/0` 和 `2/0`，与上述已核验的计划命令自匹配及两份合成 fixture 完全一致。
+
+隐私 raw 输出固定为 `docs/superpowers/plans/2026-08-25-open-source-fork-readme.md:326:<计划内扫描命令>`。以下 PowerShell 命令通过字符串拼接构造敏感模式，避免检查命令在本文中产生新的自匹配；它同时验证工作树、staged 索引和受跟踪产物。任一 raw 结果偏离精确 allowlist 都会抛出错误：
+
+```powershell
+$privacyParts = @(
+  ('C:' + '\\' + 'Users' + '\\' + 'ediso')
+  ('D:' + '\\' + 'Projects' + '\\' + 'codex')
+  ('Laptop-' + 'Chen')
+  ('edison' + '_c')
+  '01a0[0-9a-f]{4}'
+)
+$privacyPattern = $privacyParts -join '|'
+$allowedPrivacyPrefix = 'docs/superpowers/plans/2026-08-25-open-source-fork-readme.md:326:git grep -n -I -E '
+
+$privacyRaw = @(git grep -n -I -E $privacyPattern -- .)
+$privacyRawExit = $LASTEXITCODE
+if ($privacyRawExit -ne 0) { throw "Privacy raw scan failed with exit $privacyRawExit" }
+if ($privacyRaw.Count -ne 1 -or -not $privacyRaw[0].StartsWith($allowedPrivacyPrefix)) {
+  throw "Unexpected privacy raw result: $($privacyRaw -join '; ')"
+}
+$privacyUnexpected = @($privacyRaw | Where-Object { -not $_.StartsWith($allowedPrivacyPrefix) })
+if ($privacyUnexpected.Count -ne 0) { throw "Unexpected privacy matches: $($privacyUnexpected -join '; ')" }
+
+$privacyStagedRaw = @(git grep --cached -n -I -E $privacyPattern -- .)
+$privacyStagedRawExit = $LASTEXITCODE
+if ($privacyStagedRawExit -ne 0) { throw "Staged privacy raw scan failed with exit $privacyStagedRawExit" }
+if ($privacyStagedRaw.Count -ne 1 -or -not $privacyStagedRaw[0].StartsWith($allowedPrivacyPrefix)) {
+  throw "Unexpected staged privacy raw result: $($privacyStagedRaw -join '; ')"
+}
+$privacyStagedUnexpected = @($privacyStagedRaw | Where-Object { -not $_.StartsWith($allowedPrivacyPrefix) })
+if ($privacyStagedUnexpected.Count -ne 0) {
+  throw "Unexpected staged privacy matches: $($privacyStagedUnexpected -join '; ')"
+}
+
+$artifactPattern = '(usage\.sqlite|\.jsonl$|^dist/|^node_modules/|^test-results/|^\.superpowers/)'
+$artifactRaw = @(git ls-files --cached | rg $artifactPattern)
+$artifactRawExit = $LASTEXITCODE
+$artifactAllowlist = @(
+  'internal/usage/testdata/single-meta-fork-inherited-baseline.jsonl'
+  'internal/usage/testdata/single-meta-fork-zero-baseline.jsonl'
+)
+$artifactUnexpected = @($artifactRaw | Where-Object { $_ -notin $artifactAllowlist })
+$artifactMissing = @($artifactAllowlist | Where-Object { $_ -notin $artifactRaw })
+if ($artifactRawExit -ne 0 -or $artifactRaw.Count -ne 2) {
+  throw "Unexpected artifact raw result: exit=$artifactRawExit count=$($artifactRaw.Count)"
+}
+if ($artifactUnexpected.Count -ne 0 -or $artifactMissing.Count -ne 0) {
+  throw "Artifact allowlist mismatch: unexpected=$($artifactUnexpected -join ',') missing=$($artifactMissing -join ',')"
+}
+
+[pscustomobject]@{
+  PrivacyRaw = $privacyRaw.Count
+  PrivacyUnexpected = $privacyUnexpected.Count
+  PrivacyStagedRaw = $privacyStagedRaw.Count
+  PrivacyStagedUnexpected = $privacyStagedUnexpected.Count
+  ArtifactRaw = $artifactRaw.Count
+  ArtifactUnexpected = $artifactUnexpected.Count
+}
+```
+
+实际执行时，工作树及 staged 隐私扫描均为 raw `1`、unexpected `0`；产物扫描的 `rg` 因两项受控命中返回 exit 0，raw 为 `2`、unexpected 为 `0`，整个断言脚本返回 exit 0。
 
 ## 关键决策
 
