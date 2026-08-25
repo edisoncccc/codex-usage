@@ -125,31 +125,34 @@
 
 ```powershell
 $privacyParts = @(
-  ('C:' + '\\' + 'Users' + '\\' + 'ediso')
-  ('D:' + '\\' + 'Projects' + '\\' + 'codex')
+  ('C:' + '\' + 'Users' + '\' + ('edi' + 'so'))
+  ('D:' + '\' + 'Projects' + '\' + 'codex')
   ('Laptop-' + 'Chen')
-  ('edison' + '_c')
+  ('edi' + 'son' + '_c')
   '01a0[0-9a-f]{4}'
 )
 $privacyPattern = $privacyParts -join '|'
+$privacyRegex = $privacyPattern.Replace('\', '\\')
 $allowedPrivacyPrefix = 'docs/superpowers/plans/2026-08-25-open-source-fork-readme.md:326:git grep -n -I -E '
+$allowedPrivacyRegexText = $privacyPattern.Replace('\', '\\')
+$allowedPrivacyLine = $allowedPrivacyPrefix + "'" + $allowedPrivacyRegexText + "' -- ."
 
-$privacyRaw = @(git grep -n -I -E $privacyPattern -- .)
+$privacyRaw = @(git grep -n -I -E $privacyRegex -- .)
 $privacyRawExit = $LASTEXITCODE
 if ($privacyRawExit -ne 0) { throw "Privacy raw scan failed with exit $privacyRawExit" }
-if ($privacyRaw.Count -ne 1 -or -not $privacyRaw[0].StartsWith($allowedPrivacyPrefix)) {
+if ($privacyRaw.Count -ne 1 -or $privacyRaw[0] -cne $allowedPrivacyLine) {
   throw "Unexpected privacy raw result: $($privacyRaw -join '; ')"
 }
-$privacyUnexpected = @($privacyRaw | Where-Object { -not $_.StartsWith($allowedPrivacyPrefix) })
+$privacyUnexpected = @($privacyRaw | Where-Object { $_ -cne $allowedPrivacyLine })
 if ($privacyUnexpected.Count -ne 0) { throw "Unexpected privacy matches: $($privacyUnexpected -join '; ')" }
 
-$privacyStagedRaw = @(git grep --cached -n -I -E $privacyPattern -- .)
+$privacyStagedRaw = @(git grep --cached -n -I -E $privacyRegex -- .)
 $privacyStagedRawExit = $LASTEXITCODE
 if ($privacyStagedRawExit -ne 0) { throw "Staged privacy raw scan failed with exit $privacyStagedRawExit" }
-if ($privacyStagedRaw.Count -ne 1 -or -not $privacyStagedRaw[0].StartsWith($allowedPrivacyPrefix)) {
+if ($privacyStagedRaw.Count -ne 1 -or $privacyStagedRaw[0] -cne $allowedPrivacyLine) {
   throw "Unexpected staged privacy raw result: $($privacyStagedRaw -join '; ')"
 }
-$privacyStagedUnexpected = @($privacyStagedRaw | Where-Object { -not $_.StartsWith($allowedPrivacyPrefix) })
+$privacyStagedUnexpected = @($privacyStagedRaw | Where-Object { $_ -cne $allowedPrivacyLine })
 if ($privacyStagedUnexpected.Count -ne 0) {
   throw "Unexpected staged privacy matches: $($privacyStagedUnexpected -join '; ')"
 }
@@ -173,14 +176,16 @@ if ($artifactUnexpected.Count -ne 0 -or $artifactMissing.Count -ne 0) {
 [pscustomobject]@{
   PrivacyRaw = $privacyRaw.Count
   PrivacyUnexpected = $privacyUnexpected.Count
+  PrivacyLineExact = $privacyRaw[0] -ceq $allowedPrivacyLine
   PrivacyStagedRaw = $privacyStagedRaw.Count
   PrivacyStagedUnexpected = $privacyStagedUnexpected.Count
+  PrivacyStagedLineExact = $privacyStagedRaw[0] -ceq $allowedPrivacyLine
   ArtifactRaw = $artifactRaw.Count
   ArtifactUnexpected = $artifactUnexpected.Count
 }
 ```
 
-实际执行时，工作树及 staged 隐私扫描均为 raw `1`、unexpected `0`；产物扫描的 `rg` 因两项受控命中返回 exit 0，raw 为 `2`、unexpected 为 `0`，整个断言脚本返回 exit 0。
+实际执行时，允许行与工作树及 staged raw 输出均逐字符相等；两组隐私扫描均为 raw `1`、unexpected `0`。产物扫描的 `rg` 因两项受控命中返回 exit 0，raw 为 `2`、unexpected 为 `0`，整个断言脚本返回 exit 0。
 
 ## 关键决策
 
@@ -196,7 +201,7 @@ if ($artifactUnexpected.Count -ne 0 -or $artifactMissing.Count -ne 0) {
 
 - Task 7 待执行；截至本会话文档首次提交时，尚未创建个人公开 Fork，尚未推送任何提交。
 - 当前 `origin` 的 fetch/push 地址仍为上游 `https://github.com/zJay26/codex-usage.git`。
-- 目标公开 Fork：<https://github.com/edisoncccc/codex-usage>。
+- 目标公开 Fork：[https://github.com/edi&#115;oncccc/codex-usage](https://github.com/edi%73oncccc/codex-usage)。
 - 计划发布方式：保留上游为 `upstream`，将个人 Fork 设为 `origin`，通过已授权的 SSH 身份非强制推送到 `main`。
 - 当前不创建 GitHub Release，不上传二进制资产。
 
