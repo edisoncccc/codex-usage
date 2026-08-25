@@ -1,85 +1,81 @@
 <div align="center">
 
-# codex-usage
+# Codex Usage Dashboard
 
-**同一个 Codex 账号：哪台电脑、哪个模型、哪个项目和会话用掉了 Token？**
+**看清 Codex Token 花在哪里、缓存如何利用，以及折算成 Standard API 价格大约是多少。**
 
-*Which machine, model, project, or session used your Codex tokens?*
+*See where your Codex tokens went, how caching helped, and what the same usage would cost at Standard API prices.*
 
-[在线体验](https://zjay26.github.io/codex-usage/?lang=zh-CN) · [Windows x64 下载](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe) · [Linux x64 下载](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64) · [English](README.en.md) / 简体中文
+[简体中文](README.md) · [English](README.en.md)
 
-[![CI](https://github.com/zJay26/codex-usage/actions/workflows/ci.yml/badge.svg)](https://github.com/zJay26/codex-usage/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/zJay26/codex-usage?display_name=tag)](https://github.com/zJay26/codex-usage/releases/latest)
+[![CI](https://github.com/edisoncccc/codex-usage/actions/workflows/ci.yml/badge.svg)](https://github.com/edisoncccc/codex-usage/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![License](https://img.shields.io/github/license/zJay26/codex-usage)](LICENSE)
+[![Local first](https://img.shields.io/badge/data-local--first-0f766e)](#隐私边界)
+[![License](https://img.shields.io/github/license/edisoncccc/codex-usage)](LICENSE)
 
 </div>
 
-![Codex Usage 12 秒演示：逐电脑 Token、日期下钻、筛选与等价成本](docs/media/codex-usage-demo.gif)
+![Codex Usage Dashboard：本地 Codex Token 归属、缓存与 Standard API 等价成本](Codex-Usage.png)
 
-> 演示与在线 Demo 全部使用合成数据；不读取你的文件、不设 Cookie、无埋点或外部请求。
+> [!NOTE]
+> 这是基于 [zJay26/codex-usage](https://github.com/zJay26/codex-usage) 的社区维护 GitHub Fork，依照 [MIT License](LICENSE) 发布。当前 Fork 加入了更清晰的 Subagent 归属、fork 重放保护、Cached Rate、费用分项和更克制的数据质量提示。现阶段仅提供源码（source-only），不提供预编译 Release 或 EXE。
 
-## 30 秒理解
+`codex-usage` 是 Codex Usage Dashboard 的命令名。它把当前电脑的本地 Codex 用量整理成可搜索的 Dashboard，回答四个问题：Token 用在什么项目与任务、由哪个 Agent 产生、缓存利用得怎样，以及按公开 Standard API 价格折算后的等价成本是多少。
 
-如果你在多台电脑上使用 Codex，账号总量并不能告诉你：**究竟是哪台电脑、哪个项目、哪个模型或哪段 Session 用掉了 Token**。codex-usage 就是补上这张本机明细表。
+## 12 秒看懂
 
-每台电脑安装一次，之后打开浏览器就能查看总量、每日趋势、模型和项目分布；Session 明细可以直接搜索，并显示每段 Session 的 API 等价费用。页面会自动跟进本机后续产生的用量。
+![codex-usage 合成数据演示：Token 归属、缓存和等价成本](docs/media/codex-usage-demo.gif)
 
-所有统计都留在当前电脑上；它不读取 prompt、回复、工具输出或 `auth.json`。费用只是按公开 API 单价做的等价估算，不是 OpenAI 账单或账号配额。
+> 演示只使用合成数据。项目不会读取或保存 prompt、回复、reasoning 内容、工具输出或 `auth.json`。
 
-## 直接安装
+## 四件事说清楚
 
-Windows amd64 / x64（无需管理员权限）：
+| 你关心的事 | Dashboard 如何回答 |
+|---|---|
+| 本地与隐私 | 只扫描当前电脑的 Codex session JSONL，把派生统计写入本机 SQLite，并通过 `127.0.0.1` 提供页面；没有中心服务器、云同步或跨设备汇总 |
+| Token 去向 | 按模型、项目、Thread、Session 和 Agent 归属同一批 Token；可区分主任务、Subagent、Guardian 与 Memory，未显式命名的 Subagent 会继承父任务标题作为可读标签 |
+| 缓存利用 | 分别展示 Input、Cached Input、Cache Write、Output 与 Cached Rate。`Input` 包含缓存相关输入，普通 Input 按 `max(Input - Cached Input - Cache Write, 0)` 计算；Cached Rate 为 `Cached Input / Input`，Input 为 0 时显示 `—` |
+| Standard API 等价成本 | 使用普通 Input、Cached Input、Cache Write 和 Output 各自单价计算，并同时展示定价覆盖率；这是本机 Token 按公开价格的等价值，不是 OpenAI 账单、ChatGPT 订阅额度或账号配额 |
+
+## 从源码开始使用
+
+当前仓库是 source-only 发布。需要 Go 1.26+（以 [`go.mod`](go.mod) 为准）；不提供或链接任何预编译 Release / EXE。
+
+Windows PowerShell：
 
 ```powershell
-Invoke-WebRequest https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe -OutFile codex-usage.exe
+go test ./...
+$env:CGO_ENABLED = "0"
+go build -trimpath -o codex-usage.exe ./cmd/codex-usage
 .\codex-usage.exe install
 ```
 
-Linux amd64 / x64：
+Linux / macOS bash：
 
 ```bash
-curl -fL https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64 -o codex-usage
-chmod +x codex-usage
+go test ./...
+CGO_ENABLED=0 go build -trimpath -o codex-usage ./cmd/codex-usage
 ./codex-usage install
 ```
 
-需要 arm64？从 [最新 Release](https://github.com/zJay26/codex-usage/releases/latest) 下载 `windows-arm64.exe` 或 `linux-arm64`。下载后可先用同页的 `SHA256SUMS` 校验。英文安装输出使用：
+安装会整理这台电脑已有的 Codex 使用记录，并在后台持续增量更新。之后运行 `codex-usage` 打开 Dashboard；英文 CLI 可使用：
 
 ```text
 codex-usage --lang en install
 ```
 
-安装器会自动整理这台电脑已有的 Codex 使用记录，并在后台持续更新。安装完成后运行 `codex-usage` 即可打开 Dashboard；升级时重新执行 `install` 即可，已有统计会保留。
-
 Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自己的电脑执行命令后访问 `http://127.0.0.1:43189`。
 
-## 你能看到什么
+## 能力与边界
 
 | 你想知道 | codex-usage 给出的视图 |
 |---|---|
 | 哪台电脑用了 Token？ | 每台 Windows、WSL 或 Linux 主机独立统计，不混入账号在其他电脑上的用量 |
 | 用在了什么模型和内容类型？ | 模型及 Input、Cached、Cache Write、Output、Reasoning 构成 |
-| 哪项工作驱动了用量？ | 项目、Thread、Session，以及主任务、Subagent、Guardian、Memory 归属 |
+| 哪项工作驱动了用量？ | 项目、Thread、Session，以及主任务、Subagent、Guardian、Memory 的归属视图 |
 | 什么时候发生？ | 今天、7 日、30 日、全部历史，以及按自然日查看详情 |
 | 某段 Session 花了多少？ | Session 级 Token 与 API 等价费用；可搜索，也可一键只看当前 Session |
 | 如果全部按 API 价格折算呢？ | 总体与分项的 API 等价费用，并明确显示有多少 Token 能够定价 |
-
-## 功能亮点
-
-| 功能 | 你得到什么 |
-|---|---|
-| 逐电脑归属 | 每台电脑独立统计，清楚区分公司电脑、家用电脑、Windows、WSL 或 Linux |
-| 历史与自动更新 | 安装后先整理已有记录，后续用量自动进入 Dashboard |
-| Session 搜索与筛选 | 按 Thread、Session ID、项目、模型或来源搜索；快捷筛选再次点击即可取消 |
-| 每日下钻 | 查看连续趋势、月历、零用量日和任意一天的模型构成 |
-| 多维明细 | 按模型、Token 类型、来源、项目、Thread、Session 和 Agent 理解用量 |
-| 等价费用 | 总览和 Session 都显示 API 等价费用；无法定价的部分会明确标出，不会假装免费 |
-| 本地与隐私 | 数据只留在当前电脑，不上传对话，也不依赖中心服务器 |
-| 轻量部署 | Windows / Linux、amd64 / arm64 都是单文件程序，无需另装数据库 |
-| 中英双语 | Dashboard 与 CLI 都可切换简体中文或 English |
-
-## 范围与边界
 
 | 会统计 | 不会统计或读取 |
 |---|---|
@@ -88,9 +84,9 @@ Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自
 | 按 Standard API 文本价格计算的等价费用和定价覆盖率 | prompt、回复、reasoning 内容、工具输出或 `auth.json` |
 | 重复、回退、坏记录和文件重建等数据质量提示 | 云同步、远程遥测或第三方分析 |
 
-> “电脑”指运行 Codex 客户端和 codex-usage 的主机，不是 shell 或 tool 实际执行的远程环境。Codex 官方 `/usage` 查看账号级活动；codex-usage 补充当前电脑上的详细归属。
+> “电脑”指运行 Codex 客户端和 `codex-usage` 的主机，不是 shell 或 tool 实际执行的远程环境。Codex 官方 `/usage` 查看账号级活动；本项目只补充当前电脑上的详细归属。
 
-<details><summary>查看静态桌面和 390 × 844 移动端截图</summary>
+<details><summary>查看使用合成数据的静态桌面和 390 × 844 移动端截图</summary>
 
 ![Codex Usage Dashboard](docs/images/dashboard.png)
 
@@ -147,7 +143,7 @@ Dashboard 固定为“概览 / 每日 / 明细”三个一级视图。概览默�
 
 ### 5. Standard API 等价成本
 
-费用在查询时流式读取已经过去重、归属规则筛选后的规范事件，不写入 SQLite，也不会改变原有 Token 统计。计算使用定点 nano-USD：Cached Input 与 Cache Write 从 Input 中扣除，Reasoning 已包含在 Output 中，不会重复收费。
+费用在查询时流式读取已经过去重、归属规则筛选后的规范事件，不写入 SQLite，也不会改变原有 Token 统计。计算使用定点 nano-USD：普通 Input 是 `max(Input - Cached Input - Cache Write, 0)`，四个费用分项分别使用普通 Input、Cached Input、Cache Write 和 Output 的单价；Reasoning 已包含在 Output 中，不会重复收费。概览里的 Cached Rate 则是 `Cached Input / Input`，用于观察总 Input 中的缓存占比。
 
 内置 Standard 文本价格核对日期为 **2026-08-04**，单位均为 USD / 1M Token：
 
@@ -226,16 +222,9 @@ Dashboard 支持 `?lang=en|zh-CN` 和页头语言按钮；URL 参数优先于已
 
 本机完整项目路径和 Thread 标题会用于归属视图，因此导出的 JSON/CSV 也可能包含这些本机信息。
 
-## 从源码构建
+## 开发与验证
 
-需要 Go 1.26.x：
-
-```bash
-go test ./...
-CGO_ENABLED=0 go build -trimpath -o codex-usage ./cmd/codex-usage
-```
-
-构建全部平台：
+首页的源码流程用于本机测试、构建和安装。维护者还可以运行仓库脚本构建全部目标：
 
 ```powershell
 # Windows
@@ -266,6 +255,19 @@ npm test
 - 主动同步同一个 Codex Home 后，安装前的历史无法可靠拆回原始电脑
 - `total` 按 Codex 原始值展示，不等于独立生成文字量、真实账单或账号配额；API 等价成本只是按当前价格对本机 Token 的重新折算
 
+## Fork 改进与上游致谢
+
+感谢 [zJay26/codex-usage](https://github.com/zJay26/codex-usage) 及其贡献者提供原始项目、完整的数据链路与 MIT 开源基础。本 Fork 保留上游历史，并将公开产品展示名设为 **Codex Usage Dashboard**；仓库 slug 与命令名仍为 `codex-usage`，Go module 路径仍为 `github.com/zJay26/codex-usage`，以维持兼容性。
+
+当前差异经过回归测试覆盖：
+
+- 未显式命名的 Subagent 会沿父级链查找任务标题，显式标题仍优先
+- 现代 fork 的父任务重放历史保持 pending，直到真实子任务开始，避免把父历史计入子任务
+- 概览增加 Cached Rate，以及普通 Input、Cached Input、Cache Write、Output 四项费用
+- 只有警告列表结构有效且条数与状态计数一致时，`cumulative_reset` 才会静默归入“已处理”；API 失败、截断或计数不一致时仍保守地提示复核
+
+当前只发布源码，不提供预编译二进制。版权与许可见 [LICENSE](LICENSE)，第三方组件声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## License
 
-[MIT](LICENSE) © Codex Usage contributors
+[MIT](LICENSE) © Codex Usage contributors。原始项目与第三方归属按 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 保留。

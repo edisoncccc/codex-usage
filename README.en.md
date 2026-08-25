@@ -1,81 +1,77 @@
 <div align="center">
 
-# codex-usage
+# Codex Usage Dashboard
 
-**Which machine, model, project, or session used your Codex tokens?**
+**See where your Codex tokens went, how caching helped, and what the same usage would cost at Standard API prices.**
 
-*See local Codex usage by machine, model, project, and session—with API-equivalent cost estimates.*
+*看清 Codex Token 花在哪里、缓存如何利用，以及折算成 Standard API 价格大约是多少。*
 
-[Live Demo](https://zjay26.github.io/codex-usage/?lang=en) · [Windows x64](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe) · [Linux x64](https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64) · English / [简体中文](README.md)
+[English](README.en.md) · [简体中文](README.md)
 
-[![CI](https://github.com/zJay26/codex-usage/actions/workflows/ci.yml/badge.svg)](https://github.com/zJay26/codex-usage/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/zJay26/codex-usage?display_name=tag)](https://github.com/zJay26/codex-usage/releases/latest)
+[![CI](https://github.com/edisoncccc/codex-usage/actions/workflows/ci.yml/badge.svg)](https://github.com/edisoncccc/codex-usage/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![License](https://img.shields.io/github/license/zJay26/codex-usage)](LICENSE)
+[![Local first](https://img.shields.io/badge/data-local--first-0f766e)](#privacy-boundaries)
+[![License](https://img.shields.io/github/license/edisoncccc/codex-usage)](LICENSE)
 
 </div>
 
-![12-second Codex Usage demo: per-machine tokens, date drill-down, filters, and equivalent cost](docs/media/codex-usage-demo.gif)
+![Codex Usage Dashboard: local Codex token attribution, caching, and Standard API-equivalent cost](Codex-Usage.png)
 
-> The animation and Live Demo use synthetic data only. They do not read your files, set cookies, run analytics, or make external requests.
+> [!NOTE]
+> This is a community-maintained GitHub Fork of [zJay26/codex-usage](https://github.com/zJay26/codex-usage), released under the [MIT License](LICENSE). This Fork adds clearer Subagent attribution, fork-replay protection, Cached Rate, itemized cost, and quieter data-quality guidance. It is currently source-only: no prebuilt Release or EXE is provided.
 
-## Understand it in 30 seconds
+`codex-usage` remains the command name for Codex Usage Dashboard. It turns local Codex usage on the current computer into a searchable Dashboard that answers four questions: where tokens went, which Agent produced them, how caching helped, and what the usage would cost at public Standard API rates.
 
-If you use Codex on more than one computer, an account total cannot tell you **which machine, project, model, or Session used the tokens**. codex-usage fills in that local detail.
+## Understand it in 12 seconds
 
-Install it once on each computer, then open the Dashboard in your browser to see totals, daily trends, models, projects, and Sessions. Session details are searchable and include an API-equivalent cost estimate. New local usage appears automatically.
+![Synthetic codex-usage demo: token attribution, caching, and equivalent cost](docs/media/codex-usage-demo.gif)
 
-All statistics stay on the current computer. codex-usage does not read prompts, replies, tool output, or `auth.json`. Cost is an estimate based on public API rates, not an OpenAI bill or account quota.
+> The demo uses synthetic data only. The project does not read or store prompts, responses, reasoning content, tool output, or `auth.json`.
 
-## Install directly
+## Four questions answered
 
-Windows amd64 / x64 (no administrator privileges required):
+| What matters | How the Dashboard answers |
+|---|---|
+| Local data and privacy | Scans Codex session JSONL on the current computer, writes derived statistics to local SQLite, and serves the UI on `127.0.0.1`; there is no central server, cloud sync, or cross-device aggregation |
+| Token attribution | Attributes the same token set by model, project, Thread, Session, and Agent; distinguishes main tasks, Subagents, Guardian, and Memory, and gives an untitled Subagent its parent task title as a readable label |
+| Cache utilization | Shows Input, Cached Input, Cache Write, Output, and Cached Rate separately. `Input` includes cache-related input; Regular Input is `max(Input - Cached Input - Cache Write, 0)`. Cached Rate is `Cached Input / Input`, or `—` when Input is zero |
+| Standard API-equivalent cost | Applies separate rates to Regular Input, Cached Input, Cache Write, and Output, then shows pricing coverage. This is a public-price equivalent for local tokens—not an OpenAI bill, ChatGPT subscription allowance, or account quota |
+
+## Start from source
+
+This repository is currently a source-only distribution. Go 1.26+ is required (see [`go.mod`](go.mod)); no prebuilt Release or EXE is provided or linked.
+
+Windows PowerShell:
 
 ```powershell
-Invoke-WebRequest https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-windows-amd64.exe -OutFile codex-usage.exe
-.\codex-usage.exe --lang en install
+go test ./...
+$env:CGO_ENABLED = "0"
+go build -trimpath -o codex-usage.exe ./cmd/codex-usage
+.\codex-usage.exe install
 ```
 
-Linux amd64 / x64:
+Linux / macOS bash:
 
 ```bash
-curl -fL https://github.com/zJay26/codex-usage/releases/latest/download/codex-usage-linux-amd64 -o codex-usage
-chmod +x codex-usage
-./codex-usage --lang en install
+go test ./...
+CGO_ENABLED=0 go build -trimpath -o codex-usage ./cmd/codex-usage
+./codex-usage install
 ```
 
-Need arm64? Download `windows-arm64.exe` or `linux-arm64` from the [latest Release](https://github.com/zJay26/codex-usage/releases/latest). Verify the file against `SHA256SUMS` on the same page.
-
-The installer finds existing Codex usage on this computer and keeps the Dashboard updated in the background. Run `codex-usage` to open it. To upgrade, run `install` again; existing statistics are kept.
+Installation discovers existing Codex usage on this computer and keeps it updated incrementally in the background. Run `codex-usage` to open the Dashboard. For English CLI output, use `codex-usage --lang en install`.
 
 On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it from your own computer, then open `http://127.0.0.1:43189`.
 
-## What you can see
+## Capabilities and boundaries
 
 | Question | What codex-usage shows |
 |---|---|
 | Which machine used the tokens? | Separate statistics for each Windows, WSL, or Linux host, without mixing in other computers on the account |
 | Which models and token categories drove usage? | Model plus Input, Cached, Cache Write, Output, and Reasoning composition |
-| Which work drove it? | Project, Thread, Session, and main task, Subagent, Guardian, or Memory attribution |
+| Which work drove it? | Attribution views for project, Thread, Session, main task, Subagent, Guardian, and Memory |
 | When did it happen? | Today, 7 days, 30 days, all time, and single-day details |
 | What did one Session use? | Session-level tokens and API-equivalent cost, with search and a one-click “Only this Session” filter |
 | What would all of this roughly cost at API rates? | Overall and itemized API-equivalent cost, plus explicit pricing coverage |
-
-## Highlights
-
-| Capability | What you get |
-|---|---|
-| Per-machine attribution | Keep work, home, Windows, WSL, and Linux usage clearly separated |
-| History and automatic updates | Find existing records after installation and add new local usage automatically |
-| Session search and filters | Search by Thread, Session ID, project, model, or source; click an active quick filter again to clear it |
-| Daily drill-down | Explore trends, calendar days, zero-usage days, and any day's model mix |
-| Multi-dimensional details | Understand usage by model, token category, source, project, Thread, Session, and Agent |
-| Equivalent cost | See API-equivalent cost overall and per Session; unpriced usage is clearly marked instead of looking free |
-| Local and private | Keep data on the current computer, with no conversation uploads or central server |
-| Lightweight install | One file for Windows / Linux and amd64 / arm64, with no separate database to install |
-| Bilingual | Switch the Dashboard and CLI between English and Simplified Chinese |
-
-## Scope and boundaries
 
 | Counts | Does not count or read |
 |---|---|
@@ -84,9 +80,9 @@ On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it fro
 | Standard API text-token equivalent cost and pricing coverage | Prompts, replies, reasoning content, tool output, or `auth.json` |
 | Data-quality notices for duplicates, resets, malformed records, and rebuilds | Cloud sync, remote telemetry, or third-party analytics |
 
-> “Machine” means the host running Codex and codex-usage, not a remote target used by a shell or tool. Codex's official `/usage` shows account-level activity; codex-usage adds detailed attribution for the current computer.
+> “Machine” means the host running Codex and `codex-usage`, not a remote target used by a shell or tool. Codex's official `/usage` shows account-level activity; this project adds detailed attribution only for the current computer.
 
-<details><summary>View static desktop and 390 × 844 mobile screenshots</summary>
+<details><summary>View static desktop and 390 × 844 mobile screenshots made with synthetic data</summary>
 
 ![Codex Usage Dashboard](docs/images/dashboard.png)
 
@@ -143,7 +139,7 @@ Display settings in the header use a more comfortable type scale by default and 
 
 ### Standard API-equivalent cost
 
-The estimator streams the normalized events that already passed source de-duplication and attribution filtering. It runs at query time, writes no cost data to SQLite, and leaves existing token totals unchanged. Arithmetic uses fixed-point nano-USD. Cached Input and Cache Write are removed from regular Input, and Reasoning is already included in Output, so neither is charged twice.
+The estimator streams normalized events that already passed source de-duplication and attribution filtering. It runs at query time, writes no cost data to SQLite, and leaves existing token totals unchanged. Arithmetic uses fixed-point nano-USD. Regular Input is `max(Input - Cached Input - Cache Write, 0)`; the four cost components use the rates for Regular Input, Cached Input, Cache Write, and Output respectively. Reasoning is already included in Output and is not charged twice. The overview's Cached Rate is `Cached Input / Input`, showing the cached share of total Input.
 
 Bundled Standard text prices were checked on **2026-08-04**. All values are USD / 1M tokens:
 
@@ -220,16 +216,19 @@ The Dashboard supports `?lang=en|zh-CN` and its header language button. The URL 
 
 Full local project paths and thread titles are retained for attribution, so JSON/CSV exports may contain that local metadata.
 
-## Build from source
+## Development and validation
 
-Go 1.26.x is required:
+The source workflow near the top covers local testing, building, and installation. Maintainers can also run the repository scripts to build every target:
 
-```bash
-go test ./...
-CGO_ENABLED=0 go build -trimpath -o codex-usage ./cmd/codex-usage
+```powershell
+# Windows
+.\scripts\build.ps1
 ```
 
-Build all four targets with `scripts/build.ps1` on Windows or `scripts/build.sh` on Linux.
+```bash
+# Linux
+./scripts/build.sh
+```
 
 Dashboard tests:
 
@@ -250,6 +249,19 @@ See [ACCEPTANCE.md](ACCEPTANCE.md) for validation results, [CONTRIBUTING.md](CON
 - historical sessions cannot be reliably split after users synchronize one Codex Home across machines
 - Codex `total` is displayed as reported; it is not an actual bill or account-quota measurement, and API-equivalent cost is only a current-price conversion of local tokens
 
+## Fork improvements and upstream credit
+
+Thank you to [zJay26/codex-usage](https://github.com/zJay26/codex-usage) and its contributors for the original project, complete data path, and MIT-licensed foundation. This Fork preserves upstream history and uses **Codex Usage Dashboard** as its public product name. The repository slug and command remain `codex-usage`, while the Go module path remains `github.com/zJay26/codex-usage`, for compatibility.
+
+Regression tests cover the current differences:
+
+- an untitled Subagent walks its parent chain for a readable task label, while an explicit title still wins
+- copied parent history in a modern fork stays pending until real child work starts, preventing parent replay from being charged to the child
+- the overview adds Cached Rate and four cost components: Regular Input, Cached Input, Cache Write, and Output
+- `cumulative_reset` is quieted as handled only when the warning list is valid and its length matches the status count; API failure, truncation, or a count mismatch remains conservatively actionable
+
+The current distribution is source-only and provides no prebuilt binaries. See [LICENSE](LICENSE) for copyright and licensing, and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party attribution.
+
 ## License
 
-[MIT](LICENSE) © Codex Usage contributors
+[MIT](LICENSE) © Codex Usage contributors. Original-project and third-party attribution is preserved in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
