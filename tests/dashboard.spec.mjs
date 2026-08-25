@@ -118,6 +118,29 @@ test.afterAll(async () => {
 test("overview is calm, local-only, and exposes honest cost coverage", async ({ page }) => {
   const consoleErrors = [];
   const externalRequests = [];
+  await page.route("**/api/v1/cost-estimate?*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("bucket") !== "day") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...payload,
+        summary: {
+          ...payload.summary,
+          usd: "4801.10",
+          regular_input_usd: "1.11",
+          cached_input_usd: "22.22",
+          cache_write_input_usd: "333.33",
+          output_usd: "4444.44"
+        }
+      }
+    });
+  });
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
   page.on("pageerror", (error) => consoleErrors.push(error.message));
   page.on("request", (request) => {
@@ -140,10 +163,14 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   await expect(trend.getByRole("tab", { name: "每小时" })).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#view-overview").getByText("Standard API 等价成本", { exact: true })).toBeVisible();
   const costBreakdown = page.locator("#overviewCostBreakdown");
-  await expect(costBreakdown).toContainText("普通 Input");
-  await expect(costBreakdown).toContainText("Cached Input");
-  await expect(costBreakdown).toContainText("Output");
-  await expect(costBreakdown.locator("b")).toHaveCount(4);
+  for (const [label, amount] of [
+    ["普通 Input", "$1.11"],
+    ["Cached Input", "$22.22"],
+    ["Cache Write", "$333.33"],
+    ["Output", "$4,444.44"]
+  ]) {
+    await expect(costBreakdown.locator("span", { hasText: label })).toHaveText(`${label}${amount}`);
+  }
   await expect(page.locator("#machineId")).not.toHaveText("—");
   await expect(page.locator("#overviewCoverage")).toContainText("已定价 100.0% Token");
   const styleIntegrity = await page.evaluate(() => ({
@@ -233,6 +260,114 @@ test("actionable warnings stay prominent beside quiet handled records", async ({
   await expect(page.locator("#coverageBanner")).toBeVisible();
   await expect(page.locator("#coverageText")).toHaveText("1 条去重后的数据质量记录需复核");
   await expect(page.locator("#handledWarningButton")).toHaveText("1 条计数器重置已自动处理 · 查看记录");
+});
+
+test("warning API failure keeps every status warning actionable", async ({ page }) => {
+  await page.route("**/api/v1/status", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({ response, json: { ...payload, status: { ...payload.status, warning_count: 3 } } });
+  });
+  await page.route("**/api/v1/warnings?*", async (route) => {
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "warning store unavailable" }) });
+  });
+
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+
+  await expect(page.locator("#coverageText")).toHaveText("3 条去重后的数据质量记录需复核");
+  await expect(page.locator("#handledWarningRow")).toBeHidden();
+});
+
+test("malformed warning payload keeps every status warning actionable", async ({ page }) => {
+  await page.route("**/api/v1/status", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({ response, json: { ...payload, status: { ...payload.status, warning_count: 2 } } });
+  });
+  await page.route("**/api/v1/warnings?*", async (route) => {
+    await route.fulfill({ json: { items: { kind: "cumulative_reset" } } });
+  });
+
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+
+  await expect(page.locator("#coverageText")).toHaveText("2 条去重后的数据质量记录需复核");
+  await expect(page.locator("#handledWarningRow")).toBeHidden();
+});
+
+test("truncated warning list keeps every status warning actionable", async ({ page }) => {
+  const truncated = Array.from({ length: 500 }, (_, index) => ({ id: index + 1, kind: "cumulative_reset" }));
+  await page.route("**/api/v1/status", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({ response, json: { ...payload, status: { ...payload.status, warning_count: 501 } } });
+  });
+  await page.route("**/api/v1/warnings?*", async (route) => {
+    await route.fulfill({ json: { items: truncated } });
+  });
+
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+
+  await expect(page.locator("#coverageText")).toHaveText("501 条去重后的数据质量记录需复核");
+  await expect(page.locator("#handledWarningRow")).toBeHidden();
+});
+
+test("stale status response cannot overwrite newer status UI", async ({ page }) => {
+  let statusRequests = 0;
+  let warningRequests = 0;
+  let notifyFirstStarted;
+  let releaseFirst;
+  const firstStarted = new Promise((resolve) => { notifyFirstStarted = resolve; });
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const actionable = [{ id: 1, kind: "jsonl_record" }];
+  const handled = [{ id: 2, kind: "cumulative_reset" }];
+
+  await page.route("**/api/v1/status", async (route) => {
+    const sequence = ++statusRequests;
+    const response = await route.fetch();
+    const payload = await response.json();
+    if (sequence === 1) {
+      notifyFirstStarted();
+      await firstGate;
+    }
+    const newer = sequence !== 1;
+    await route.fulfill({
+      response,
+      json: {
+        ...payload,
+        version: newer ? "newer-version" : "stale-version",
+        status: {
+          ...payload.status,
+          data_revision: newer ? "newer-revision" : "stale-revision",
+          warning_count: 1,
+          machine: {
+            ...payload.status?.machine,
+            id: newer ? "newer-machine-id" : "stale-machine-id",
+            label: newer ? "newer-machine" : "stale-machine"
+          }
+        }
+      }
+    });
+  });
+  await page.route("**/api/v1/warnings?*", async (route) => {
+    warningRequests += 1;
+    await route.fulfill({ json: { items: warningRequests === 1 ? actionable : handled } });
+  });
+
+  await page.goto(dashboardURL, { waitUntil: "domcontentloaded" });
+  await firstStarted;
+  await page.locator("#localeButton").click();
+  await expect(page.locator("#machineLabel")).toHaveText("newer-machine");
+  await expect(page.locator("#versionLabel")).toHaveText("vnewer-version");
+  await expect(page.locator("#coverageText")).toHaveText("1 deduplicated data-quality records need review");
+  await expect(page.locator("#handledWarningRow")).toBeHidden();
+
+  releaseFirst();
+  await page.waitForLoadState("networkidle");
+
+  await expect(page.locator("#machineLabel")).toHaveText("newer-machine");
+  await expect(page.locator("#versionLabel")).toHaveText("vnewer-version");
+  await expect(page.locator("#coverageText")).toHaveText("1 deduplicated data-quality records need review");
+  await expect(page.locator("#handledWarningRow")).toBeHidden();
 });
 
 test("hourly usage inspects the selected point and navigates across local days", async ({ page }) => {

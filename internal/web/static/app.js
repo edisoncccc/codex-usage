@@ -129,7 +129,7 @@ const state = {
   dataQualityNotes: [],
   handledWarningCount: 0,
   sessionSearch: "",
-  requestSerial: { overview: 0, hourly: 0, hourlyContext: 0, daily: 0, day: 0, breakdown: 0, sessions: 0, estimates: 0 }
+  requestSerial: { status: 0, overview: 0, hourly: 0, hourlyContext: 0, daily: 0, day: 0, breakdown: 0, sessions: 0, estimates: 0 }
 };
 
 const responseCache = new Map();
@@ -398,7 +398,8 @@ async function warningPriorityCounts(total) {
   if (!warningCount) return { handled: 0, actionable: 0 };
   try {
     const payload = await api(`/api/v1/warnings?limit=${WARNING_FETCH_LIMIT}`);
-    const items = Array.isArray(payload.items) ? payload.items : [];
+    const items = Array.isArray(payload?.items) ? payload.items : null;
+    if (!items || items.length !== warningCount) return { handled: 0, actionable: warningCount };
     const handled = Math.min(warningCount, items.filter((item) => AUTO_HANDLED_WARNING_KINDS.has(item.kind)).length);
     return { handled, actionable: warningCount - handled };
   } catch {
@@ -407,9 +408,19 @@ async function warningPriorityCounts(total) {
 }
 
 async function loadStatus() {
-  const payload = await api("/api/v1/status");
-  state.status = payload;
+  const serial = ++state.requestSerial.status;
+  let payload;
+  try {
+    payload = await api("/api/v1/status");
+  } catch (error) {
+    if (serial !== state.requestSerial.status) return false;
+    throw error;
+  }
   const status = payload.status || {};
+  const warningCounts = await warningPriorityCounts(status.warning_count);
+  if (serial !== state.requestSerial.status) return false;
+
+  state.status = payload;
   const revision = status.data_revision == null ? null : String(status.data_revision);
   const changed = state.dataRevision !== null && revision !== null && revision !== state.dataRevision;
   if (changed) {
@@ -431,7 +442,6 @@ async function loadStatus() {
   $("#scanButton").disabled = Boolean(payload.scanning);
   $(".scan-icon").classList.toggle("spin", Boolean(payload.scanning));
 
-  const warningCounts = await warningPriorityCounts(status.warning_count);
   state.handledWarningCount = warningCounts.handled;
   renderHandledWarnings();
   const notes = [];
