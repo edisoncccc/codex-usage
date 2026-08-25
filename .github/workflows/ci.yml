@@ -39,11 +39,6 @@ jobs:
           go-version: "1.26.5"
           cache: true
       - run: bash ./scripts/build.sh
-      - uses: actions/upload-artifact@v7
-        with:
-          name: codex-usage-binaries
-          path: dist/
-          if-no-files-found: error
 
   dashboard:
     name: dashboard
