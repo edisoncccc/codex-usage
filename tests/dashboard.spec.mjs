@@ -128,6 +128,8 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   await expect(page.getByRole("heading", { name: "本机用量概览" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "概览" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByText("过去 7 个本地自然日")).toBeVisible();
+  const cachedRate = page.locator("#overviewTokenBreakdown span", { hasText: "Cached Rate" });
+  await expect(cachedRate).toContainText("25.0%");
   const trend = page.locator("#usageTrendPanel");
   await expect(trend.getByRole("heading", { name: "每日Token用量" })).toBeVisible();
   await expect(trend.getByRole("tab", { name: "每日" })).toHaveAttribute("aria-selected", "true");
@@ -137,6 +139,11 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   await expect(trend.getByRole("heading", { name: "每小时Token用量" })).toBeVisible();
   await expect(trend.getByRole("tab", { name: "每小时" })).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("#view-overview").getByText("Standard API 等价成本", { exact: true })).toBeVisible();
+  const costBreakdown = page.locator("#overviewCostBreakdown");
+  await expect(costBreakdown).toContainText("普通 Input");
+  await expect(costBreakdown).toContainText("Cached Input");
+  await expect(costBreakdown).toContainText("Output");
+  await expect(costBreakdown.locator("b")).toHaveCount(4);
   await expect(page.locator("#machineId")).not.toHaveText("—");
   await expect(page.locator("#overviewCoverage")).toContainText("已定价 100.0% Token");
   const styleIntegrity = await page.evaluate(() => ({
@@ -150,6 +157,82 @@ test("overview is calm, local-only, and exposes honest cost coverage", async ({ 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1440);
   expect(externalRequests).toEqual([]);
   expect(consoleErrors).toEqual([]);
+});
+
+test("cached rate is unavailable without input tokens", async ({ page }) => {
+  await page.route("**/api/v1/summary?*", async (route) => {
+    const response = await route.fetch();
+    const summary = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...summary, grand_total: 0, usage: { ...summary.usage, input: 0, cached_input: 0 } }
+    });
+  });
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+  const cachedRate = page.locator("#overviewTokenBreakdown span", { hasText: "Cached Rate" });
+  await expect(cachedRate).toHaveText("Cached Rate—");
+});
+
+test("auto-handled counter resets stay quiet and reviewable", async ({ page }) => {
+  const warnings = Array.from({ length: 4 }, (_, index) => ({
+    id: index + 1,
+    created_at: "2026-08-24T01:00:00Z",
+    first_seen: "2026-08-24T00:00:00Z",
+    occurrences: 1,
+    kind: "cumulative_reset",
+    path: `rollout-${index + 1}.jsonl`,
+    detail: "counter reset handled with last_token_usage"
+  }));
+  await page.route("**/api/v1/status", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({ response, json: { ...payload, status: { ...payload.status, warning_count: warnings.length } } });
+  });
+  await page.route("**/api/v1/warnings?*", async (route) => route.fulfill({ json: { items: warnings } }));
+
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+
+  await expect(page.locator("#coverageBanner")).toBeHidden();
+  await expect(page.locator("#handledWarningRow")).toBeVisible();
+  await expect(page.locator("#handledWarningButton")).toHaveText("4 条计数器重置已自动处理 · 查看记录");
+  await page.locator("#handledWarningButton").click();
+  await expect(page.locator("#warningsDialog")).toBeVisible();
+  await expect(page.locator("#warningList .warning-row")).toHaveCount(4);
+});
+
+test("actionable warnings stay prominent beside quiet handled records", async ({ page }) => {
+  const warnings = [
+    {
+      id: 1,
+      created_at: "2026-08-24T01:00:00Z",
+      first_seen: "2026-08-24T00:00:00Z",
+      occurrences: 1,
+      kind: "cumulative_reset",
+      path: "handled.jsonl",
+      detail: "counter reset handled with last_token_usage"
+    },
+    {
+      id: 2,
+      created_at: "2026-08-24T01:00:00Z",
+      first_seen: "2026-08-24T00:00:00Z",
+      occurrences: 1,
+      kind: "jsonl_record",
+      path: "needs-review.jsonl",
+      detail: "record could not be parsed"
+    }
+  ];
+  await page.route("**/api/v1/status", async (route) => {
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({ response, json: { ...payload, status: { ...payload.status, warning_count: warnings.length } } });
+  });
+  await page.route("**/api/v1/warnings?*", async (route) => route.fulfill({ json: { items: warnings } }));
+
+  await page.goto(dashboardURL, { waitUntil: "networkidle" });
+
+  await expect(page.locator("#coverageBanner")).toBeVisible();
+  await expect(page.locator("#coverageText")).toHaveText("1 条去重后的数据质量记录需复核");
+  await expect(page.locator("#handledWarningButton")).toHaveText("1 条计数器重置已自动处理 · 查看记录");
 });
 
 test("hourly usage inspects the selected point and navigates across local days", async ({ page }) => {

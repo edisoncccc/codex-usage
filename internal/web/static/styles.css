@@ -243,6 +243,8 @@ h1, h2, h3 { font-family: var(--display); text-wrap: balance; }
 .metric-breakdown { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--text-soft); font-size: var(--type-small); }
 .metric-breakdown span { white-space: nowrap; }
 .metric-breakdown b { margin-left: 4px; color: var(--text); font-family: var(--mono); font-weight: 550; }
+.cost-breakdown { margin: -2px 0 13px; gap: 6px 16px; }
+.cost-breakdown b { color: var(--copper-strong); }
 .coverage-line { display: flex; align-items: center; gap: 10px; color: var(--text-soft); font-size: var(--type-small); }
 .coverage-track { width: min(150px, 38%); height: 5px; overflow: hidden; border-radius: 3px; background: var(--surface-muted); }
 .coverage-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--copper); transition: width 220ms var(--ease); }
@@ -359,6 +361,8 @@ h1, h2, h3 { font-family: var(--display); text-wrap: balance; }
 .provenance-list dd { min-width: 0; margin: 0; display: grid; justify-items: end; text-align: right; font-size: var(--type-ui); }
 .provenance-list code { max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--teal-strong); font-size: var(--type-small); }
 .provenance-list small { margin-top: 2px; color: var(--text-faint); font-size: var(--type-micro); }
+.provenance-warning-button { max-width: 100%; display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; color: var(--text-faint); font-size: var(--type-small); font-weight: 500; text-align: right; }
+.provenance-warning-button:hover { color: var(--teal-strong); }
 
 .month-nav .icon-button { width: 42px; height: 50px; border: 0; border-radius: 10px; background: transparent; font-size: 1.15rem; }
 .month-nav .icon-button:hover, .month-today-button:hover { color: var(--text); background: var(--surface-raised); }

@@ -28,6 +28,8 @@ const DISPLAY_PREFERENCE_VALUES = Object.freeze({
   theme: ["system", "light", "dark"],
   motion: ["system", "reduce"]
 });
+const WARNING_FETCH_LIMIT = 500;
+const AUTO_HANDLED_WARNING_KINDS = new Set(["cumulative_reset"]);
 
 function readStorage(key) {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -125,6 +127,7 @@ const state = {
   pendingDataRefresh: false,
   statusQualityNotes: [],
   dataQualityNotes: [],
+  handledWarningCount: 0,
   sessionSearch: "",
   requestSerial: { overview: 0, hourly: 0, hourlyContext: 0, daily: 0, day: 0, breakdown: 0, sessions: 0, estimates: 0 }
 };
@@ -382,6 +385,27 @@ function renderQualityBanner() {
   $("#coverageText").textContent = notes.join("；");
 }
 
+function renderHandledWarnings() {
+  const count = state.handledWarningCount;
+  $("#handledWarningRow").classList.toggle("hidden", count === 0);
+  $("#handledWarningText").textContent = count
+    ? t("dynamic.handledWarningCount", { count: i18n.formatNumber(count) })
+    : "";
+}
+
+async function warningPriorityCounts(total) {
+  const warningCount = Math.max(0, Number(total) || 0);
+  if (!warningCount) return { handled: 0, actionable: 0 };
+  try {
+    const payload = await api(`/api/v1/warnings?limit=${WARNING_FETCH_LIMIT}`);
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const handled = Math.min(warningCount, items.filter((item) => AUTO_HANDLED_WARNING_KINDS.has(item.kind)).length);
+    return { handled, actionable: warningCount - handled };
+  } catch {
+    return { handled: 0, actionable: warningCount };
+  }
+}
+
 async function loadStatus() {
   const payload = await api("/api/v1/status");
   state.status = payload;
@@ -407,8 +431,11 @@ async function loadStatus() {
   $("#scanButton").disabled = Boolean(payload.scanning);
   $(".scan-icon").classList.toggle("spin", Boolean(payload.scanning));
 
+  const warningCounts = await warningPriorityCounts(status.warning_count);
+  state.handledWarningCount = warningCounts.handled;
+  renderHandledWarnings();
   const notes = [];
-  if (status.warning_count) notes.push(t("dynamic.warningCount", { count: i18n.formatNumber(status.warning_count) }));
+  if (warningCounts.actionable) notes.push(t("dynamic.warningCount", { count: i18n.formatNumber(warningCounts.actionable) }));
   for (const home of status.codex_homes || []) {
     if (home.warning) notes.push(i18n.getLocale() === "en" ? `${t("warning.raw")}: ${home.warning}` : home.warning);
   }
@@ -873,10 +900,14 @@ function renderOverviewSummary(summary) {
   totalNode.title = `${fullToken(total)} Total Token`;
   totalNode.classList.remove("loading");
   const usage = summary.usage || emptyUsage();
+  const input = Math.max(0, Number(usage.input) || 0);
+  const cached = Math.max(0, Number(usage.cached_input) || 0);
+  const cachedRate = input > 0 ? formatPercent(cached / input) : "—";
   $("#overviewTokenBreakdown").innerHTML = [
     ["Input", usage.input], ["Cached", usage.cached_input], ["Cache Write", usage.cache_write_input],
     ["Output", usage.output], ["Reasoning", usage.reasoning_output]
-  ].map(([label, value]) => `<span>${label}<b title="${fullToken(value)}">${formatToken(value)}</b></span>`).join("");
+  ].map(([label, value]) => `<span>${label}<b title="${fullToken(value)}">${formatToken(value)}</b></span>`).join("")
+    + `<span>Cached Rate<b>${cachedRate}</b></span>`;
   state.dataQualityNotes = [];
   renderQualityBanner();
 }
@@ -886,6 +917,12 @@ function renderOverviewCost(cost) {
   const costNode = $("#overviewCost");
   costNode.textContent = estimateDisplay(estimate);
   costNode.classList.remove("loading");
+  $("#overviewCostBreakdown").innerHTML = [
+    [t("overview.regularInputCost"), estimate.regular_input_usd],
+    [t("overview.cachedInputCost"), estimate.cached_input_usd],
+    [t("overview.cacheWriteCost"), estimate.cache_write_input_usd],
+    [t("overview.outputCost"), estimate.output_usd]
+  ].map(([label, value]) => `<span>${escapeHTML(label)}<b>${formatUSD(value)}</b></span>`).join("");
   $("#overviewCoverage").textContent = estimateLabel(estimate);
   $("#overviewCoverageBar").style.width = `${Math.max(0, Math.min(100, Number(estimate.coverage_ratio || 0) * 100))}%`;
   const reasons = reasonSummary(estimate);
@@ -1425,7 +1462,7 @@ async function loadWarnings() {
   const container = $("#warningList");
   container.innerHTML = `<div class="empty-state">${escapeHTML(t("common.loading"))}</div>`;
   try {
-    const payload = await api("/api/v1/warnings?limit=200");
+    const payload = await api(`/api/v1/warnings?limit=${WARNING_FETCH_LIMIT}`);
     const items = payload.items || [];
     container.innerHTML = items.length ? items.map((item) => {
       const occurrences = Number(item.occurrences || 1);
@@ -1714,7 +1751,9 @@ function setupEvents() {
     updateDisplayPreference(input.dataset.setting, input.value);
   });
   $("#resetSettings").addEventListener("click", resetDisplayPreferences);
-  $("#warningButton").addEventListener("click", () => { openDialog($("#warningsDialog")); loadWarnings(); });
+  for (const selector of ["#warningButton", "#handledWarningButton"]) {
+    $(selector).addEventListener("click", () => { openDialog($("#warningsDialog")); loadWarnings(); });
+  }
   $("#pricingButton").addEventListener("click", openPricingDialog);
   $("#addOverride").addEventListener("click", () => {
     const input = $("#newOverrideModel");

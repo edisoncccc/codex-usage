@@ -80,6 +80,7 @@
         <article class="hero-metric cost-metric">
           <div class="metric-label-row"><span class="metric-label" data-i18n="overview.cost">Standard API 等价成本</span><button class="text-button copper pressable" id="pricingButton" type="button" aria-haspopup="dialog" aria-controls="pricingDialog" data-i18n="overview.pricing">定价设置</button></div>
           <strong class="hero-value cost loading" id="overviewCost">—</strong>
+          <div class="metric-breakdown cost-breakdown" id="overviewCostBreakdown"></div>
           <div class="coverage-line"><span class="coverage-track" aria-hidden="true"><i id="overviewCoverageBar"></i></span><span id="overviewCoverage" data-i18n="overview.estimating">正在估算…</span></div>
           <p class="metric-note" id="overviewCostNote" data-i18n="overview.notBill">不是 OpenAI 真实账单</p>
         </article>
@@ -173,6 +174,7 @@
             <div><dt data-i18n="provenance.machineId">机器 ID</dt><dd><code id="machineId">—</code></dd></div>
             <div><dt data-i18n="provenance.lastScan">最后扫描</dt><dd id="lastScan">—</dd></div>
             <div><dt data-i18n="provenance.source">计数来源</dt><dd id="sourceStatus">—</dd></div>
+            <div class="hidden" id="handledWarningRow"><dt data-i18n="provenance.handledWarnings">自动处理记录</dt><dd><button class="text-button pressable provenance-warning-button" id="handledWarningButton" type="button" aria-haspopup="dialog" aria-controls="warningsDialog"><span id="handledWarningText"></span><span aria-hidden="true"> · </span><span data-i18n="action.viewRecords">查看记录</span></button></dd></div>
             <div><dt data-i18n="provenance.stateRole">状态库角色</dt><dd><strong data-i18n="provenance.metadataOnly">仅发现与 metadata</strong></dd></div>
           </dl>
         </section>
