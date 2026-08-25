@@ -1544,6 +1544,12 @@ func attributionWhere(filter model.Filter, alias string, includeFallback bool) (
 	return canonicalWhere(filter, alias)
 }
 
+type stateThreadMetadata struct {
+	info           model.SessionInfo
+	parentThreadID string
+	agentRole      string
+}
+
 // ReadStateThreads reads only metadata from a Codex state database. It probes
 // columns first, so older/newer internal schemas fall back without a crash.
 func ReadStateThreads(ctx context.Context, path, codexHome string) ([]model.SessionInfo, error) {
@@ -1599,25 +1605,95 @@ func ReadStateThreads(ctx context.Context, path, codexHome string) ([]model.Sess
 		return nil, err
 	}
 	defer threadRows.Close()
-	var out []model.SessionInfo
+	var threads []stateThreadMetadata
 	for threadRows.Next() {
 		var item model.SessionInfo
-		var agentRole string
+		var rawSource, agentRole string
 		var created, updated, archived int64
 		if err := threadRows.Scan(&item.SessionID, &item.RolloutPath, &item.ProjectPath,
-			&item.Title, &item.Model, &item.Source, &item.ThreadSource, &agentRole, &item.CLIValue,
+			&item.Title, &item.Model, &rawSource, &item.ThreadSource, &agentRole, &item.CLIValue,
 			&item.TokensUsed, &created, &updated, &archived); err != nil {
 			return nil, err
 		}
+		parentThreadID, sourceAgentRole := stateSubagentMetadata(rawSource)
+		if agentRole == "" {
+			agentRole = sourceAgentRole
+		}
 		item.CodexHome = codexHome
-		item.Source = compactStateSource(item.Source)
+		item.Source = compactStateSource(rawSource)
 		item.AgentType = model.ClassifyAgent(item.Source, item.ThreadSource, agentRole)
 		item.CreatedAt = flexibleEpoch(created)
 		item.UpdatedAt = flexibleEpoch(updated)
 		item.Archived = archived != 0
+		threads = append(threads, stateThreadMetadata{info: item, parentThreadID: parentThreadID, agentRole: agentRole})
+	}
+	if err := threadRows.Err(); err != nil {
+		return nil, err
+	}
+	byID := make(map[string]int, len(threads))
+	for index := range threads {
+		byID[threads[index].info.SessionID] = index
+	}
+	out := make([]model.SessionInfo, 0, len(threads))
+	for _, thread := range threads {
+		item := thread.info
+		if item.Title == "" && item.AgentType == "subagent" {
+			parentTitle := stateAncestorTitle(thread.parentThreadID, threads, byID)
+			switch {
+			case parentTitle != "" && thread.agentRole != "":
+				item.Title = thread.agentRole + " · " + parentTitle
+			case parentTitle != "":
+				item.Title = "Subagent · " + parentTitle
+			case thread.agentRole != "":
+				item.Title = "Subagent · " + thread.agentRole
+			default:
+				item.Title = "Subagent"
+			}
+		}
 		out = append(out, item)
 	}
-	return out, threadRows.Err()
+	return out, nil
+}
+
+func stateSubagentMetadata(value string) (parentThreadID, agentRole string) {
+	var source struct {
+		Subagent struct {
+			ThreadSpawn struct {
+				ParentThreadID string `json:"parent_thread_id"`
+				AgentRole      string `json:"agent_role"`
+			} `json:"thread_spawn"`
+		} `json:"subagent"`
+	}
+	if json.Unmarshal([]byte(value), &source) != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(source.Subagent.ThreadSpawn.ParentThreadID),
+		strings.TrimSpace(source.Subagent.ThreadSpawn.AgentRole)
+}
+
+func stateAncestorTitle(parentThreadID string, threads []stateThreadMetadata, byID map[string]int) string {
+	seen := map[string]bool{}
+	for parentThreadID != "" && !seen[parentThreadID] {
+		seen[parentThreadID] = true
+		index, ok := byID[parentThreadID]
+		if !ok {
+			return ""
+		}
+		thread := threads[index]
+		if title := stateThreadTitleLine(thread.info.Title); title != "" {
+			return title
+		}
+		parentThreadID = thread.parentThreadID
+	}
+	return ""
+}
+
+func stateThreadTitleLine(value string) string {
+	title := strings.TrimSpace(value)
+	if index := strings.IndexAny(title, "\r\n"); index >= 0 {
+		title = strings.TrimSpace(title[:index])
+	}
+	return title
 }
 
 func FindLatestStateDB(home string) string {

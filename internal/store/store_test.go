@@ -671,3 +671,62 @@ func TestTimeseriesKeepsIngestionLocalDateAfterTimezoneChange(t *testing.T) {
 		t.Fatalf("stored local day drifted with query timezone: %+v", points)
 	}
 }
+
+func TestReadStateThreadsLabelsUntitledSubagentsFromTheirParentTask(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state_5.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE threads (
+		id TEXT PRIMARY KEY,
+		rollout_path TEXT NOT NULL,
+		title TEXT NOT NULL DEFAULT '',
+		source TEXT NOT NULL DEFAULT '',
+		thread_source TEXT NOT NULL DEFAULT '',
+		agent_role TEXT
+	)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	rows := []struct {
+		id, title, source, threadSource, role string
+	}{
+		{"parent", "Parent task\nLong first-message context", "vscode", "user", ""},
+		{"manager", "", `{"subagent":{"thread_spawn":{"parent_thread_id":"parent","agent_role":"gsd-debug-session-manager"}}}`, "subagent", "gsd-debug-session-manager"},
+		{"debugger", "", `{"subagent":{"thread_spawn":{"parent_thread_id":"manager","agent_role":"gsd-debugger"}}}`, "subagent", "gsd-debugger"},
+		{"orphan", "", `{"subagent":{"thread_spawn":{"parent_thread_id":"missing","agent_role":"worker"}}}`, "subagent", "worker"},
+		{"named", "Explicit child title", `{"subagent":{"thread_spawn":{"parent_thread_id":"parent","agent_role":"worker"}}}`, "subagent", "worker"},
+	}
+	for _, row := range rows {
+		if _, err := db.Exec(`INSERT INTO threads(id,rollout_path,title,source,thread_source,agent_role)
+			VALUES(?,?,?,?,?,?)`, row.id, row.id+".jsonl", row.title, row.source, row.threadSource, row.role); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := ReadStateThreads(ctx, path, `C:\Users\demo\.codex`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]model.SessionInfo, len(items))
+	for _, item := range items {
+		byID[item.SessionID] = item
+	}
+	for id, want := range map[string]string{
+		"parent":   "Parent task\nLong first-message context",
+		"manager":  "gsd-debug-session-manager · Parent task",
+		"debugger": "gsd-debugger · Parent task",
+		"orphan":   "Subagent · worker",
+		"named":    "Explicit child title",
+	} {
+		if got := byID[id].Title; got != want {
+			t.Errorf("%s title = %q, want %q", id, got, want)
+		}
+	}
+}
