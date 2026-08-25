@@ -4,6 +4,7 @@
 /node_modules/
 /test-results/
 /playwright-report/
+/.superpowers/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
