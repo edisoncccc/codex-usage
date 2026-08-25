@@ -1,0 +1,145 @@
+# 2026-08-25 Open-source Fork Session
+
+## 工作目标
+
+将上游 `zJay26/codex-usage` 基线 `cd6d4fdbff54838aed7e38a8bc4edf022c6ce8c7` 上已验证的本地改进整理为公开 GitHub Fork，公开产品展示名使用 **Codex Usage Dashboard**。仓库 slug、命令名继续使用 `codex-usage`，Go module 路径继续使用 `github.com/zJay26/codex-usage`，避免破坏兼容性。
+
+本次发布遵循以下边界：
+
+- 保留完整上游历史、MIT `LICENSE` 与 `THIRD_PARTY_NOTICES.md`，明确致谢 `zJay26/codex-usage`。
+- 中文入口为 `README.md`，英文入口为 `README.en.md`，两者结构、视觉和信息权重对等。
+- 首屏使用仓库内已有的 `Codex-Usage.png`，下一屏使用仅含合成数据的 `docs/media/codex-usage-demo.gif`。
+- 公开说明本地隐私边界、Token 去向、Cached Rate、普通/缓存 Input 分价，以及 Standard API 等价成本不是账单或订阅配额。
+- 当前仅发布源码，不创建 GitHub Release，不上传或发布 EXE。
+- 原始功能差异来自只读本地参考副本；实施期间该副本保持未修改。
+
+## 执行步骤
+
+1. 在 linked worktree 的独立执行分支上确认上游基线、设计文档和实施计划。
+2. 将本地视觉 brainstorm 目录加入忽略规则，避免本机草稿进入公开仓库。
+3. 分别移植并测试 Subagent 标题继承、modern fork replay 保护、缓存费用与告警优先级界面改进。
+4. 针对代码质量复核意见，补充告警列表 fail-closed、一致性与陈旧响应保护，并增强浏览器测试。
+5. 将项目首页改写为同构的中英文产品首页，公开展示名设为 **Codex Usage Dashboard**，保留 `codex-usage` 的仓库与运行时兼容标识。
+6. 修正 README 中的平台、隐私和运行命令表述，并完成设计文档发布门禁的空白字符修复。
+7. 使用官方 Go 1.26.6、稳定测试二进制、`go vet`、最终服务二进制、Playwright 和 JavaScript 语法检查完成发布前验证。
+8. 运行累计差异、隐私、产物、README 资源及禁止下载链接检查，并创建本会话交接。
+
+基线后的提交序列如下：
+
+| 提交 | 信息 |
+|---|---|
+| `a5ad72aa1a982230fcabba3051d61664138ffbf3` | `docs: define public fork README design` |
+| `8be24ae513261d684cd7e4fa0f3c7a5973fc0165` | `docs: add public fork implementation plan` |
+| `b275463cfa7fba80b096b277e4bb3b498932c130` | `chore: ignore local brainstorm artifacts` |
+| `8f2924f2b67b44918cc31c92772392a8f5fe3ca4` | `fix: label subagents from their parent tasks` |
+| `16ccb1709c65c84dda51bfa014dda759605fb6e4` | `fix: keep modern fork replay history pending` |
+| `519ad9f6a4aee74157c663eb9501c82981b793ff` | `feat: clarify cached usage and warning priority` |
+| `fe27742019e5dbb67995ad54bbe90778801c55ed` | `fix: keep warning priority fail-closed` |
+| `cf343f356daa25f99412a75fe7778792674f75e4` | `docs: refresh the bilingual project homepage` |
+| `e8a21f43eca5e25b27253ae9a7391a132116bf5f` | `docs: correct README platform and privacy claims` |
+| `0c7c7a4218ff263d230ffb70507fe3d35d104695` | `docs: refine README runtime examples` |
+| `e2ee315dc6e5d6bf83c53b10b873f42ed2aef228` | `docs: fix publication check whitespace` |
+| `160f9a26d87a2ade538b8bf5067d0c3352b497c3` | `docs: preserve spec metadata line breaks` |
+
+## 修改文件
+
+本次从上游基线累计修改或新增的受跟踪文件：
+
+- 发布设计、计划与留痕：
+  - `docs/superpowers/specs/2026-08-25-open-source-readme-design.md`
+  - `docs/superpowers/plans/2026-08-25-open-source-fork-readme.md`
+  - `docs/sessions/2026-08-25-open-source-fork.md`
+- 仓库首页与发布边界：
+  - `.gitignore`
+  - `README.md`
+  - `README.en.md`
+- Subagent 标题归属：
+  - `internal/store/store.go`
+  - `internal/store/store_test.go`
+- modern fork replay 保护：
+  - `internal/usage/scanner.go`
+  - `internal/usage/scanner_test.go`
+- Cached Rate、费用分项与告警优先级：
+  - `internal/web/static/app.js`
+  - `internal/web/static/i18n.js`
+  - `internal/web/static/index.html`
+  - `internal/web/static/styles.css`
+  - `tests/dashboard.spec.mjs`
+
+测试二进制、最终服务 EXE、Playwright 输出和合成 Pages 构建均位于仓库已忽略的路径，不属于公开提交。
+
+## 运行命令与结果
+
+### Go 基线与最终验证
+
+- 改动前的干净基线曾完成一次标准 `go test ./...`，结果通过。
+- 最终严格原命令 `go test ./...` 会在系统临时目录即时生成并加载 `.test.exe`，被 Windows Smart App Control 阻断。按用户明确批准，安全策略保持开启；未使用 `go test -exec`，未关闭或绕过安全策略，也未宣称最终严格原命令通过。
+- 使用官方 Go 1.26.6 运行 `go list` 模板，枚举到 12 个 package：9 个含测试文件，3 个无测试文件。无测试文件的包为 `cmd/codex-usage`、`cmd/fixturegen`、`internal/model`。
+- 对 9 个含测试的包分别运行 `go test -c -o test-results/task6-<安全包名>-20260825-221746.test.exe <importpath>`，随后在对应 package 目录直接执行稳定二进制，并带 `-test.count=1 -test.timeout=10m`。共列出并执行 82 个顶层测试，9/9 测试 package 均为 PASS。
+- `go vet ./...`：exit 0。
+- 使用 `CGO_ENABLED=0 go build -trimpath` 构建最终 E2E 服务：`test-results/codex-usage-task6-final-20260825-221845.exe`，SHA256 为 `9347F644F5D21A680C01D2E7929D753E4042199D1F331D78D49C1634F9F25FA3`。
+
+最终测试二进制及 SHA256：
+
+| Package | 仓库相对路径 | SHA256 |
+|---|---|---|
+| `internal/app` | `test-results/task6-internal-app-20260825-221746.test.exe` | `A7486ECD06F861C919E20AC7B6D9B0C27412B4C0AD05FB5EDC579F96CCE39F83` |
+| `internal/cliui` | `test-results/task6-internal-cliui-20260825-221746.test.exe` | `3E20BFDE14318B4C50EAAD28E2187E8D7CDD414C4AE78FF1DC0EC4323D6AD645` |
+| `internal/config` | `test-results/task6-internal-config-20260825-221746.test.exe` | `41A59F9223DEBEA7A3BD034E02247712AD177280A3BF7656B3B2EAB1A1A9ADE7` |
+| `internal/platform` | `test-results/task6-internal-platform-20260825-221746.test.exe` | `D4AD6A05AAAC9337809DDDD783BDBE05F8E83ABE08A23BCABBAFEF22BCCABAD7` |
+| `internal/pricing` | `test-results/task6-internal-pricing-20260825-221746.test.exe` | `21048947DFB7CF92C743B36CEE3F51401FF37CF0F2D012DCBC0725ED2767ADB9` |
+| `internal/server` | `test-results/task6-internal-server-20260825-221746.test.exe` | `ECE05D15A2B6A0120D76E2DE30D0DB31DD56C5777C81C4F4E6CEEE5F79D1535F` |
+| `internal/store` | `test-results/task6-internal-store-20260825-221746.test.exe` | `17A1B1CBC77687802CAD66755C2BFBA85D96D3C646EFFC880E17ACC11D41518D` |
+| `internal/usage` | `test-results/task6-internal-usage-20260825-221746.test.exe` | `7DFD9B09E33F773F0C5E42DB392187595B489DD5586D7F87645ABAF545F0601E` |
+| `internal/web` | `test-results/task6-internal-web-20260825-221746.test.exe` | `F4B34F9D64DAAFB22095B7EC8A92D7257C41E13C329347E5C3AAF9FC8546EC4E` |
+
+过程事件：第一次批处理已成功编译 `test-results/task6-internal-app-20260825-221610.test.exe`，但 PowerShell 将 `-test.list=.` 错拆为无效的 `-test` 参数，测试程序显示用法并以 exit 2 结束。这是验证编排错误，不是项目测试失败；该唯一、未跟踪产物未覆盖也未删除。随后以新时间戳重新执行全部 9 个测试 package 并通过。
+
+### Playwright 与 JavaScript
+
+- 设置 `CODEX_USAGE_BIN=test-results/codex-usage-task6-final-20260825-221845.exe`、`PLAYWRIGHT_SKIP_BROWSER_GC=1`，并将官方 Go 置于 `PATH` 前部。
+- 运行完整 `npm test -- --output node_modules/.cache/playwright-task6-final-20260825-221902`：Dashboard 20 项、Demo 3 项，共 23/23 通过，耗时 36.2 秒。
+- `node --check internal/web/static/app.js`：exit 0。
+- `node --check internal/web/static/i18n.js`：exit 0。
+- `node --check tests/dashboard.spec.mjs`：exit 0。
+- `node --check tests/demo.spec.mjs`：exit 0。
+
+过程事件：早期 Playwright RED 尝试中，测试框架自动清理了刚创建的临时测试 EXE。该文件是本任务新建且未跟踪的测试产物，没有删除任何受跟踪文件、既有用户文件或只读参考副本内容。此后统一使用唯一、稳定的测试产物路径，未再重现。
+
+### Git、隐私与发布静态门禁
+
+- `git diff --check cd6d4fdbff54838aed7e38a8bc4edf022c6ce8c7..HEAD`：发布门禁修复后 exit 0。
+- 原始隐私 grep：raw 结果恰有 1 项，是实施计划内记录该扫描命令的行自匹配，不是仓库数据泄漏；精确排除这一条计划命令行自身后，refined 结果为 0 个未允许匹配。
+- 原始产物扫描：raw 结果恰有 2 项，均为上游基线已有的脱敏合成测试 fixture：
+  - `internal/usage/testdata/single-meta-fork-inherited-baseline.jsonl`
+  - `internal/usage/testdata/single-meta-fork-zero-baseline.jsonl`
+- 两份 fixture 相对上游基线没有变化，内容使用 `redacted` 标识且私密标记扫描无匹配；精确允许这两个受控路径后，refined 结果为 0 个意外产物。fixture 保留且未删除。
+- README 必需资源 `Codex-Usage.png`、`docs/media/codex-usage-demo.gif`、`LICENSE`、`THIRD_PARTY_NOTICES.md`、`README.md`、`README.en.md`：6/6 存在。
+- README 中上游 Release、`releases/latest/download` 及个人 Fork Release 下载链接扫描：无匹配。
+- 创建本文件前 `git status --short`：无输出，工作树干净。
+- 本文件暂存后，`git diff --cached --name-only` 仅列出本会话文档，`git diff --cached --check` 为 exit 0；本文件自身的 staged 隐私扫描无匹配。完整 staged 索引的 raw/refined 隐私与产物计数仍分别为 `1/0` 和 `2/0`，与上述已核验的计划命令自匹配及两份合成 fixture 完全一致。
+
+## 关键决策
+
+- 公开身份采用 GitHub 原生 Fork，不将上游成果包装为从零原创；保留 MIT 来源和完整历史。
+- 对外产品名使用 **Codex Usage Dashboard**；仓库 URL、命令与 module 继续使用 `codex-usage`。
+- 当前只发布源码，不建立 Release，不上传 EXE；二进制签名、校验清单与 Release 属于未来独立决策。
+- 只使用仓库已有的合成数据图片，不使用真实 Dashboard、真实路径、Thread 标题或用户数据截图。
+- Standard API 等价成本只是按公开价格对本地 Token 记录的折算，不代表 OpenAI 账单、订阅消耗或账户配额。
+- Smart App Control 保持开启。最终 Go 验证采用稳定路径的测试二进制等价方案，并明确区分“等价验证通过”和“严格原命令受环境策略阻断”。
+- 隐私与产物扫描同时保留 raw 结果及经过逐项核验的 refined 结果，不以删除合成测试 fixture 的方式制造空扫描。
+
+## GitHub 发布结果
+
+- Task 7 待执行；截至本会话文档首次提交时，尚未创建个人公开 Fork，尚未推送任何提交。
+- 当前 `origin` 的 fetch/push 地址仍为上游 `https://github.com/zJay26/codex-usage.git`。
+- 目标公开 Fork：<https://github.com/edisoncccc/codex-usage>。
+- 计划发布方式：保留上游为 `upstream`，将个人 Fork 设为 `origin`，通过已授权的 SSH 身份非强制推送到 `main`。
+- 当前不创建 GitHub Release，不上传二进制资产。
+
+## 后续待办
+
+- 执行 Task 7：复核 GitHub/SSH 身份、确认目标仓库仍不存在、创建公开 Fork、配置 `origin`/`upstream`、非强制推送并验证远端 `main`。
+- 发布后更新本文件，写入真实公开 URL、Fork 父仓库关系、默认分支、本地/远端最终提交一致性和最终 remote 状态；提交并再次推送该更新。
+- 非阻塞测试增强：后续可为 Subagent 标题处理补充 malformed JSON、父链 cycle 和 JSON role fallback 等边界测试。
+- 若未来决定发布二进制，单独评估代码签名、可复现构建、SHA256 清单和 Release 流程；本次不预先承诺。
