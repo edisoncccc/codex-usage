@@ -199,15 +199,28 @@ if ($artifactUnexpected.Count -ne 0 -or $artifactMissing.Count -ne 0) {
 
 ## GitHub 发布结果
 
-- Task 7 待执行；截至本会话文档首次提交时，尚未创建个人公开 Fork，尚未推送任何提交。
-- 当前 `origin` 的 fetch/push 地址仍为上游 `https://github.com/zJay26/codex-usage.git`。
-- 目标公开 Fork：<https://github.com/edisoncccc/codex-usage>。
-- 计划发布方式：保留上游为 `upstream`，将个人 Fork 设为 `origin`，通过已授权的 SSH 身份非强制推送到 `main`。
-- 当前不创建 GitHub Release，不上传二进制资产。
+- Task 7 的公开 Fork 创建、源码推送与 remote 配置已经完成；截至本次留痕提交前，显式启用后的 CI push 验证尚待下一次正常推送完成。
+- 公开仓库：<https://github.com/edisoncccc/codex-usage>，创建时间为 `2026-08-25T15:31:55Z`。
+- GitHub 已验证属性：`visibility=PUBLIC`、`isFork=true`、父仓库为 `zJay26/codex-usage`、默认分支为 `main`。
+- GitHub Description 已精确设置为 `Codex Usage Dashboard — Local-first Codex token attribution, cache insights, and Standard API-equivalent cost.`；仓库 slug、命令与 Go module 未改名。
+- 最终 remote 目标已经规范化：`origin` 的 fetch/push 均为 `git@github.com:edisoncccc/codex-usage.git`，`upstream` 的 fetch/push 均为 `https://github.com/zJay26/codex-usage.git`。
+- 首次源码推送以 `619d10b3ca1b82516da03b66f4b48df8a9541062` 为已验证基准，执行 `git push origin HEAD:main`，结果为从上游基线 `cd6d4fd` 正常快进到该提交；首次远端 `main` 与本地基准逐字一致，未使用 force。
+- 随后推送 source-only workflow 门禁提交 `ed6a891fe9cb4ef0d03f86529e4fe88702e04083`，结果为 `619d10b..ed6a891` 正常快进。该提交只修改 `.github/workflows/ci.yml` 和 `.github/workflows/pages.yml`：CI 继续构建与测试但不再上传 `dist/` 二进制，Pages 仅保留手动触发，不再随 `main` push 自动运行。
+- Fork 创建后的前两次 push 均未产生 workflow run。只读核验显示仓库 Actions 权限为 `enabled=true`、`allowed_actions=all`，三个现有 workflow 的 API 状态均为 `active`；依据 Fork 的显式启用要求，已运行 `gh workflow enable ci.yml --repo edisoncccc/codex-usage`，命令 exit 0，`ci.yml` 的 API 更新时间变为 `2026-08-26T00:09:17+08:00`。未手动 dispatch 任何 workflow，也未启用或触发 Pages/Release。
+- 截至本次留痕提交前，CI、Pages 与 Release workflow run 列表均为空，Actions artifacts 为 `total_count=0`，GitHub Release 列表为空；没有上传二进制资产、创建 tag 或发布 Release。下一次正常文档 push 将用于验证已显式启用的 `ci.yml`，实际 run id、URL、head SHA 与 conclusion 只在 GitHub 返回终态后补录。
+
+发布与门禁留痕提交：
+
+| 提交 | 信息与作用 |
+|---|---|
+| `50efb60632f5ac2ff8c45356bb3f4671249da39a` | `docs: record the public fork handoff`，首次提交会话交接。 |
+| `1802838db4574075e0c0e6acc0696dd563075953` | `docs: make publication scans reproducible`，固定可复现的发布扫描。 |
+| `9851ecf1533cbfb1cbdf0a16686a4cc8501faf37` | `docs: tighten publication scan allowlist`，收紧隐私与产物 allowlist。 |
+| `619d10b3ca1b82516da03b66f4b48df8a9541062` | `docs: restore the public fork URL`，恢复公开 Fork URL 并作为首次推送基准。 |
+| `ed6a891fe9cb4ef0d03f86529e4fe88702e04083` | `ci: keep fork publication source-only`，取消 CI 二进制上传并关闭 Pages push 自动触发。 |
 
 ## 后续待办
 
-- 执行 Task 7：复核 GitHub/SSH 身份、确认目标仓库仍不存在、创建公开 Fork、配置 `origin`/`upstream`、非强制推送并验证远端 `main`。
-- 发布后更新本文件，写入真实公开 URL、Fork 父仓库关系、默认分支、本地/远端最终提交一致性和最终 remote 状态；提交并再次推送该更新。
+- 以本文件的正常 push 验证显式启用后的 `ci.yml`：等待 run 成功，确认 run head SHA 与推送提交一致，并再次核验 Pages/Release 无自动 run、Actions artifacts 为 0、Release 列表为空；随后将实际 run id、URL、head SHA 和 conclusion 补录到本文件。
 - 非阻塞测试增强：后续可为 Subagent 标题处理补充 malformed JSON、父链 cycle 和 JSON role fallback 等边界测试。
 - 若未来决定发布二进制，单独评估代码签名、可复现构建、SHA256 清单和 Release 流程；本次不预先承诺。
