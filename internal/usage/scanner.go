@@ -757,7 +757,7 @@ func (s *Scanner) inspectRollout(ctx context.Context, path string) (rolloutInspe
 								// then replay the complete parent transcript. Wait for the
 								// child task_started boundary instead of counting that replay.
 								out.modernPrefix = true
-							} else if out.legacyOffset == 0 {
+							} else if !out.modernPrefix && out.legacyOffset == 0 {
 								// Legacy rollouts put the parent metadata after their copied
 								// token prefix. Preserve both the offset and baseline here.
 								out.legacyOffset = offset

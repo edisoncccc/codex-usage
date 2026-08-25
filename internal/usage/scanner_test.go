@@ -525,6 +525,57 @@ func TestModernForkReplayBeforeChildTaskIsSkipped(t *testing.T) {
 	}
 }
 
+func TestModernForkRepeatedParentMetadataStaysPendingWithoutChildTask(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, ".codex")
+	dir := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	parentID := "019ff753-9210-7a41-9670-8f8d3a738a9d"
+	childID := "019ffaca-c65e-78a3-8383-70d9d427eaf3"
+	parent := strings.Join([]string{
+		fmt.Sprintf(`{"timestamp":"2026-08-13T01:00:00Z","type":"session_meta","payload":{"id":%q,"cwd":"/parent"}}`, parentID),
+		tokenLine("2026-08-13T01:00:01Z", usage(240, 180, 0, 60, 10, 300), usage(240, 180, 0, 60, 10, 300)),
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "z-parent.jsonl"), []byte(parent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	child := strings.Join([]string{
+		fmt.Sprintf(`{"timestamp":"2026-08-13T02:00:00Z","type":"session_meta","payload":{"id":%q,"forked_from_id":%q,"cwd":"/child"}}`, childID, parentID),
+		fmt.Sprintf(`{"timestamp":"2026-08-13T02:00:00Z","type":"session_meta","payload":{"id":%q,"cwd":"/parent"}}`, parentID),
+		`{"timestamp":"2026-08-13T02:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"019ff753-96f5-7ba1-9874-706a1c2e5a07"}}`,
+		tokenLine("2026-08-13T02:00:00Z", usage(120, 90, 0, 30, 5, 150), usage(120, 90, 0, 30, 5, 150)),
+		fmt.Sprintf(`{"timestamp":"2026-08-13T02:00:00Z","type":"session_meta","payload":{"id":%q,"cwd":"/parent"}}`, parentID),
+		tokenLine("2026-08-13T02:00:00Z", usage(240, 180, 0, 60, 10, 300), usage(120, 90, 0, 30, 5, 150)),
+	}, "\n") + "\n"
+	childPath := filepath.Join(dir, "a-modern-repeated-parent.jsonl")
+	if err := os.WriteFile(childPath, []byte(child), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	result, err := (&Scanner{Store: st}).Scan(context.Background(), []string{home}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.GrandTotal != 300 || result.EventsInserted != 1 {
+		t.Fatalf("repeated parent metadata exposed replay history: scan=%+v summary=%+v", result, summary)
+	}
+	cursor, ok, err := st.GetCursor(context.Background(), childPath)
+	if err != nil || !ok || cursor.Offset != 0 || cursor.ReplayOffset != 0 {
+		t.Fatalf("modern fork without a child task should remain pending: ok=%v cursor=%+v err=%v", ok, cursor, err)
+	}
+}
+
 func TestSingleMetadataForkFixturesUseImplicitFirstSnapshotBaseline(t *testing.T) {
 	tests := []struct {
 		name        string
