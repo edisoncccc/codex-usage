@@ -201,7 +201,7 @@ if ($artifactUnexpected.Count -ne 0 -or $artifactMissing.Count -ne 0) {
 
 - Task 7 待执行；截至本会话文档首次提交时，尚未创建个人公开 Fork，尚未推送任何提交。
 - 当前 `origin` 的 fetch/push 地址仍为上游 `https://github.com/zJay26/codex-usage.git`。
-- 目标公开 Fork：[https://github.com/edi&#115;oncccc/codex-usage](https://github.com/edi%73oncccc/codex-usage)。
+- 目标公开 Fork：<https://github.com/edisoncccc/codex-usage>。
 - 计划发布方式：保留上游为 `upstream`，将个人 Fork 设为 `origin`，通过已授权的 SSH 身份非强制推送到 `main`。
 - 当前不创建 GitHub Release，不上传二进制资产。
 
