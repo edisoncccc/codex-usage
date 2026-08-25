@@ -117,7 +117,7 @@ flowchart LR
 
 The tool reads the current machine's `CODEX_HOME`. It first discovers canonical session metadata from the Codex state database, then streams JSONL files under `sessions/` and `archived_sessions/`.
 
-Codex session usage is cumulative. At **each** `token_count` record, the scanner subtracts the previous cumulative vector and assigns that delta to the record timestamp's local calendar day. It never moves an entire multi-day session to the session's latest update date. Stable event IDs and cursors keep repeated scans idempotent. The scanner streams through JSONL and selectively retains and parses only records needed for statistics, including `session_meta`, `turn_context`, `task_started`, and `token_count`. Prompt, response, reasoning, and tool-output bodies pass only through a small type probe; the scanner neither allocates the full line nor writes it to the database.
+Codex session usage is cumulative. At **each** `token_count` record, the scanner subtracts the previous cumulative vector and assigns that delta to the record timestamp's local calendar day. It never moves an entire multi-day session to the session's latest update date. Stable event IDs and cursors keep repeated scans idempotent. The scanner streams through JSONL and selectively retains and parses only records needed for statistics, including `session_meta`, `turn_context`, `task_started`, and `token_count`. For large prompt, response, reasoning, and tool-output records, it retains only a fixed-size type probe instead of allocating a buffer as long as the full line, and it neither parses the body nor writes it to the database.
 
 The Codex state database is used only to discover rollout paths and enrich titles, projects, and other metadata. Its `tokens_used` value never changes token totals. OpenAI's [`account/usage/read`](https://learn.chatgpt.com/docs/app-server#7-token-usage-chatgpt) is service-backed account activity; this tool counts only current-machine local JSONL, so the scopes differ.
 
@@ -197,7 +197,7 @@ codex-usage uninstall               Remove the app, keep the database
 codex-usage uninstall --purge       Remove the app and local data
 ```
 
-The Dashboard supports `?lang=en|zh-CN` and its header language button. The URL wins over the saved locale, followed by the browser locale. The CLI supports global `--lang` and `CODEX_USAGE_LANG`, for example `CODEX_USAGE_LANG=en codex-usage doctor`. `--json` and `--csv` fields never change with language.
+The Dashboard supports `?lang=en|zh-CN` and its header language button. The URL wins over the saved locale, followed by the browser locale. The CLI supports global `--lang` and `CODEX_USAGE_LANG`, for example `codex-usage --lang en doctor`. `--json` and `--csv` fields never change with language.
 
 ## Local data paths
 

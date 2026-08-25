@@ -117,7 +117,7 @@ flowchart LR
 
 程序只读当前电脑的 `CODEX_HOME`。它优先从 Codex 状态库取得 session 路径、项目和 Thread 信息，再流式读取 `sessions/` 与 `archived_sessions/` 中的 JSONL。
 
-每个 session 里的 Token 是累计值。程序在**每一条** `token_count` 记录处保存累计向量，用“本次累计值 - 上次累计值”得到这一次的增量，并把增量归到该条记录时间戳对应的本地自然日；不会按 session 的最后更新时间把整段历史塞到同一天。重复扫描仍由稳定事件 ID 与游标去重。扫描器会流式经过 JSONL，只选择性保留并解析 `session_meta`、`turn_context`、`task_started` 和 `token_count` 等统计所需记录；prompt、回复、reasoning 与工具输出正文只经过小型类型探针，不会分配整行或写入数据库。
+每个 session 里的 Token 是累计值。程序在**每一条** `token_count` 记录处保存累计向量，用“本次累计值 - 上次累计值”得到这一次的增量，并把增量归到该条记录时间戳对应的本地自然日；不会按 session 的最后更新时间把整段历史塞到同一天。重复扫描仍由稳定事件 ID 与游标去重。扫描器会流式经过 JSONL，只选择性保留并解析 `session_meta`、`turn_context`、`task_started` 和 `token_count` 等统计所需记录；对于大型 prompt、回复、reasoning 与工具输出记录，只保留固定上限的类型探针，不会分配与整行等长的缓冲区，也不会解析正文或将其写入数据库。
 
 Codex 状态库只用于发现 rollout 路径并补充标题、项目等 metadata；其中的 `tokens_used` 不参与 Token 总量。OpenAI 的 [`account/usage/read`](https://learn.chatgpt.com/docs/app-server#7-token-usage-chatgpt) 是服务端账号 Token 活动；本工具只统计当前电脑的本地 JSONL，两者范围不同。
 
@@ -197,7 +197,7 @@ codex-usage uninstall               卸载程序，保留统计库
 codex-usage uninstall --purge       卸载并删除统计数据
 ```
 
-Dashboard 支持 `?lang=en|zh-CN` 和页头语言按钮；URL 参数优先于已保存语言，其次跟随浏览器。CLI 支持全局 `--lang` 和 `CODEX_USAGE_LANG`，例如 `CODEX_USAGE_LANG=en codex-usage doctor`。`--json` 与 `--csv` 字段不随语言改变。
+Dashboard 支持 `?lang=en|zh-CN` 和页头语言按钮；URL 参数优先于已保存语言，其次跟随浏览器。CLI 支持全局 `--lang` 和 `CODEX_USAGE_LANG`，例如 `codex-usage --lang en doctor`。`--json` 与 `--csv` 字段不随语言改变。
 
 ## 数据存在哪里
 
