@@ -26,7 +26,7 @@
 
 ![codex-usage 合成数据演示：Token 归属、缓存和等价成本](docs/media/codex-usage-demo.gif)
 
-> 演示只使用合成数据。项目不会读取或保存 prompt、回复、reasoning 内容、工具输出或 `auth.json`。
+> 演示只使用合成数据。扫描器会流式经过 JSONL，只选择性解析 metadata、任务边界和 `token_count` 等统计所需记录；不会解析或持久化 prompt、回复、reasoning 或工具输出正文，也从不读取或解析 `auth.json`。
 
 ## 四件事说清楚
 
@@ -50,7 +50,7 @@ go build -trimpath -o codex-usage.exe ./cmd/codex-usage
 .\codex-usage.exe install
 ```
 
-Linux / macOS bash：
+Linux bash：
 
 ```bash
 go test ./...
@@ -58,10 +58,11 @@ CGO_ENABLED=0 go build -trimpath -o codex-usage ./cmd/codex-usage
 ./codex-usage install
 ```
 
-安装会整理这台电脑已有的 Codex 使用记录，并在后台持续增量更新。之后运行 `codex-usage` 打开 Dashboard；英文 CLI 可使用：
+安装会整理这台电脑已有的 Codex 使用记录，并在后台持续增量更新。在源码目录中，Windows 运行 `.\codex-usage.exe`、Linux 运行 `./codex-usage` 即可打开 Dashboard；只有安装目录已加入 `PATH` 时，才可直接使用 `codex-usage`。需要英文 CLI 输出时，对当前构建产物使用：
 
 ```text
-codex-usage --lang en install
+.\codex-usage.exe --lang en install
+./codex-usage --lang en install
 ```
 
 Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自己的电脑执行命令后访问 `http://127.0.0.1:43189`。
@@ -77,11 +78,11 @@ Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自
 | 某段 Session 花了多少？ | Session 级 Token 与 API 等价费用；可搜索，也可一键只看当前 Session |
 | 如果全部按 API 价格折算呢？ | 总体与分项的 API 等价费用，并明确显示有多少 Token 能够定价 |
 
-| 会统计 | 不会统计或读取 |
+| 会统计 | 范围之外或不持久化 |
 |---|---|
 | 当前电脑的 Token、模型、来源、项目、Thread、Session、Agent 和自然日 | 账号在其他电脑上的用量 |
 | 本机已有以及之后新增的 Codex session 用量记录 | 账号配额、订阅余额或真实账单 |
-| 按 Standard API 文本价格计算的等价费用和定价覆盖率 | prompt、回复、reasoning 内容、工具输出或 `auth.json` |
+| 按 Standard API 文本价格计算的等价费用和定价覆盖率 | 不解析或持久化 prompt、回复、reasoning 与工具输出正文；`auth.json` 从不读取或解析 |
 | 重复、回退、坏记录和文件重建等数据质量提示 | 云同步、远程遥测或第三方分析 |
 
 > “电脑”指运行 Codex 客户端和 `codex-usage` 的主机，不是 shell 或 tool 实际执行的远程环境。Codex 官方 `/usage` 查看账号级活动；本项目只补充当前电脑上的详细归属。
@@ -96,7 +97,7 @@ Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自
 
 ## 工作原理与技术说明
 
-`codex-usage` 是一个 Go 单文件程序，里面同时包含 JSONL 扫描器、SQLite、HTTP API 和 Web Dashboard。安装后，它以用户级后台服务运行。
+`codex-usage` 是单个 Go 二进制程序，里面同时包含 JSONL 扫描器、SQLite、HTTP API 和 Web Dashboard。安装后，它以用户级后台服务运行。
 
 升级时，安装器只会移除旧版由 codex-usage 自己标记的 OTel exporter，不会改写第三方 exporter，也无需重启 Codex。
 
@@ -116,14 +117,15 @@ flowchart LR
 
 程序只读当前电脑的 `CODEX_HOME`。它优先从 Codex 状态库取得 session 路径、项目和 Thread 信息，再流式读取 `sessions/` 与 `archived_sessions/` 中的 JSONL。
 
-每个 session 里的 Token 是累计值。程序在**每一条** `token_count` 记录处保存累计向量，用“本次累计值 - 上次累计值”得到这一次的增量，并把增量归到该条记录时间戳对应的本地自然日；不会按 session 的最后更新时间把整段历史塞到同一天。重复扫描仍由稳定事件 ID 与游标去重。超大的 prompt、回复和工具输出记录会被跳过，不会整行载入内存，也不会写进数据库。
+每个 session 里的 Token 是累计值。程序在**每一条** `token_count` 记录处保存累计向量，用“本次累计值 - 上次累计值”得到这一次的增量，并把增量归到该条记录时间戳对应的本地自然日；不会按 session 的最后更新时间把整段历史塞到同一天。重复扫描仍由稳定事件 ID 与游标去重。扫描器会流式经过 JSONL，只选择性保留并解析 `session_meta`、`turn_context`、`task_started` 和 `token_count` 等统计所需记录；prompt、回复、reasoning 与工具输出正文只经过小型类型探针，不会分配整行或写入数据库。
 
 Codex 状态库只用于发现 rollout 路径并补充标题、项目等 metadata；其中的 `tokens_used` 不参与 Token 总量。OpenAI 的 [`account/usage/read`](https://learn.chatgpt.com/docs/app-server#7-token-usage-chatgpt) 是服务端账号 Token 活动；本工具只统计当前电脑的本地 JSONL，两者范围不同。
 
 ### 2. JSONL 防重与 fork 识别
 
-- 一个物理 JSONL 的 owner session 由第一条 `session_meta` 固定，后续复制进来的父 `session_meta` 不会改写归属
-- `forked_from_id` 文件中“子线程 metadata → 父线程历史快照 → 父线程 metadata”这一前缀只建立累计基线，不计作子线程新消耗
+- fork 文件中第一条 `session_meta` 固定该物理文件的 child owner，之后复制进来的父 `session_meta` 不会改写归属
+- 现代 multi-agent 格式依次写入 child metadata、复制的父 `session_meta`、完整的 parent transcript replay，再由 child 首条 UUIDv7 `task_started` 结束重放；在该边界出现前，整段 replay 保持 pending，完成后只用来建立累计基线，不计作 child 新消耗
+- 旧格式依次写入 child metadata、parent token snapshots、复制的父 metadata；这条父 metadata 关闭 replay prefix，并保留当时的 offset 与累计基线
 - 同一 session 恢复到新文件时使用 session 级累计高水位；重复累计快照不会再次入账
 - `total_tokens` 不变但 Cached Input、Cache Write、Reasoning 等分类被修正时，会修正原事件，而不是当作重复忽略
 
@@ -180,6 +182,8 @@ GPT-5.6 的 Cache Write 使用官方“普通 Input 的 1.25 倍”规则。本�
 
 ## 常用命令
 
+以下示例假设安装目录已加入 `PATH`。
+
 ```text
 codex-usage                         打开 Dashboard
 codex-usage summary --since 7d     查看近 7 日摘要
@@ -213,7 +217,7 @@ Dashboard 支持 `?lang=en|zh-CN` 和页头语言按钮；URL 参数优先于已
 `codex-usage` 的边界是刻意收紧的：
 
 - 不读取或解析 `auth.json`
-- 不保存 prompt、回复、reasoning 或工具输出
+- 扫描 session JSONL 时会流式经过每条记录，但只选择性解析 metadata、任务边界和 `token_count` 等统计所需记录；不解析或持久化 prompt、回复、reasoning 或工具输出正文
 - 不保存 Codex 账号 ID
 - 不使用 CDN，页面资源全部离线内嵌
 - 不监听 `127.0.0.1` 以外的地址

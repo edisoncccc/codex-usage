@@ -18,7 +18,7 @@
 ![Codex Usage Dashboard: local Codex token attribution, caching, and Standard API-equivalent cost](Codex-Usage.png)
 
 > [!NOTE]
-> This is a community-maintained GitHub Fork of [zJay26/codex-usage](https://github.com/zJay26/codex-usage), released under the [MIT License](LICENSE). This Fork adds clearer Subagent attribution, fork-replay protection, Cached Rate, itemized cost, and quieter data-quality guidance. It is currently source-only: no prebuilt Release or EXE is provided.
+> This is a community-maintained GitHub Fork of [zJay26/codex-usage](https://github.com/zJay26/codex-usage), released under the [MIT License](LICENSE). This Fork adds clearer Subagent attribution, fork-replay protection, Cached Rate, itemized cost, and less intrusive data-quality notices. It is currently source-only: no prebuilt Release or EXE is provided.
 
 `codex-usage` remains the command name for Codex Usage Dashboard. It turns local Codex usage on the current computer into a searchable Dashboard that answers four questions: where tokens went, which Agent produced them, how caching helped, and what the usage would cost at public Standard API rates.
 
@@ -26,7 +26,7 @@
 
 ![Synthetic codex-usage demo: token attribution, caching, and equivalent cost](docs/media/codex-usage-demo.gif)
 
-> The demo uses synthetic data only. The project does not read or store prompts, responses, reasoning content, tool output, or `auth.json`.
+> The demo uses synthetic data only. The scanner streams through JSONL and selectively parses only records needed for statistics, such as metadata, task boundaries, and `token_count`; it neither parses nor persists prompt, response, reasoning, or tool-output bodies, and it never reads or parses `auth.json`.
 
 ## Four questions answered
 
@@ -50,7 +50,7 @@ go build -trimpath -o codex-usage.exe ./cmd/codex-usage
 .\codex-usage.exe install
 ```
 
-Linux / macOS bash:
+Linux bash:
 
 ```bash
 go test ./...
@@ -58,7 +58,12 @@ CGO_ENABLED=0 go build -trimpath -o codex-usage ./cmd/codex-usage
 ./codex-usage install
 ```
 
-Installation discovers existing Codex usage on this computer and keeps it updated incrementally in the background. Run `codex-usage` to open the Dashboard. For English CLI output, use `codex-usage --lang en install`.
+Installation discovers existing Codex usage on this computer and keeps it updated incrementally in the background. From the source directory, run `.\codex-usage.exe` on Windows or `./codex-usage` on Linux to open the Dashboard. Use bare `codex-usage` only when the installation directory is already on `PATH`. For English CLI output, run the current build as follows:
+
+```text
+.\codex-usage.exe --lang en install
+./codex-usage --lang en install
+```
 
 On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it from your own computer, then open `http://127.0.0.1:43189`.
 
@@ -73,11 +78,11 @@ On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it fro
 | What did one Session use? | Session-level tokens and API-equivalent cost, with search and a one-click “Only this Session” filter |
 | What would all of this roughly cost at API rates? | Overall and itemized API-equivalent cost, plus explicit pricing coverage |
 
-| Counts | Does not count or read |
+| Counts | Out of scope or never persisted |
 |---|---|
 | Tokens, models, sources, projects, Threads, Sessions, Agents, and calendar days on this machine | Usage from other machines on the account |
 | Existing and newly added local Codex session usage | Account quota, subscription balance, or real bills |
-| Standard API text-token equivalent cost and pricing coverage | Prompts, replies, reasoning content, tool output, or `auth.json` |
+| Standard API text-token equivalent cost and pricing coverage | Prompt, response, reasoning, and tool-output bodies are neither parsed nor persisted; `auth.json` is never read or parsed |
 | Data-quality notices for duplicates, resets, malformed records, and rebuilds | Cloud sync, remote telemetry, or third-party analytics |
 
 > “Machine” means the host running Codex and `codex-usage`, not a remote target used by a shell or tool. Codex's official `/usage` shows account-level activity; this project adds detailed attribution only for the current computer.
@@ -112,14 +117,15 @@ flowchart LR
 
 The tool reads the current machine's `CODEX_HOME`. It first discovers canonical session metadata from the Codex state database, then streams JSONL files under `sessions/` and `archived_sessions/`.
 
-Codex session usage is cumulative. At **each** `token_count` record, the scanner subtracts the previous cumulative vector and assigns that delta to the record timestamp's local calendar day. It never moves an entire multi-day session to the session's latest update date. Stable event IDs and cursors keep repeated scans idempotent. Large prompt, response, reasoning, and tool-output records are skipped without loading the entire line into memory or writing content to the database.
+Codex session usage is cumulative. At **each** `token_count` record, the scanner subtracts the previous cumulative vector and assigns that delta to the record timestamp's local calendar day. It never moves an entire multi-day session to the session's latest update date. Stable event IDs and cursors keep repeated scans idempotent. The scanner streams through JSONL and selectively retains and parses only records needed for statistics, including `session_meta`, `turn_context`, `task_started`, and `token_count`. Prompt, response, reasoning, and tool-output bodies pass only through a small type probe; the scanner neither allocates the full line nor writes it to the database.
 
 The Codex state database is used only to discover rollout paths and enrich titles, projects, and other metadata. Its `tokens_used` value never changes token totals. OpenAI's [`account/usage/read`](https://learn.chatgpt.com/docs/app-server#7-token-usage-chatgpt) is service-backed account activity; this tool counts only current-machine local JSONL, so the scopes differ.
 
 ### JSONL deduplication and fork ownership
 
-- The first `session_meta` fixes the owner session of a physical JSONL file; a copied parent `session_meta` cannot overwrite it.
-- In a `forked_from_id` rollout, the “child metadata → copied parent snapshots → parent metadata” prefix establishes a cumulative baseline but is not counted as new child usage.
+- In a fork file, the first `session_meta` fixes the physical file's child owner; a later copied parent `session_meta` cannot overwrite it.
+- A modern multi-agent rollout writes child metadata, a copied parent `session_meta`, the complete parent transcript replay, and then the child's first UUIDv7 `task_started`, which ends the replay. Until that boundary appears, the replay stays pending; once complete, the entire prefix only establishes the cumulative baseline and is not counted as new child usage.
+- A legacy rollout writes child metadata, parent token snapshots, and then copied parent metadata. That parent metadata closes the replay prefix and preserves its offset and cumulative baseline.
 - A resumed session uses a session-wide cumulative high-water mark, so repeated cumulative snapshots do not create new events.
 - If a same-total snapshot corrects Cached Input, Cache Write, Reasoning, or another category, the original event is corrected instead of treating the snapshot as a duplicate.
 
@@ -176,6 +182,8 @@ The loopback API exposes `GET /api/v1/cost-estimate`, `GET /api/v1/pricing`, and
 
 ## Common commands
 
+The examples below assume the installation directory is already on `PATH`.
+
 ```text
 codex-usage                         Open the Dashboard
 codex-usage summary --since 7d     Show a 7-day summary
@@ -207,7 +215,7 @@ The Dashboard supports `?lang=en|zh-CN` and its header language button. The URL 
 ## Privacy boundaries
 
 - never reads or parses `auth.json`
-- never stores prompts, responses, reasoning, or tool output
+- streams through each session JSONL record but selectively parses only metadata, task boundaries, `token_count`, and other records needed for statistics; prompt, response, reasoning, and tool-output bodies are neither parsed nor persisted
 - never stores a Codex account ID
 - uses no CDN; frontend assets are embedded
 - refuses to listen outside `127.0.0.1`
