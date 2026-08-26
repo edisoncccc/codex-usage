@@ -62,10 +62,22 @@ type HomeDiscovery struct {
 }
 
 func (s *Scanner) Scan(ctx context.Context, homes []string, rebuild bool) (ScanResult, error) {
+	return s.ScanWithProgress(ctx, homes, rebuild, nil)
+}
+
+func (s *Scanner) ScanWithProgress(
+	ctx context.Context,
+	homes []string,
+	rebuild bool,
+	observer ProgressObserver,
+) (ScanResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.busy.Store(true)
 	defer s.busy.Store(false)
+	progress := newProgressReporter(len(homes), observer)
+	progress.notify()
+	defer progress.notify()
 	started := time.Now()
 	if s.Store == nil {
 		return ScanResult{}, errors.New("scanner store is nil")
@@ -85,19 +97,21 @@ func (s *Scanner) Scan(ctx context.Context, homes []string, rebuild bool) (ScanR
 	} else if required {
 		rebuildErr := &RebuildRequiredError{Kind: "schema_upgrade_rebuild", Detail: reason}
 		_ = s.Store.AddWarning(ctx, rebuildErr.Kind, rebuildErr.Path, rebuildErr.Error())
+		progress.addOutcome(0, 1)
 		return ScanResult{Homes: len(homes), Warnings: 1}, rebuildErr
 	}
-	result, err := s.scanPass(ctx, homes)
+	result, err := s.scanPass(ctx, homes, progress)
 	var changed *RebuildRequiredError
 	if errors.As(err, &changed) {
 		result.Warnings++
 		_ = s.Store.AddWarning(ctx, changed.Kind, changed.Path, changed.Error())
+		progress.addOutcome(0, 1)
 	}
 	result.ElapsedMillis = time.Since(started).Milliseconds()
 	return result, err
 }
 
-func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, error) {
+func (s *Scanner) scanPass(ctx context.Context, homes []string, progress *progressReporter) (ScanResult, error) {
 	result := ScanResult{Homes: len(homes)}
 	seenSessionHome := map[string]string{}
 	for _, rawHome := range homes {
@@ -108,6 +122,8 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, err
 		if err != nil {
 			result.Warnings++
 			_ = s.Store.AddWarning(ctx, "home_path", rawHome, err.Error())
+			progress.addOutcome(0, 1)
+			progress.homeDiscovered()
 			continue
 		}
 		discovery := DiscoverHome(ctx, home)
@@ -117,7 +133,9 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, err
 		if discovery.Warning != "" {
 			result.Warnings++
 			_ = s.Store.AddWarning(ctx, "state_schema", discovery.StateDB, discovery.Warning)
+			progress.addOutcome(0, 1)
 		}
+		progress.homeDiscovered()
 
 		metadata := make(map[string]model.SessionInfo, len(discovery.Sessions))
 		for _, session := range discovery.Sessions {
@@ -125,6 +143,7 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, err
 				result.Warnings++
 				_ = s.Store.AddWarning(ctx, "shared_codex_home_history", session.SessionID,
 					fmt.Sprintf("同一 session 同时出现在 %s 和 %s；安装前历史无法可靠按电脑拆分，已按 session 去重", previous, home))
+				progress.addOutcome(0, 1)
 			} else if session.SessionID != "" {
 				seenSessionHome[session.SessionID] = home
 			}
@@ -147,6 +166,7 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, err
 				if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 					result.Warnings++
 					_ = s.Store.AddWarning(ctx, "rollout_stat", path, statErr.Error())
+					progress.addOutcome(0, 1)
 				}
 				continue
 			}
@@ -155,12 +175,14 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, err
 			}
 			files++
 			result.Files++
-			fileResult, err := s.scanFile(ctx, home, path, metadata[pathKey(path)], info)
+			progress.fileDiscovered()
+			fileResult, err := s.scanFile(ctx, home, path, metadata[pathKey(path)], info, progress)
 			result.Records += fileResult.Records
 			result.EventsInserted += fileResult.EventsInserted
 			result.Corrections += fileResult.Corrections
 			result.Duplicates += fileResult.Duplicates
 			result.Warnings += fileResult.Warnings
+			progress.fileProcessed()
 			if err != nil {
 				var changed *RebuildRequiredError
 				if errors.As(err, &changed) {
@@ -168,6 +190,7 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string) (ScanResult, err
 				}
 				result.Warnings++
 				_ = s.Store.AddWarning(ctx, "rollout_scan", path, err.Error())
+				progress.addOutcome(0, 1)
 				continue
 			}
 		}
@@ -199,7 +222,13 @@ func (e *RebuildRequiredError) Error() string {
 	return e.Detail + "；现有统计已保留，需要用户确认后才能重建"
 }
 
-func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.SessionInfo, info os.FileInfo) (fileScanResult, error) {
+func (s *Scanner) scanFile(
+	ctx context.Context,
+	home, path string,
+	meta model.SessionInfo,
+	info os.FileInfo,
+	progress *progressReporter,
+) (fileScanResult, error) {
 	var result fileScanResult
 	cursor, exists, err := s.Store.GetCursor(ctx, path)
 	if err != nil {
@@ -331,10 +360,12 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 		}
 		committedOffset += consumed
 		result.Records++
+		progress.recordProcessed()
 		if tooLarge {
 			result.Warnings++
 			_ = s.Store.AddWarning(ctx, "record_too_large", path,
 				fmt.Sprintf("相关 JSONL 记录超过 %d 字节，已跳过且未载入完整内容（offset=%d）", s.MaxRelevantRecord, recordStart))
+			progress.addOutcome(0, 1)
 			continue
 		}
 		if len(record) == 0 {
@@ -343,7 +374,11 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 			}
 			continue
 		}
-		if parseErr := s.processRecord(ctx, record, recordStart, path, home, meta, &cursor, &result); parseErr != nil {
+		eventsBefore := result.EventsInserted
+		warningsBefore := result.Warnings
+		parseErr := s.processRecord(ctx, record, recordStart, path, home, meta, &cursor, &result)
+		progress.addOutcome(result.EventsInserted-eventsBefore, result.Warnings-warningsBefore)
+		if parseErr != nil {
 			var changed *RebuildRequiredError
 			if errors.As(parseErr, &changed) {
 				return result, parseErr
@@ -351,6 +386,7 @@ func (s *Scanner) scanFile(ctx context.Context, home, path string, meta model.Se
 			result.Warnings++
 			_ = s.Store.AddWarning(ctx, "jsonl_record", path,
 				fmt.Sprintf("offset=%d: %v", recordStart, parseErr))
+			progress.addOutcome(0, 1)
 		}
 		if errors.Is(err, io.EOF) {
 			break
