@@ -25,7 +25,7 @@ var messages = map[Locale]map[string]string{
 用法:
   codex-usage [--lang en|zh-CN]       打开本机 Dashboard
   codex-usage open                    打开本机 Dashboard
-  codex-usage install                 用户级安装、初始化 JSONL 扫描并启动
+  codex-usage install [--yes] [--json] [--skip-scan] 用户级安装、初始化 JSONL 扫描并启动
   codex-usage summary --since 7d      命令行摘要（支持 --json / --csv）
   codex-usage scan [--rebuild] [--json] 增量扫描本机 Codex session
   codex-usage doctor                  检查路径、JSONL 数据源与服务状态
@@ -51,6 +51,7 @@ var messages = map[Locale]map[string]string{
 		"flag.csv":               "输出 CSV",
 		"flag.since":             "范围：7d、30d、today、all 或 RFC3339",
 		"flag.skipScan":          "跳过首次历史扫描",
+		"flag.yes":               "确认已获得用户授权并执行",
 		"flag.purge":             "同时删除统计库和工具配置",
 		"summary.conflict":       "--json 与 --csv 不能同时使用",
 		"summary.title":          "Codex Usage · 当前电脑 · %s\n",
@@ -77,6 +78,29 @@ var messages = map[Locale]map[string]string{
 		"install.warning":        "警告:",
 		"install.cleanup":        "警告：旧版可执行文件未能自动清理:",
 		"install.done":           "安装完成。后台服务会定期增量扫描本机 JSONL；无需重启 Codex。",
+		"install.confirm.source": "安装来源: %s",
+
+		"install.confirm.required":    "需要显式确认；请检查预检路径后使用 --yes",
+		"install.confirm.declined":    "未获得安装确认",
+		"install.confirm.title":       "安装前确认",
+		"install.confirm.repository":  "规范仓库: %s",
+		"install.confirm.installPath": "安装目录: %s",
+		"install.confirm.statePath":   "状态目录: %s",
+		"install.confirm.service":     "用户服务（当前用户）: %s",
+		"install.confirm.loopback":    "本机回环地址: %s",
+		"install.confirm.scanScope":   "扫描范围: %s",
+		"install.confirm.preserve":    "默认卸载保留数据库和配置；只有 --purge 才清除数据。",
+		"install.confirm.prompt":      "是否继续？输入 yes 或 是: ",
+		"install.source.sourceBuild":  "源码构建 (source_build)",
+		"install.phase.preflight":     "预检",
+		"install.phase.stop_service":  "停止旧服务",
+		"install.phase.install":       "安装或升级",
+		"install.phase.scan":          "扫描历史",
+		"install.phase.start_service": "启动服务",
+		"install.phase.health_check":  "健康检查",
+		"install.phase.complete":      "安装完成。",
+		"install.progress.scan":       "扫描历史：发现 %d 个文件，处理 %d 个文件，新增 %d 个事件，%d 条提示。\n",
+
 		"doctor.loopbackOK":      "%s:%d；不会监听公网",
 		"doctor.loopbackError":   "配置了非 loopback 地址",
 		"doctor.permissions":     "状态目录已限制为当前用户访问",
@@ -129,7 +153,7 @@ var messages = map[Locale]map[string]string{
 Usage:
   codex-usage [--lang en|zh-CN]       Open the local Dashboard
   codex-usage open                    Open the local Dashboard
-  codex-usage install                 Install for this user, initialize JSONL scanning, and start
+  codex-usage install [--yes] [--json] [--skip-scan] Install for this user, initialize JSONL scanning, and start
   codex-usage summary --since 7d      Print a CLI summary (supports --json / --csv)
   codex-usage scan [--rebuild] [--json] Incrementally scan local Codex sessions
   codex-usage doctor                  Check paths, JSONL sources, and service state
@@ -155,6 +179,7 @@ Boundary:
 		"flag.csv":               "Output CSV",
 		"flag.since":             "Range: 7d, 30d, today, all, or RFC3339",
 		"flag.skipScan":          "Skip the first historical scan",
+		"flag.yes":               "Confirm user authorization and proceed",
 		"flag.purge":             "Also delete the usage database and tool configuration",
 		"summary.conflict":       "--json and --csv cannot be used together",
 		"summary.title":          "Codex Usage · this machine · %s\n",
@@ -181,6 +206,29 @@ Boundary:
 		"install.warning":        "Warning:",
 		"install.cleanup":        "Warning: the previous executable could not be removed automatically:",
 		"install.done":           "Installation complete. The background service incrementally scans local JSONL files; Codex does not need to restart.",
+		"install.confirm.source": "Install source: %s",
+
+		"install.confirm.required":    "explicit confirmation is required; review the preflight paths and use --yes",
+		"install.confirm.declined":    "installation was not confirmed",
+		"install.confirm.title":       "Installation confirmation",
+		"install.confirm.repository":  "Canonical repository: %s",
+		"install.confirm.installPath": "Install directory: %s",
+		"install.confirm.statePath":   "State directory: %s",
+		"install.confirm.service":     "Service (current user): %s",
+		"install.confirm.loopback":    "Loopback endpoint: %s",
+		"install.confirm.scanScope":   "Scan scope: %s",
+		"install.confirm.preserve":    "Default uninstall keeps the database and configuration; only --purge removes data.",
+		"install.confirm.prompt":      "Continue? Enter yes: ",
+		"install.source.sourceBuild":  "source build (source_build)",
+		"install.phase.preflight":     "Preflight",
+		"install.phase.stop_service":  "Stop previous service",
+		"install.phase.install":       "Install or upgrade",
+		"install.phase.scan":          "Scan history",
+		"install.phase.start_service": "Start service",
+		"install.phase.health_check":  "Health check",
+		"install.phase.complete":      "Installation complete.",
+		"install.progress.scan":       "Scan history: %d files discovered, %d files processed, %d events added, %d notices.\n",
+
 		"doctor.loopbackOK":      "%s:%d; not exposed publicly",
 		"doctor.loopbackError":   "a non-loopback address is configured",
 		"doctor.permissions":     "state directory access is restricted to the current user",

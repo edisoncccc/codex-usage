@@ -22,6 +22,9 @@ func TestGlobalLanguageFlagSelectsEnglishHelp(t *testing.T) {
 	if !strings.Contains(stdout, "local Codex token accounting for this machine") || strings.Contains(stdout, "用法:") {
 		t.Fatalf("unexpected English help:\n%s", stdout)
 	}
+	if !strings.Contains(stdout, "install [--yes] [--json] [--skip-scan]") {
+		t.Fatalf("English help does not advertise the install protocol:\n%s", stdout)
+	}
 }
 
 func TestLanguageEnvironmentAndFlagPrecedence(t *testing.T) {
@@ -33,6 +36,9 @@ func TestLanguageEnvironmentAndFlagPrecedence(t *testing.T) {
 	code, stdout, _ = runCLIForLocaleTest(t, "--lang=zh-CN", "--help")
 	if code != 0 || !strings.Contains(stdout, "用法:") {
 		t.Fatalf("flag did not override environment: code=%d output=%q", code, stdout)
+	}
+	if !strings.Contains(stdout, "install [--yes] [--json] [--skip-scan]") {
+		t.Fatalf("中文帮助未公开 install 协议：%q", stdout)
 	}
 }
 

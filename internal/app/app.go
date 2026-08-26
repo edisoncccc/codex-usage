@@ -39,6 +39,7 @@ type CLI struct {
 	locale            cliui.Locale
 	openScanState     func() (*scanRuntime, error)
 	doctorDeps        *doctorDependencies
+	installDeps       *installCommandDeps
 }
 
 func (c CLI) Run(args []string) int {
@@ -84,7 +85,7 @@ func (c CLI) Run(args []string) int {
 	case "daemon":
 		err = c.serve(args, true)
 	case "install":
-		err = c.install(args)
+		return c.runStructured("install", args, c.installCommand)
 	case "uninstall":
 		err = c.uninstall(args)
 	case "scan":
@@ -528,142 +529,6 @@ func (c CLI) config(args []string) error {
 	default:
 		return fmt.Errorf("未知 config 子命令 %q", args[0])
 	}
-}
-
-func (c CLI) install(args []string) error {
-	flags := flag.NewFlagSet("install", flag.ContinueOnError)
-	flags.SetOutput(c.Stderr)
-	skipScan := flags.Bool("skip-scan", false, c.tr("flag.skipScan"))
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	paths, err := config.ResolvePaths()
-	if err != nil {
-		return err
-	}
-	source, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	source, _ = filepath.Abs(source)
-	destination, _ := filepath.Abs(paths.InstalledEXE)
-	if _, statErr := os.Stat(destination); statErr == nil {
-		if err := platform.UninstallService(destination, paths.StateDir); err != nil {
-			return fmt.Errorf(c.tr("install.stopCurrent"), err)
-		}
-	}
-	previous, err := config.ResolvePreviousPaths()
-	if err != nil {
-		return err
-	}
-	previousService := platform.PreviousService{
-		StateDir: previous.StateDir, Executable: previous.InstalledEXE, InstallDir: previous.InstallDir,
-		PIDPath: previous.PIDPath, LauncherPath: previous.LauncherPath,
-		StartupEntry: previous.StartupEntry, ServiceName: previous.ServiceName,
-	}
-	_, previousStateErr := os.Stat(previous.StateDir)
-	_, previousExecutableErr := os.Stat(previous.InstalledEXE)
-	previousInstalled := previousStateErr == nil || previousExecutableErr == nil
-	if err := platform.StopPreviousService(previousService); err != nil {
-		return fmt.Errorf(c.tr("install.stopOld"), err)
-	}
-	migration, err := config.MigratePreviousState(paths, previous)
-	if err != nil {
-		return fmt.Errorf(c.tr("install.migrateOld"), err)
-	}
-	if migration.DatabaseConflict {
-		return errors.New(c.tr("install.dbConflict"))
-	}
-	if migration.Found {
-		fmt.Fprintln(c.Stdout, c.tr("install.migrated"))
-		if previousInstalled && !migration.PreviousStateGone {
-			fmt.Fprintln(c.Stderr, c.tr("install.oldState"), previous.StateDir)
-		}
-	}
-	cfg, err := config.Load(paths)
-	if err != nil {
-		return err
-	}
-	if explicitHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); explicitHome != "" {
-		if absoluteHome, absErr := filepath.Abs(explicitHome); absErr == nil {
-			cfg.ExtraCodexHomes = append(cfg.ExtraCodexHomes, absoluteHome)
-		}
-	}
-	if err := config.EnsurePrivateDir(paths.StateDir); err != nil {
-		return err
-	}
-	if err := platform.LockDown(paths.StateDir); err != nil {
-		fmt.Fprintln(c.Stderr, c.tr("install.permissions"), err)
-	}
-	if err := config.EnsurePrivateDir(paths.InstallDir); err != nil {
-		return err
-	}
-	if err := config.Save(paths, cfg); err != nil {
-		return err
-	}
-	if !sameFilePath(source, destination) {
-		if err := copyExecutable(source, destination); err != nil {
-			return err
-		}
-	}
-	fmt.Fprintln(c.Stdout, c.tr("install.installed"), destination)
-
-	state, err := openState()
-	if err != nil {
-		return err
-	}
-	if !*skipScan {
-		fmt.Fprintln(c.Stdout, c.tr("install.scanning"))
-		result, scanErr := state.scanner.Scan(context.Background(), state.homes, false)
-		if scanErr != nil {
-			fmt.Fprintln(c.Stderr, c.tr("install.scanWarning"), scanErr)
-		} else {
-			fmt.Fprintf(c.Stdout, c.tr("install.scanDone"),
-				result.Files, result.EventsInserted, result.Warnings)
-		}
-	}
-	state.store.Close()
-
-	homes, err := config.CodexHomes(cfg)
-	if err != nil {
-		return err
-	}
-	for _, home := range homes {
-		changed, removeErr := config.RemoveLegacyManagedOTel(home)
-		if removeErr != nil {
-			return fmt.Errorf("%s: %w", home, removeErr)
-		}
-		if changed {
-			fmt.Fprintln(c.Stdout, c.tr("install.legacyRemoved", home))
-		}
-	}
-	serviceResult, err := platform.InstallService(destination, paths.StateDir)
-	if err != nil {
-		return err
-	}
-	serviceURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) && !healthOK(serviceURL) {
-		time.Sleep(180 * time.Millisecond)
-	}
-	if !healthOK(serviceURL) {
-		_ = platform.UninstallService(destination, paths.StateDir)
-		return errors.New(c.tr("install.health"))
-	}
-	if serviceResult.Detail != "" {
-		fmt.Fprintln(c.Stdout, c.tr("install.service"), serviceResult.Detail)
-	}
-	if serviceResult.Warning != "" {
-		fmt.Fprintln(c.Stderr, c.tr("install.warning"), serviceResult.Warning)
-	}
-	if previousInstalled {
-		if cleanupErr := platform.RemovePreviousExecutable(previousService); cleanupErr != nil {
-			fmt.Fprintln(c.Stderr, c.tr("install.cleanup"), cleanupErr)
-		}
-	}
-	fmt.Fprintf(c.Stdout, "Dashboard: http://127.0.0.1:%d\n", cfg.Port)
-	fmt.Fprintln(c.Stdout, c.tr("install.done"))
-	return nil
 }
 
 func (c CLI) uninstall(args []string) error {
