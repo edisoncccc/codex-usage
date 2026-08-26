@@ -1,20 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 dist="$project_root/dist"
 version="${VERSION:-2.3.5}"
 build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-commit="$(git -C "$project_root" rev-parse --short HEAD 2>/dev/null || printf source)"
-if git -C "$project_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
-   ! git -C "$project_root" diff --quiet --ignore-submodules HEAD --; then
-  commit="${commit}-dirty"
+commit="dev"
+dirty="true"
+if git_root="$(git -C "$project_root" rev-parse --show-toplevel 2>/dev/null)"; then
+  git_root="$(cd "$git_root" 2>/dev/null && pwd -P)" || git_root=""
+  if [[ "$git_root" == "$project_root" ]]; then
+    git_commit=""
+    git_status=""
+    if git_commit="$(git -C "$project_root" rev-parse HEAD 2>/dev/null)" &&
+       git_status="$(git -C "$project_root" status --porcelain 2>/dev/null)" &&
+       [[ "$git_commit" =~ ^[0-9a-f]{40}$ ]]; then
+      commit="$git_commit"
+      if [[ -z "$git_status" ]]; then
+        dirty="false"
+      fi
+    fi
+  fi
 fi
 go_bin="${GO:-go}"
 mkdir -p "$dist"
 
 cd "$project_root"
-"$go_bin" test ./...
+if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
+  "$go_bin" test ./...
+fi
 
 for target in windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
   os="${target%/*}"
@@ -24,7 +38,7 @@ for target in windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
   output="$dist/codex-usage-$os-$arch$suffix"
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" "$go_bin" build \
     -trimpath -buildvcs=false \
-    -ldflags "-s -w -X github.com/zJay26/codex-usage/internal/app.Version=$version -X github.com/zJay26/codex-usage/internal/app.Commit=$commit -X github.com/zJay26/codex-usage/internal/app.BuildDate=$build_date" \
+    -ldflags "-s -w -X github.com/zJay26/codex-usage/internal/app.Version=$version -X github.com/zJay26/codex-usage/internal/app.Commit=$commit -X github.com/zJay26/codex-usage/internal/app.BuildDirty=$dirty -X github.com/zJay26/codex-usage/internal/app.BuildDate=$build_date" \
     -o "$output" ./cmd/codex-usage
 done
 

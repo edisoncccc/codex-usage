@@ -30,35 +30,35 @@ import (
 	"github.com/zJay26/codex-usage/internal/usage"
 )
 
-var (
-	Version   = "2.3.5"
-	Commit    = "dev"
-	BuildDate = "unknown"
-)
-
 const activityProbeInterval = 30 * time.Second
 
 type CLI struct {
-	Stdout io.Writer
-	Stderr io.Writer
-	locale cliui.Locale
+	Stdout            io.Writer
+	Stderr            io.Writer
+	Stdin             io.Reader
+	Now               func() time.Time
+	HeartbeatInterval time.Duration
+	locale            cliui.Locale
 }
 
 func (c CLI) Run(args []string) int {
 	platform.SetPrivateUmask()
-	if c.Stdout == nil {
-		c.Stdout = os.Stdout
-	}
-	if c.Stderr == nil {
-		c.Stderr = os.Stderr
-	}
+	c = c.withDefaults()
 	explicitLanguage, remaining, languageErr := extractLanguage(args)
-	if languageErr != nil {
-		fmt.Fprintln(c.Stderr, cliui.English.Text("error.prefix"), languageErr)
-		return 2
+	var locale cliui.Locale
+	if languageErr == nil {
+		locale, languageErr = cliui.Detect(explicitLanguage, os.Getenv("CODEX_USAGE_LANG"), platform.UserLocale())
 	}
-	locale, languageErr := cliui.Detect(explicitLanguage, os.Getenv("CODEX_USAGE_LANG"), platform.UserLocale())
 	if languageErr != nil {
+		if phase, structured := structuredCommandPhase(args); structured {
+			return c.runStructured(phase, args, func([]string, *eventEmitter) (commandResult, error) {
+				return commandResult{}, &codedError{
+					Code:     "invalid_arguments",
+					ExitCode: 2,
+					Err:      languageErr,
+				}
+			})
+		}
 		fmt.Fprintln(c.Stderr, cliui.English.Text("error.prefix"), languageErr)
 		return 2
 	}
@@ -70,15 +70,11 @@ func (c CLI) Run(args []string) int {
 			c.usage()
 			return 0
 		case "-v", "--version":
-			fmt.Fprintf(c.Stdout, "codex-usage %s (%s, %s) %s/%s\n", Version, Commit, BuildDate, runtime.GOOS, runtime.GOARCH)
+			c.printHumanVersion()
 			return 0
 		}
 	}
-	command := "open"
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		command = args[0]
-		args = args[1:]
-	}
+	command, args := splitCommand(args)
 	var err error
 	switch command {
 	case "open":
@@ -100,8 +96,7 @@ func (c CLI) Run(args []string) int {
 	case "config":
 		err = c.config(args)
 	case "version", "--version", "-v":
-		fmt.Fprintf(c.Stdout, "codex-usage %s (%s, %s) %s/%s\n", Version, Commit, BuildDate, runtime.GOOS, runtime.GOARCH)
-		return 0
+		return c.runStructured("version", args, c.versionCommand)
 	case "help", "--help", "-h":
 		c.usage()
 		return 0
@@ -116,6 +111,25 @@ func (c CLI) Run(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func (c CLI) withDefaults() CLI {
+	if c.Stdout == nil {
+		c.Stdout = os.Stdout
+	}
+	if c.Stderr == nil {
+		c.Stderr = os.Stderr
+	}
+	if c.Stdin == nil {
+		c.Stdin = os.Stdin
+	}
+	if c.Now == nil {
+		c.Now = time.Now
+	}
+	if c.HeartbeatInterval == 0 {
+		c.HeartbeatInterval = 4 * time.Second
+	}
+	return c
 }
 
 func (c CLI) usage() {
@@ -133,21 +147,47 @@ func extractLanguage(args []string) (string, []string, error) {
 		argument := args[index]
 		switch {
 		case argument == "--lang":
-			if index+1 >= len(args) {
-				return "", nil, errors.New(cliui.English.Text("error.langMissing"))
+			if index+1 >= len(args) || strings.HasPrefix(args[index+1], "-") {
+				partial := append([]string(nil), remaining...)
+				partial = append(partial, args[index+1:]...)
+				return "", partial, errors.New(cliui.English.Text("error.langMissing"))
 			}
 			explicit = args[index+1]
 			index++
 		case strings.HasPrefix(argument, "--lang="):
 			explicit = strings.TrimPrefix(argument, "--lang=")
 			if explicit == "" {
-				return "", nil, errors.New(cliui.English.Text("error.langMissing"))
+				partial := append([]string(nil), remaining...)
+				partial = append(partial, args[index+1:]...)
+				return "", partial, errors.New(cliui.English.Text("error.langMissing"))
 			}
 		default:
 			remaining = append(remaining, argument)
 		}
 	}
 	return explicit, remaining, nil
+}
+
+func structuredCommandPhase(args []string) (string, bool) {
+	_, remaining, _ := extractLanguage(args)
+	command, commandArgs := splitCommand(remaining)
+	enabled, _ := extractJSONArgument(commandArgs)
+	if !enabled {
+		return "", false
+	}
+	switch command {
+	case "version", "install", "scan", "doctor", "uninstall":
+		return command, true
+	default:
+		return "", false
+	}
+}
+
+func splitCommand(args []string) (string, []string) {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return args[0], args[1:]
+	}
+	return "open", args
 }
 
 type runtimeState struct {

@@ -1,5 +1,6 @@
 param(
-    [string]$Version = "2.3.5"
+    [string]$Version = "2.3.5",
+    [switch]$SkipTests
 )
 
 $ErrorActionPreference = "Stop"
@@ -7,24 +8,28 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Dist = Join-Path $ProjectRoot "dist"
 $Go = if ($env:GO) { $env:GO } else { "go" }
 $BuildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-$Commit = "source"
+$Commit = "dev"
+$Dirty = $true
 if (Test-Path -LiteralPath (Join-Path $ProjectRoot ".git")) {
-    $GitCommit = git -C $ProjectRoot rev-parse --short HEAD 2>$null
+    $GitCommit = git -C $ProjectRoot rev-parse HEAD 2>$null
     if ($LASTEXITCODE -eq 0 -and $GitCommit) {
         $Commit = ([string]$GitCommit).Trim()
-        $TrackedChanges = git -C $ProjectRoot status --porcelain --untracked-files=no 2>$null
-        if ($LASTEXITCODE -eq 0 -and $TrackedChanges) {
-            $Commit = "$Commit-dirty"
+        $Changes = git -C $ProjectRoot status --porcelain 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $Dirty = [bool]$Changes
         }
     }
 }
+$BuildDirty = if ($Dirty) { "true" } else { "false" }
 
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
 Push-Location $ProjectRoot
 try {
-    & $Go test ./...
-    if ($LASTEXITCODE -ne 0) { throw "go test failed" }
+    if (-not $SkipTests) {
+        & $Go test ./...
+        if ($LASTEXITCODE -ne 0) { throw "go test failed" }
+    }
 
     $Targets = @(
         @{ OS = "windows"; Arch = "amd64"; Suffix = ".exe" },
@@ -40,7 +45,7 @@ try {
         $Name = "codex-usage-$($Target.OS)-$($Target.Arch)$($Target.Suffix)"
         $Output = Join-Path $Dist $Name
         $Artifacts += $Output
-        $Ldflags = "-s -w -X github.com/zJay26/codex-usage/internal/app.Version=$Version -X github.com/zJay26/codex-usage/internal/app.Commit=$Commit -X github.com/zJay26/codex-usage/internal/app.BuildDate=$BuildDate"
+        $Ldflags = "-s -w -X github.com/zJay26/codex-usage/internal/app.Version=$Version -X github.com/zJay26/codex-usage/internal/app.Commit=$Commit -X github.com/zJay26/codex-usage/internal/app.BuildDirty=$BuildDirty -X github.com/zJay26/codex-usage/internal/app.BuildDate=$BuildDate"
         & $Go build -trimpath -buildvcs=false -ldflags $Ldflags -o $Output ./cmd/codex-usage
         if ($LASTEXITCODE -ne 0) { throw "build failed for $($Target.OS)/$($Target.Arch)" }
     }

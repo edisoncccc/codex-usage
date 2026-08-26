@@ -14,10 +14,12 @@ const (
 
 var messages = map[Locale]map[string]string{
 	Chinese: {
-		"error.prefix":         "错误:",
-		"error.invalidLang":    "不支持语言 %q；可选值为 en 或 zh-CN",
-		"error.langMissing":    "--lang 需要一个值；可选值为 en 或 zh-CN",
-		"error.unknownCommand": "未知命令 %q",
+		"error.prefix":           "错误:",
+		"error.invalidLang":      "不支持语言 %q；可选值为 en 或 zh-CN",
+		"error.langMissing":      "--lang 需要一个值；可选值为 en 或 zh-CN",
+		"error.unknownCommand":   "未知命令 %q",
+		"error.invalidArguments": "参数无效：%v",
+		"error.buildMetadata":    "构建元数据 BuildDirty=%q 无效",
 		"usage": `Codex Usage — 当前电脑的 Codex Token 本地统计
 
 用法:
@@ -30,7 +32,7 @@ var messages = map[Locale]map[string]string{
   codex-usage config add-home PATH    添加一个额外 CODEX_HOME
   codex-usage uninstall [--purge]     卸载；默认保留统计库
   codex-usage serve                   前台运行本地服务
-  codex-usage version                 显示版本
+  codex-usage version [--json]        显示版本或输出机器可读构建身份
 
 语言:
   --lang 优先于 CODEX_USAGE_LANG，其次跟随系统语言；支持 en、zh-CN。
@@ -96,10 +98,12 @@ var messages = map[Locale]map[string]string{
 		"doctor.network":         "运行时无外部上报客户端；Dashboard 仅监听 loopback",
 	},
 	English: {
-		"error.prefix":         "Error:",
-		"error.invalidLang":    "unsupported language %q; use en or zh-CN",
-		"error.langMissing":    "--lang requires a value; use en or zh-CN",
-		"error.unknownCommand": "unknown command %q",
+		"error.prefix":           "Error:",
+		"error.invalidLang":      "unsupported language %q; use en or zh-CN",
+		"error.langMissing":      "--lang requires a value; use en or zh-CN",
+		"error.unknownCommand":   "unknown command %q",
+		"error.invalidArguments": "invalid arguments: %v",
+		"error.buildMetadata":    "invalid BuildDirty build metadata value %q",
 		"usage": `Codex Usage — local Codex token accounting for this machine
 
 Usage:
@@ -112,7 +116,7 @@ Usage:
   codex-usage config add-home PATH    Add another CODEX_HOME
   codex-usage uninstall [--purge]     Uninstall; keep the usage database by default
   codex-usage serve                   Run the local service in the foreground
-  codex-usage version                 Print the version
+  codex-usage version [--json]        Print the version or machine-readable build identity
 
 Language:
   --lang overrides CODEX_USAGE_LANG, then the system locale; supports en and zh-CN.
