@@ -33,12 +33,13 @@ type Config struct {
 }
 
 type Paths struct {
-	StateDir     string
-	ConfigPath   string
-	Database     string
-	BackupDir    string
-	InstallDir   string
-	InstalledEXE string
+	StateDir      string
+	ConfigPath    string
+	InstallRecord string
+	Database      string
+	BackupDir     string
+	InstallDir    string
+	InstalledEXE  string
 }
 
 func Default() Config {
@@ -63,12 +64,13 @@ func ResolvePaths() (Paths, error) {
 			name += ".exe"
 		}
 		return Paths{
-			StateDir:     abs,
-			ConfigPath:   filepath.Join(abs, "config.json"),
-			Database:     filepath.Join(abs, databaseName),
-			BackupDir:    filepath.Join(abs, "backups"),
-			InstallDir:   filepath.Join(abs, "bin"),
-			InstalledEXE: filepath.Join(abs, "bin", name),
+			StateDir:      abs,
+			ConfigPath:    filepath.Join(abs, "config.json"),
+			InstallRecord: filepath.Join(abs, "install.json"),
+			Database:      filepath.Join(abs, databaseName),
+			BackupDir:     filepath.Join(abs, "backups"),
+			InstallDir:    filepath.Join(abs, "bin"),
+			InstalledEXE:  filepath.Join(abs, "bin", name),
 		}, nil
 	}
 
@@ -100,12 +102,13 @@ func ResolvePaths() (Paths, error) {
 		name += ".exe"
 	}
 	return Paths{
-		StateDir:     stateDir,
-		ConfigPath:   filepath.Join(stateDir, "config.json"),
-		Database:     filepath.Join(stateDir, databaseName),
-		BackupDir:    filepath.Join(stateDir, "backups"),
-		InstallDir:   installDir,
-		InstalledEXE: filepath.Join(installDir, name),
+		StateDir:      stateDir,
+		ConfigPath:    filepath.Join(stateDir, "config.json"),
+		InstallRecord: filepath.Join(stateDir, "install.json"),
+		Database:      filepath.Join(stateDir, databaseName),
+		BackupDir:     filepath.Join(stateDir, "backups"),
+		InstallDir:    installDir,
+		InstalledEXE:  filepath.Join(installDir, name),
 	}, nil
 }
 
@@ -143,7 +146,7 @@ func validateDedicatedStateDir(path string) error {
 		return nil
 	}
 	managed := map[string]bool{
-		"backups": true, "bin": true, "config.json": true, "daemon.log": true,
+		"backups": true, "bin": true, "config.json": true, "install.json": true, "daemon.log": true,
 		databaseName: true, databaseName + "-shm": true, databaseName + "-wal": true,
 		databaseName + "-journal": true, "codex-usage.pid": true,
 		"codex-usage-start.vbs": true, ".codex-usage-state": true,

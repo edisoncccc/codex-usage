@@ -82,6 +82,25 @@ func TestResolvePathsAcceptsEmptyOverride(t *testing.T) {
 	}
 }
 
+func TestResolvePathsIncludesInstallRecord(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODEX_USAGE_HOME", dir)
+	paths, err := ResolvePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "install.json")
+	if paths.InstallRecord != want {
+		t.Fatalf("install record=%q want=%q", paths.InstallRecord, want)
+	}
+	if err := os.WriteFile(paths.InstallRecord, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolvePaths(); err != nil {
+		t.Fatalf("install record must remain within the dedicated state whitelist: %v", err)
+	}
+}
+
 func TestMigratePreviousDatabaseNameInCurrentState(t *testing.T) {
 	stateDir := t.TempDir()
 	paths := Paths{
