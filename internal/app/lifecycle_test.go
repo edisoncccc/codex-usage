@@ -265,6 +265,14 @@ func TestLifecycleSameBinaryRepairsServiceWithoutReplacing(t *testing.T) {
 func TestLifecycleSameBinaryHardServiceErrorDoesNotBlindlyUninstall(t *testing.T) {
 	fixture := newLifecycleFixture(t, "2.3.6", "same-bytes")
 	oldRecord := fixture.writeExisting("2.3.6", "same-bytes")
+	markerPath := filepath.Join(fixture.stateDir, installStateMarkerName)
+	if err := os.WriteFile(markerPath, []byte(installStateMarkerContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	markerBefore, err := os.Lstat(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	serviceErr := errors.New("transactional service repair failed")
 	ops := fixture.defaultOps()
 	ops.InstallService = func(string, string) (platform.ServiceResult, error) {
@@ -276,7 +284,7 @@ func TestLifecycleSameBinaryHardServiceErrorDoesNotBlindlyUninstall(t *testing.T
 		return nil
 	}
 
-	_, err := executeLifecycle(context.Background(), fixture.request(), ops, nil)
+	_, err = executeLifecycle(context.Background(), fixture.request(), ops, nil)
 	if !errors.Is(err, serviceErr) {
 		t.Fatalf("repair error=%v want %v", err, serviceErr)
 	}
@@ -284,6 +292,91 @@ func TestLifecycleSameBinaryHardServiceErrorDoesNotBlindlyUninstall(t *testing.T
 	assertFileContent(t, fixture.destinationPath, "same-bytes")
 	if record := mustLoadInstallRecord(t, fixture.installRecord); !reflect.DeepEqual(*record, oldRecord) {
 		t.Fatalf("same-binary hard service error changed record: %+v", record)
+	}
+	markerAfter, err := os.Lstat(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(markerBefore, markerAfter) || readFileContent(t, markerPath) != installStateMarkerContent {
+		t.Fatal("preexisting marker changed after service failure")
+	}
+}
+
+func TestLifecycleRejectsStateMarkerDriftBeforeSuccess(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		sameInstall bool
+		preexisting bool
+		replace     bool
+	}{
+		{name: "new marker deleted"},
+		{name: "new marker foreign replacement", replace: true},
+		{name: "preexisting marker deleted", sameInstall: true, preexisting: true},
+		{name: "preexisting marker foreign replacement", sameInstall: true, preexisting: true, replace: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLifecycleFixture(t, "2.3.6", "candidate")
+			var oldRecord *install.Record
+			if test.sameInstall {
+				record := fixture.writeExisting("2.3.6", "candidate")
+				oldRecord = &record
+			}
+			markerPath := filepath.Join(fixture.stateDir, installStateMarkerName)
+			if test.preexisting {
+				if err := os.WriteFile(markerPath, []byte(installStateMarkerContent), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ops := fixture.defaultOps()
+			ops.ProbeIdentity = func(context.Context, string, buildIdentity) error {
+				fixture.calls = append(fixture.calls, "health")
+				if err := os.Remove(markerPath); err != nil {
+					if runtime.GOOS != "windows" {
+						t.Fatalf("remove marker during health: %v", err)
+					}
+					// os.Open intentionally denies delete sharing on Windows. Mutate the
+					// still-open file instead so the final content check is exercised.
+					if err := os.WriteFile(markerPath, []byte("foreign\n"), 0o600); err != nil {
+						t.Fatalf("mutate marker during health: %v", err)
+					}
+					return nil
+				}
+				if test.replace {
+					if err := os.WriteFile(markerPath, []byte("foreign\n"), 0o600); err != nil {
+						t.Fatalf("replace marker during health: %v", err)
+					}
+				}
+				return nil
+			}
+
+			_, err := executeLifecycle(context.Background(), fixture.request(), ops, nil)
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), "marker") {
+				t.Fatalf("marker drift completed lifecycle: %v", err)
+			}
+			if test.sameInstall {
+				assertLifecycleCalls(t, fixture.calls, []string{"install", "health", "uninstall", "install"})
+				assertFileContent(t, fixture.destinationPath, "candidate")
+				if record := mustLoadInstallRecord(t, fixture.installRecord); !reflect.DeepEqual(record, oldRecord) {
+					t.Fatalf("same install record changed after marker rollback: got=%+v want=%+v", record, oldRecord)
+				}
+			} else {
+				assertLifecycleCalls(t, fixture.calls, []string{"scan", "install", "health", "uninstall"})
+				if _, statErr := os.Lstat(fixture.destinationPath); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("fresh executable remained after marker rollback: %v", statErr)
+				}
+				if record, loadErr := install.Load(fixture.installRecord); loadErr != nil || record != nil {
+					t.Fatalf("fresh install record remained after marker rollback: %+v err=%v", record, loadErr)
+				}
+			}
+			contents, readErr := os.ReadFile(markerPath)
+			if test.replace || runtime.GOOS == "windows" {
+				if readErr != nil || string(contents) != "foreign\n" {
+					t.Fatalf("foreign marker was changed during rollback: %q err=%v", contents, readErr)
+				}
+			} else if !errors.Is(readErr, os.ErrNotExist) {
+				t.Fatalf("deleted marker was recreated during rollback: %v", readErr)
+			}
+		})
 	}
 }
 
@@ -515,6 +608,102 @@ func TestLifecycleHealthFailureRollsBackPreviousStateMigration(t *testing.T) {
 	}
 	if record, loadErr := install.Load(fixture.installRecord); loadErr != nil || record != nil {
 		t.Fatalf("fresh health failure left install record: %+v err=%v", record, loadErr)
+	}
+}
+
+type driftAfterMarkerValidation struct {
+	inner      lifecycleMarkerTransaction
+	path       string
+	deleteOnly bool
+}
+
+func (m *driftAfterMarkerValidation) Prepare() error { return m.inner.Prepare() }
+
+func (m *driftAfterMarkerValidation) Validate() error {
+	if err := m.inner.Validate(); err != nil {
+		return err
+	}
+	return m.replace()
+}
+
+func (m *driftAfterMarkerValidation) Commit() error {
+	return m.inner.Commit()
+}
+
+func (m *driftAfterMarkerValidation) Rollback() error { return m.inner.Rollback() }
+
+func (m *driftAfterMarkerValidation) replace() error {
+	if err := os.Remove(m.path); err != nil {
+		if runtime.GOOS != "windows" {
+			return err
+		}
+		// The live marker handle blocks deletion on Windows. An in-place
+		// content change still proves migration commit fails before cleanup.
+		if err := os.WriteFile(m.path, []byte("foreign\n"), 0o600); err != nil {
+			return err
+		}
+		return nil
+	}
+	if m.deleteOnly {
+		return nil
+	}
+	if err := os.WriteFile(m.path, []byte("foreign\n"), 0o600); err != nil {
+		return err
+	}
+	return nil
+}
+
+func TestLifecycleMigrationMarkerDriftAfterValidationRollsBack(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		deleteOnly bool
+	}{
+		{name: "foreign replacement"},
+		{name: "delete only", deleteOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.deleteOnly && runtime.GOOS == "windows" {
+				t.Skip("Windows live marker handle intentionally blocks deletion")
+			}
+			fixture := newLifecycleFixture(t, "2.3.6", "new-binary")
+			plan, current, previous, previousService := fixture.addPreviousState()
+			request := fixture.request()
+			request.Migration = plan
+			request.PreviousService = previousService
+			markerPath := filepath.Join(fixture.stateDir, installStateMarkerName)
+			ops := fixture.defaultOps()
+			ops.Marker = &driftAfterMarkerValidation{
+				inner:      newInstallMarkerPersistence(config.Paths{StateDir: fixture.stateDir}),
+				path:       markerPath,
+				deleteOnly: test.deleteOnly,
+			}
+
+			_, err := executeLifecycle(context.Background(), request, ops, nil)
+			if err == nil {
+				t.Fatal("marker drift completed migrated lifecycle")
+			}
+			assertLifecycleCalls(t, fixture.calls, []string{"suspend", "scan", "install", "health", "uninstall", "resume"})
+			assertFileContent(t, previous.Database, "previous-database")
+			assertFileContent(t, previous.ConfigPath, "previous-config")
+			for _, path := range []string{current.Database, current.ConfigPath} {
+				if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("migrated state remained after marker rollback at %s: %v", path, statErr)
+				}
+			}
+			if _, statErr := os.Lstat(fixture.destinationPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("fresh executable remained after marker rollback: %v", statErr)
+			}
+			if record, loadErr := install.Load(fixture.installRecord); loadErr != nil || record != nil {
+				t.Fatalf("install record remained after marker rollback: %+v err=%v", record, loadErr)
+			}
+			if test.deleteOnly {
+				if _, statErr := os.Lstat(markerPath); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("deleted marker was silently recreated: %v", statErr)
+				}
+			} else {
+				assertFileContent(t, markerPath, "foreign\n")
+			}
+		})
 	}
 }
 

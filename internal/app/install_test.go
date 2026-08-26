@@ -839,6 +839,210 @@ func TestEnsureInstallStateMarkerIsIdempotentAndNeverReplacesExisting(t *testing
 	}
 }
 
+func TestInstallCreatesStateMarkerWhenConfigIsUnchangedAndScanSkipped(t *testing.T) {
+	fixture := newInstallCommandFixture(t)
+	configBytes := writeCompleteInstallConfigWithoutMarker(t, fixture)
+	var calls []string
+	fixture.deps.RunLifecycle = realInstallLifecycleWithFakeOptions(&calls, installLifecycleFakeOptions{})
+
+	exitCode, stdout, stderr := runInstallJSON(t, fixture, "install", "--yes", "--json", "--skip-scan")
+	if exitCode != 0 || stderr != "" {
+		t.Fatalf("exit=%d stderr=%q stdout=%q calls=%v", exitCode, stderr, stdout, calls)
+	}
+	markerPath := filepath.Join(fixture.paths.StateDir, ".codex-usage-state")
+	marker, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("read install state marker: %v", err)
+	}
+	if string(marker) != "codex-usage-state-v1\n" {
+		t.Fatalf("marker=%q", marker)
+	}
+	afterConfig, err := os.ReadFile(fixture.paths.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterConfig, configBytes) {
+		t.Fatalf("unchanged config was rewritten:\nwant=%q\ngot=%q", configBytes, afterConfig)
+	}
+}
+
+func TestInstallRollsBackNewStateMarkerWhenLifecycleFails(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		options installLifecycleFakeOptions
+	}{
+		{name: "install service fails", options: installLifecycleFakeOptions{installServiceErr: errors.New("synthetic install service failure")}},
+		{name: "health check fails", options: installLifecycleFakeOptions{healthErr: errors.New("synthetic health failure")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newInstallCommandFixture(t)
+			writeCompleteInstallConfigWithoutMarker(t, fixture)
+			observed := false
+			options := test.options
+			options.beforeInstallService = func() {
+				observed = installStateMarkerEquals(fixture.paths, installStateMarkerContent)
+			}
+			var calls []string
+			fixture.deps.RunLifecycle = realInstallLifecycleWithFakeOptions(&calls, options)
+
+			exitCode, stdout, stderr := runInstallJSON(t, fixture, "install", "--yes", "--json", "--skip-scan")
+			if exitCode == 0 || stderr != "" {
+				t.Fatalf("exit=%d stderr=%q stdout=%q", exitCode, stderr, stdout)
+			}
+			if !observed {
+				t.Fatalf("lifecycle did not observe the exact install marker: %q", stdout)
+			}
+			markerPath := filepath.Join(fixture.paths.StateDir, ".codex-usage-state")
+			if _, err := os.Lstat(markerPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("new marker remained after rollback: %v", err)
+			}
+		})
+	}
+}
+
+func TestInstallRejectsUnsafeStateMarkerBeforeLifecycle(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		setup    func(*testing.T, *installCommandFixture)
+		wantCode string
+	}{
+		{
+			name: "foreign content",
+			setup: func(t *testing.T, fixture *installCommandFixture) {
+				if err := os.WriteFile(filepath.Join(fixture.paths.StateDir, ".codex-usage-state"), []byte("foreign\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantCode: "config_write_failed",
+		},
+		{
+			name: "symlink",
+			setup: func(t *testing.T, fixture *installCommandFixture) {
+				target := filepath.Join(fixture.root, "outside-marker")
+				if err := os.WriteFile(target, []byte("codex-usage-state-v1\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, filepath.Join(fixture.paths.StateDir, ".codex-usage-state")); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			},
+			wantCode: "config_write_failed",
+		},
+		{
+			name: "non-regular",
+			setup: func(t *testing.T, fixture *installCommandFixture) {
+				if err := os.Mkdir(filepath.Join(fixture.paths.StateDir, ".codex-usage-state"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantCode: "config_write_failed",
+		},
+		{
+			name: "linked state ancestor",
+			setup: func(t *testing.T, fixture *installCommandFixture) {
+				realState := filepath.Join(fixture.root, "real-state")
+				if err := os.Rename(fixture.paths.StateDir, realState); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(realState, fixture.paths.StateDir); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			},
+			wantCode: "permission_required",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newInstallCommandFixture(t)
+			writeCompleteInstallConfigWithoutMarker(t, fixture)
+			test.setup(t, fixture)
+			var calls []string
+			fixture.deps.RunLifecycle = realInstallLifecycleWithFakeOptions(&calls, installLifecycleFakeOptions{})
+
+			exitCode, stdout, stderr := runInstallJSON(t, fixture, "install", "--yes", "--json", "--skip-scan")
+			if exitCode == 0 || stderr != "" || len(calls) != 0 {
+				t.Fatalf("exit=%d stderr=%q service_calls=%v stdout=%q", exitCode, stderr, calls, stdout)
+			}
+			terminal := installTerminalEvent(t, stdout)
+			if terminal["code"] != test.wantCode {
+				t.Fatalf("terminal=%#v", terminal)
+			}
+		})
+	}
+}
+
+func TestInstallMarkerCreationFailureCleansOnlyOwnedExactFile(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		contents      string
+		creationError string
+		wantMarker    bool
+		wantRefusal   bool
+	}{
+		{name: "creation failure", creationError: "synthetic create failure"},
+		{name: "partial write", contents: "codex-usage-state-", creationError: "synthetic write failure", wantMarker: true, wantRefusal: true},
+		{name: "parent sync failure", contents: "codex-usage-state-v1\n", creationError: "synthetic parent sync failure"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newInstallCommandFixture(t)
+			if err := os.MkdirAll(fixture.paths.StateDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			persistence := newInstallMarkerPersistence(fixture.paths)
+			persistence.create = func(path string, _ []byte) (os.FileInfo, error) {
+				if test.contents == "" {
+					return nil, errors.New(test.creationError)
+				}
+				if err := os.WriteFile(path, []byte(test.contents), 0o600); err != nil {
+					return nil, err
+				}
+				info, err := os.Lstat(path)
+				if err != nil {
+					return nil, err
+				}
+				return info, errors.New(test.creationError)
+			}
+
+			err := persistence.Prepare()
+			if err == nil || !strings.Contains(err.Error(), test.creationError) {
+				t.Fatalf("Prepare error=%v", err)
+			}
+			if test.wantRefusal != strings.Contains(strings.ToLower(err.Error()), "rollback refused") {
+				t.Fatalf("Prepare error=%v want rollback refusal=%v", err, test.wantRefusal)
+			}
+			markerPath := filepath.Join(fixture.paths.StateDir, ".codex-usage-state")
+			_, statErr := os.Lstat(markerPath)
+			if test.wantMarker && statErr != nil {
+				t.Fatalf("drifted partial marker was removed: %v", statErr)
+			}
+			if !test.wantMarker && !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("owned exact marker remained after failed creation: %v", statErr)
+			}
+		})
+	}
+}
+
+func writeCompleteInstallConfigWithoutMarker(t *testing.T, fixture *installCommandFixture) []byte {
+	t.Helper()
+	if err := os.MkdirAll(fixture.paths.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.ExtraCodexHomes = []string{filepath.Join(fixture.root, "codex-home")}
+	data, err := marshalInstallConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fixture.paths.ConfigPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func installStateMarkerEquals(paths config.Paths, want string) bool {
+	data, err := os.ReadFile(filepath.Join(paths.StateDir, ".codex-usage-state"))
+	return err == nil && string(data) == want
+}
+
 func TestInstallRemovesNewConfigWhenLifecycleFails(t *testing.T) {
 	fixture := newInstallCommandFixture(t)
 	var calls []string
@@ -1036,15 +1240,40 @@ func TestInstallRejectsConfigPreviewChangeAfterConfirmation(t *testing.T) {
 }
 
 func TestInstallConfigPersistenceFailureHasStableCode(t *testing.T) {
-	for _, err := range []error{
-		&installConfigPersistenceError{err: errors.New("localized save failure")},
-		fmt.Errorf("install service: %w", &installConfigPersistenceError{err: errors.New("localized save failure")}),
+	for _, test := range []struct {
+		err  error
+		code string
+	}{
+		{err: &installConfigPersistenceError{err: errors.New("localized save failure")}, code: "config_write_failed"},
+		{err: fmt.Errorf("install service: %w", &installConfigPersistenceError{err: errors.New("localized save failure")}), code: "config_write_failed"},
+		{err: &installConfigPersistenceError{err: &installPreflightFailure{code: "permission_required", err: os.ErrPermission}}, code: "permission_required"},
+		{err: &installConfigPersistenceError{err: &installPreflightFailure{code: "existing_install_untrusted", err: errors.New("linked install directory")}}, code: "existing_install_untrusted"},
+		{err: &installConfigPersistenceError{err: &installPreflightFailure{code: "existing_install_untrusted", err: fmt.Errorf("install service: %w", os.ErrPermission)}}, code: "existing_install_untrusted"},
 	} {
-		classified := installCommandFailure(err, "install_failed")
+		classified := installCommandFailure(test.err, "install_failed")
 		var coded *codedError
-		if !errors.As(classified, &coded) || coded.Code != "config_write_failed" {
+		if !errors.As(classified, &coded) {
 			t.Fatalf("error=%T %v", classified, classified)
 		}
+		if coded.Code != test.code {
+			t.Fatalf("code=%q want=%q error=%T %v", coded.Code, test.code, classified, classified)
+		}
+	}
+}
+
+func TestInstallServicePermissionFailureKeepsPermissionCode(t *testing.T) {
+	fixture := newInstallCommandFixture(t)
+	var calls []string
+	fixture.deps.RunLifecycle = realInstallLifecycleWithFakeOptions(&calls, installLifecycleFakeOptions{
+		installServiceErr: fmt.Errorf("service access denied: %w", os.ErrPermission),
+	})
+
+	exitCode, stdout, stderr := runInstallJSON(t, fixture, "install", "--yes", "--json", "--skip-scan")
+	if exitCode == 0 || stderr != "" || !containsString(calls, "install_service") {
+		t.Fatalf("exit=%d stderr=%q calls=%v stdout=%q", exitCode, stderr, calls, stdout)
+	}
+	if terminal := installTerminalEvent(t, stdout); terminal["code"] != "permission_required" {
+		t.Fatalf("terminal=%#v", terminal)
 	}
 }
 
@@ -1315,6 +1544,9 @@ func TestInstallMigratedConfigSuccessPersistsExplicitHome(t *testing.T) {
 	}
 	if !containsString(calls, "remove_previous") {
 		t.Fatalf("previous service was not committed away: %v", calls)
+	}
+	if !installStateMarkerEquals(fixture.paths, installStateMarkerContent) {
+		t.Fatal("migration did not leave the exact current install marker")
 	}
 }
 

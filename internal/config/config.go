@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+	"github.com/zJay26/codex-usage/internal/platform"
 	"github.com/zJay26/codex-usage/internal/pricing"
 )
 
@@ -22,6 +24,13 @@ const (
 	databaseName       = "usage.sqlite"
 	legacyManagedBegin = "# BEGIN codex-usage managed"
 	legacyManagedEnd   = "# END codex-usage managed"
+	stateMarkerName    = ".codex-usage-state"
+	stateMarkerValue   = "codex-usage-state-v1\n"
+)
+
+var (
+	renameStateMarkerNoReplace = platform.RenameNoReplace
+	syncStateMarkerParent      = platform.SyncParent
 )
 
 type Config struct {
@@ -234,8 +243,72 @@ func EnsureStateMarker(paths Paths) error {
 	if err := EnsurePrivateDir(paths.StateDir); err != nil {
 		return err
 	}
-	return atomicWrite(filepath.Join(paths.StateDir, ".codex-usage-state"),
-		[]byte("codex-usage-state-v1\n"), 0o600)
+	markerPath := filepath.Join(paths.StateDir, stateMarkerName)
+	exists, err := validateExactStateMarker(markerPath)
+	if err != nil || exists {
+		return err
+	}
+	return createStateMarkerNoReplace(markerPath)
+}
+
+func validateExactStateMarker(path string) (bool, error) {
+	before, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return false, fmt.Errorf("状态标记不是安全普通文件: %s", path)
+	}
+	marker, err := platform.OpenForRenameValidation(path)
+	if err != nil {
+		return false, err
+	}
+	opened, statErr := marker.Stat()
+	data, readErr := io.ReadAll(io.LimitReader(marker, int64(len(stateMarkerValue)+1)))
+	closeErr := marker.Close()
+	after, afterErr := os.Lstat(path)
+	if err := errors.Join(statErr, readErr, closeErr, afterErr); err != nil {
+		return false, err
+	}
+	if !opened.Mode().IsRegular() || after.Mode()&os.ModeSymlink != 0 ||
+		!after.Mode().IsRegular() || !os.SameFile(before, opened) || !os.SameFile(opened, after) {
+		return false, fmt.Errorf("状态标记在安全读取期间发生变化: %s", path)
+	}
+	if !bytes.Equal(data, []byte(stateMarkerValue)) {
+		return false, fmt.Errorf("状态标记内容不受信任: %s", path)
+	}
+	return true, nil
+}
+
+func createStateMarkerNoReplace(path string) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".codex-usage-state-new-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryPath)
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := temporary.Write([]byte(stateMarkerValue)); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := renameStateMarkerNoReplace(temporaryPath, path); err != nil {
+		return fmt.Errorf("无替换激活状态标记: %w", err)
+	}
+	return syncStateMarkerParent(path)
 }
 
 func AddHome(paths Paths, raw string) (string, error) {

@@ -44,6 +44,13 @@ type lifecycleResult struct {
 	DataPreserved   bool
 }
 
+type lifecycleMarkerTransaction interface {
+	Prepare() error
+	Validate() error
+	Commit() error
+	Rollback() error
+}
+
 type lifecycleOps struct {
 	StopService      func(executable, stateDir string) error
 	InstallService   func(executable, stateDir string) (platform.ServiceResult, error)
@@ -54,6 +61,7 @@ type lifecycleOps struct {
 	ProbeIdentity    func(context.Context, string, buildIdentity) error
 	Scan             func(context.Context, usage.ProgressObserver) (installScanOutcome, error)
 	Now              func() time.Time
+	Marker           lifecycleMarkerTransaction
 }
 
 type lifecycleProgress func(phase string, progress any)
@@ -97,6 +105,7 @@ type lifecycleRollbackState struct {
 	currentStopAttempted bool
 	previousSuspendTried bool
 	migration            *config.MigrationTransaction
+	marker               lifecycleMarkerTransaction
 	syncParent           func(string) error
 }
 
@@ -143,27 +152,39 @@ func executeLifecycle(
 		return result, err
 	}
 	result.CandidateSHA256 = observedCandidateSHA
+	marker := ops.Marker
+	if marker == nil {
+		marker = newInstallMarkerPersistence(config.Paths{StateDir: request.StateDir})
+	}
+	if err := marker.Prepare(); err != nil {
+		return result, &installConfigPersistenceError{err: fmt.Errorf("prepare install state marker: %w", err)}
+	}
+	state := &lifecycleRollbackState{
+		request: request, ops: ops, oldRecord: oldRecord,
+		marker: marker, syncParent: syncParent,
+	}
+	if err := ctx.Err(); err != nil {
+		return result, rollbackLifecycle(err, state)
+	}
 	if decision == install.DecisionSame {
-		return executeSameLifecycle(ctx, request, ops, report, result)
+		return executeSameLifecycle(ctx, request, ops, report, result, marker)
 	}
 
 	stagePath := request.DestinationPath + ".stage"
 	backupPath := request.DestinationPath + ".backup"
+	state.stagePath = stagePath
+	state.backupPath = backupPath
 	if err := rejectExistingRecoveryPoint(stagePath, "stage"); err != nil {
-		return result, err
+		return result, rollbackLifecycle(err, state)
 	}
 	if err := rejectExistingRecoveryPoint(backupPath, "backup"); err != nil {
-		return result, err
+		return result, rollbackLifecycle(err, state)
 	}
 	stagedSHA, err := stageLifecycleCandidate(request.CandidatePath, stagePath, syncParent)
 	if err != nil {
-		return result, err
+		return result, rollbackLifecycle(err, state)
 	}
-	state := &lifecycleRollbackState{
-		request: request, ops: ops, oldRecord: oldRecord,
-		stagePath: stagePath, backupPath: backupPath, stageOwned: true,
-		syncParent: syncParent,
-	}
+	state.stageOwned = true
 	if stagedSHA != observedCandidateSHA {
 		return result, rollbackLifecycle(errors.New("candidate changed while staging"), state)
 	}
@@ -264,14 +285,34 @@ func executeLifecycle(
 		return result, rollbackLifecycle(errors.New("active executable changed before record commit"), state)
 	}
 	result.CandidateSHA256 = finalActiveSHA
+	if err := marker.Validate(); err != nil {
+		return result, rollbackLifecycle(
+			&installConfigPersistenceError{err: fmt.Errorf("validate install state marker: %w", err)}, state,
+		)
+	}
 	record := recordForLifecycle(request, finalActiveSHA, installedAt)
 	state.recordMayHaveChanged = true
 	if err := install.Save(request.InstallRecordPath, record); err != nil {
 		return result, rollbackLifecycle(fmt.Errorf("save install record: %w", err), state)
 	}
 
-	migrationResult, commitErr := transaction.Commit()
+	markerCommitted := false
+	migrationResult, commitErr := transaction.CommitPreparedStateMarker(func() error {
+		if err := marker.Commit(); err != nil {
+			return err
+		}
+		markerCommitted = true
+		return nil
+	})
 	result.DataPreserved = decision == install.DecisionUpgrade || migrationResult.Found
+	if !markerCommitted {
+		if commitErr == nil {
+			commitErr = errors.New("migration transaction did not commit the prepared install state marker")
+		}
+		return result, rollbackLifecycle(
+			&installConfigPersistenceError{err: fmt.Errorf("commit install state marker: %w", commitErr)}, state,
+		)
+	}
 	if commitErr != nil {
 		result.ScanWarnings = append(result.ScanWarnings, "cleanup:migration_commit: "+commitErr.Error())
 		return result, nil
@@ -296,30 +337,54 @@ func executeSameLifecycle(
 	ops lifecycleOps,
 	report lifecycleProgress,
 	result lifecycleResult,
+	marker lifecycleMarkerTransaction,
 ) (lifecycleResult, error) {
 	if err := ctx.Err(); err != nil {
-		return result, err
+		return result, rollbackSameLifecycle(err, request, ops, marker, false)
 	}
 	reportLifecycle(report, "start_service", nil)
 	service, err := ops.InstallService(request.DestinationPath, request.StateDir)
 	if err != nil {
-		return result, fmt.Errorf("repair service: %w", err)
+		return result, rollbackSameLifecycle(fmt.Errorf("repair service: %w", err), request, ops, marker, false)
 	}
 	result.Service = service
 	reportLifecycle(report, "health_check", nil)
 	if err := ops.ProbeIdentity(ctx, request.ServiceURL, request.Candidate); err != nil {
-		primary := fmt.Errorf("identity health: %w", err)
-		var rollbackErrors []error
-		if uninstallErr := ops.UninstallService(request.DestinationPath, request.StateDir); uninstallErr != nil {
-			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback uninstall service: %w", uninstallErr))
-		}
-		if _, restoreErr := ops.InstallService(request.DestinationPath, request.StateDir); restoreErr != nil {
-			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback restore service: %w", restoreErr))
-		}
-		return result, joinLifecycleRollback(primary, rollbackErrors)
+		return result, rollbackSameLifecycle(fmt.Errorf("identity health: %w", err), request, ops, marker, true)
+	}
+	if err := ctx.Err(); err != nil {
+		return result, rollbackSameLifecycle(err, request, ops, marker, true)
+	}
+	if err := marker.Commit(); err != nil {
+		return result, rollbackSameLifecycle(
+			&installConfigPersistenceError{err: fmt.Errorf("commit install state marker: %w", err)},
+			request, ops, marker, true,
+		)
 	}
 	result.DataPreserved = true
 	return result, nil
+}
+
+func rollbackSameLifecycle(
+	primary error,
+	request lifecycleRequest,
+	ops lifecycleOps,
+	marker lifecycleMarkerTransaction,
+	restoreService bool,
+) error {
+	var rollbackErrors []error
+	if restoreService {
+		if err := ops.UninstallService(request.DestinationPath, request.StateDir); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback uninstall service: %w", err))
+		}
+		if _, err := ops.InstallService(request.DestinationPath, request.StateDir); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback restore service: %w", err))
+		}
+	}
+	if err := marker.Rollback(); err != nil {
+		rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback install state marker: %w", err))
+	}
+	return joinLifecycleRollback(primary, rollbackErrors)
 }
 
 func withLifecycleDefaults(ops lifecycleOps) lifecycleOps {
@@ -551,6 +616,11 @@ func rollbackLifecycle(primary error, state *lifecycleRollbackState) error {
 	if state.stageOwned {
 		if err := removeOwnedRegularFile(state.stagePath, state.syncParent); err != nil {
 			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback remove staged candidate: %w", err))
+		}
+	}
+	if state.marker != nil {
+		if err := state.marker.Rollback(); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback install state marker: %w", err))
 		}
 	}
 	return joinLifecycleRollback(primary, rollbackErrors)

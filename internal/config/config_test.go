@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zJay26/codex-usage/internal/platform"
 	"github.com/zJay26/codex-usage/internal/pricing"
 )
 
@@ -98,6 +99,110 @@ func TestResolvePathsIncludesInstallRecord(t *testing.T) {
 	}
 	if _, err := ResolvePaths(); err != nil {
 		t.Fatalf("install record must remain within the dedicated state whitelist: %v", err)
+	}
+}
+
+func TestEnsureStateMarkerPreservesExactFileIdentity(t *testing.T) {
+	paths := Paths{StateDir: t.TempDir()}
+	markerPath := filepath.Join(paths.StateDir, ".codex-usage-state")
+	if err := os.WriteFile(markerPath, []byte("codex-usage-state-v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	before, err := held.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureStateMarker(paths); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Lstat(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("exact state marker was replaced")
+	}
+}
+
+func TestEnsureStateMarkerRejectsForeignFileWithoutChangingIt(t *testing.T) {
+	paths := Paths{StateDir: t.TempDir()}
+	markerPath := filepath.Join(paths.StateDir, ".codex-usage-state")
+	if err := os.WriteFile(markerPath, []byte("foreign\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Lstat(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureStateMarker(paths); err == nil {
+		t.Fatal("foreign state marker was accepted")
+	}
+	after, err := os.Lstat(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) || string(contents) != "foreign\n" {
+		t.Fatalf("foreign state marker changed: same=%v contents=%q", os.SameFile(before, after), contents)
+	}
+}
+
+func TestEnsureStateMarkerRejectsSymlinkAndNonRegularPath(t *testing.T) {
+	for _, name := range []string{"symlink", "directory"} {
+		t.Run(name, func(t *testing.T) {
+			paths := Paths{StateDir: t.TempDir()}
+			markerPath := filepath.Join(paths.StateDir, stateMarkerName)
+			if name == "symlink" {
+				target := filepath.Join(t.TempDir(), "outside-marker")
+				if err := os.WriteFile(target, []byte(stateMarkerValue), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, markerPath); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			} else if err := os.Mkdir(markerPath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := EnsureStateMarker(paths); err == nil {
+				t.Fatalf("%s state marker was accepted", name)
+			}
+		})
+	}
+}
+
+func TestEnsureStateMarkerDoesNotReplaceRacingTarget(t *testing.T) {
+	paths := Paths{StateDir: t.TempDir()}
+	markerPath := filepath.Join(paths.StateDir, stateMarkerName)
+	originalRename := renameStateMarkerNoReplace
+	injected := false
+	renameStateMarkerNoReplace = func(source, target string) error {
+		injected = true
+		if err := os.WriteFile(target, []byte("racing foreign\n"), 0o600); err != nil {
+			return err
+		}
+		return platform.RenameNoReplace(source, target)
+	}
+	t.Cleanup(func() { renameStateMarkerNoReplace = originalRename })
+
+	if err := EnsureStateMarker(paths); err == nil {
+		t.Fatal("racing state marker was replaced")
+	}
+	if !injected {
+		t.Fatal("no-replace activation was not attempted")
+	}
+	contents, err := os.ReadFile(markerPath)
+	if err != nil || string(contents) != "racing foreign\n" {
+		t.Fatalf("racing marker changed: contents=%q err=%v", contents, err)
 	}
 }
 
@@ -452,6 +557,46 @@ func TestMigrationCommitPreservesPreviousServiceMetadata(t *testing.T) {
 	}
 	if _, err := transaction.Commit(); err != nil {
 		t.Fatalf("second commit must be idempotent: %v", err)
+	}
+}
+
+func TestMigrationCommitPreservesExactStateMarkerAndUnknownSwap(t *testing.T) {
+	paths, previous := migrationTransactionFixture(t)
+	if err := os.MkdirAll(paths.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	markerPath := filepath.Join(paths.StateDir, ".codex-usage-state")
+	if err := os.WriteFile(markerPath, []byte("codex-usage-state-v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Lstat(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapPath := markerPath + ".codex-usage-swap"
+	if err := os.WriteFile(swapPath, []byte("foreign swap\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := InspectPreviousState(paths, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction, err := BeginPreviousStateMigration(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transaction.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Lstat(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("migration replaced the exact current state marker")
+	}
+	if contents, err := os.ReadFile(swapPath); err != nil || string(contents) != "foreign swap\n" {
+		t.Fatalf("migration changed unknown swap: contents=%q err=%v", contents, err)
 	}
 }
 

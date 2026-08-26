@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -30,6 +31,8 @@ const (
 	installConfigTemporaryPattern       = ".codex-usage-install-config-new-*"
 	installConfigAtomicTemporaryPattern = ".codex-usage-install-config-atomic-*"
 	installMarkerTemporaryPattern       = ".codex-usage-install-marker-new-*"
+	installStateMarkerName              = ".codex-usage-state"
+	installStateMarkerContent           = "codex-usage-state-v1\n"
 )
 
 type verificationResult struct {
@@ -249,7 +252,6 @@ func (c CLI) installCommand(args []string, emitter *eventEmitter) (commandResult
 			return commandResult{}, installCommandFailure(err, "existing_install_untrusted")
 		}
 	}
-
 	request := lifecycleRequest{
 		CandidatePath: candidatePath, DestinationPath: paths.InstalledEXE,
 		InstallRecordPath: paths.InstallRecord, StateDir: paths.StateDir,
@@ -659,6 +661,264 @@ type installConfigPersistenceError struct {
 
 func (e *installConfigPersistenceError) Error() string { return e.err.Error() }
 func (e *installConfigPersistenceError) Unwrap() error { return e.err }
+
+type installMarkerPersistence struct {
+	mu         sync.Mutex
+	paths      config.Paths
+	create     func(string, []byte) (os.FileInfo, error)
+	attempted  bool
+	created    bool
+	finished   bool
+	marker     *os.File
+	markerInfo os.FileInfo
+	prepareErr error
+}
+
+func newInstallMarkerPersistence(paths config.Paths) *installMarkerPersistence {
+	return &installMarkerPersistence{paths: paths, create: createInstallStateMarker}
+}
+
+func (p *installMarkerPersistence) Prepare() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.attempted {
+		return p.prepareErr
+	}
+	p.attempted = true
+
+	markerPath, err := p.safeMarkerPath()
+	if err != nil {
+		p.prepareErr = err
+		return err
+	}
+	marker, markerInfo, exists, err := openExactInstallStateMarker(markerPath)
+	if err != nil {
+		p.prepareErr = err
+		return err
+	}
+	if exists {
+		p.marker = marker
+		p.markerInfo = markerInfo
+		return nil
+	}
+
+	creationInfo, createErr := p.create(markerPath, []byte(installStateMarkerContent))
+	marker, markerInfo, exists, inspectErr := openExactInstallStateMarker(markerPath)
+	if createErr != nil {
+		if inspectErr == nil && exists && creationInfo != nil && os.SameFile(creationInfo, markerInfo) {
+			p.created = true
+			p.marker = marker
+			p.markerInfo = markerInfo
+			cleanupPath, cleanupErr := p.safeMarkerPath()
+			if cleanupErr != nil {
+				err = errors.Join(createErr, cleanupErr,
+					errors.New("install state marker path changed after creation; rollback refused"), p.closeMarkerLocked())
+			} else {
+				err = errors.Join(createErr, p.rollbackLocked(cleanupPath))
+			}
+			p.finished = true
+		} else {
+			if marker != nil {
+				_ = marker.Close()
+			}
+			err = errors.Join(createErr, inspectErr)
+			if creationInfo != nil || exists {
+				err = errors.Join(err, errors.New("install state marker changed during creation; rollback refused"))
+			}
+		}
+		p.prepareErr = err
+		return err
+	}
+	if inspectErr != nil {
+		p.prepareErr = inspectErr
+		return inspectErr
+	}
+	if !exists || creationInfo == nil || !os.SameFile(creationInfo, markerInfo) {
+		if marker != nil {
+			_ = marker.Close()
+		}
+		err = errors.New("created install state marker does not retain the created file identity and exact content; rollback refused")
+		p.prepareErr = err
+		return err
+	}
+	p.created = true
+	p.marker = marker
+	p.markerInfo = markerInfo
+	return nil
+}
+
+func (p *installMarkerPersistence) Rollback() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.finished {
+		return nil
+	}
+	p.finished = true
+	if !p.created {
+		return p.closeMarkerLocked()
+	}
+	markerPath, err := p.safeMarkerPath()
+	if err != nil {
+		return errors.Join(err, errors.New("install state marker path changed after creation; rollback refused"), p.closeMarkerLocked())
+	}
+	return p.rollbackLocked(markerPath)
+}
+
+func (p *installMarkerPersistence) rollbackLocked(markerPath string) error {
+	if err := p.verifyLocked(markerPath); err != nil {
+		return errors.Join(err, errors.New("install state marker changed after creation; rollback refused"), p.closeMarkerLocked())
+	}
+	if runtime.GOOS == "windows" {
+		expected := p.markerInfo
+		if err := p.closeMarkerLocked(); err != nil {
+			return err
+		}
+		marker, markerInfo, exists, err := openExactInstallStateMarker(markerPath)
+		if err != nil || !exists || !os.SameFile(expected, markerInfo) {
+			if marker != nil {
+				err = errors.Join(err, marker.Close())
+			}
+			return errors.Join(err, errors.New("install state marker changed after releasing rollback handle; rollback refused"))
+		}
+		closeErr := marker.Close()
+		after, statErr := os.Lstat(markerPath)
+		if err := errors.Join(closeErr, statErr); err != nil ||
+			after.Mode()&os.ModeSymlink != 0 || !after.Mode().IsRegular() || !os.SameFile(markerInfo, after) {
+			return errors.Join(err, errors.New("install state marker changed after releasing rollback handle; rollback refused"))
+		}
+	}
+	if err := os.Remove(markerPath); err != nil {
+		return errors.Join(err, p.closeMarkerLocked())
+	}
+	return errors.Join(p.closeMarkerLocked(), platform.SyncParent(markerPath))
+}
+
+func (p *installMarkerPersistence) Validate() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.validateLocked()
+}
+
+func (p *installMarkerPersistence) Commit() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.finished {
+		return nil
+	}
+	if err := p.validateLocked(); err != nil {
+		return err
+	}
+	if err := p.closeMarkerLocked(); err != nil {
+		return err
+	}
+	p.finished = true
+	return nil
+}
+
+func (p *installMarkerPersistence) validateLocked() error {
+	if p.finished {
+		return errors.New("install state marker transaction is already closed")
+	}
+	if !p.attempted || p.prepareErr != nil || p.marker == nil {
+		return errors.New("install state marker transaction was not prepared")
+	}
+	markerPath, err := p.safeMarkerPath()
+	if err != nil {
+		return err
+	}
+	if err := p.verifyLocked(markerPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *installMarkerPersistence) verifyLocked(markerPath string) error {
+	if p.marker == nil || p.markerInfo == nil {
+		return errors.New("install state marker handle is unavailable")
+	}
+	current, err := os.Lstat(markerPath)
+	if err != nil {
+		return fmt.Errorf("install state marker changed before commit: %w", err)
+	}
+	opened, err := p.marker.Stat()
+	if err != nil {
+		return err
+	}
+	if current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() ||
+		!os.SameFile(p.markerInfo, opened) || !os.SameFile(opened, current) {
+		return errors.New("install state marker identity changed before commit")
+	}
+	if _, err := p.marker.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	data, err := io.ReadAll(io.LimitReader(p.marker, int64(len(installStateMarkerContent)+1)))
+	if err != nil {
+		return err
+	}
+	after, err := os.Lstat(markerPath)
+	if err != nil || after.Mode()&os.ModeSymlink != 0 || !after.Mode().IsRegular() ||
+		!os.SameFile(opened, after) || !bytes.Equal(data, []byte(installStateMarkerContent)) {
+		return errors.New("install state marker identity or content changed before commit")
+	}
+	return nil
+}
+
+func (p *installMarkerPersistence) closeMarkerLocked() error {
+	if p.marker == nil {
+		return nil
+	}
+	err := p.marker.Close()
+	p.marker = nil
+	return err
+}
+
+func openExactInstallStateMarker(path string) (*os.File, os.FileInfo, bool, error) {
+	before, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, false, nil
+	}
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, nil, false, fmt.Errorf("install state marker is not a safe regular file: %s", path)
+	}
+	marker, err := os.Open(path)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	opened, statErr := marker.Stat()
+	data, readErr := io.ReadAll(io.LimitReader(marker, int64(len(installStateMarkerContent)+1)))
+	after, afterErr := os.Lstat(path)
+	if err := errors.Join(statErr, readErr, afterErr); err != nil {
+		_ = marker.Close()
+		return nil, nil, false, err
+	}
+	if !opened.Mode().IsRegular() || after.Mode()&os.ModeSymlink != 0 || !after.Mode().IsRegular() ||
+		!os.SameFile(before, opened) || !os.SameFile(opened, after) {
+		_ = marker.Close()
+		return nil, nil, false, fmt.Errorf("install state marker changed during safe open: %s", path)
+	}
+	if !bytes.Equal(data, []byte(installStateMarkerContent)) {
+		_ = marker.Close()
+		return nil, nil, false, fmt.Errorf("install state marker has unexpected content: %s", path)
+	}
+	return marker, opened, true, nil
+}
+
+func (p *installMarkerPersistence) safeMarkerPath() (string, error) {
+	if err := probeInstallDirectoryWritable(p.paths.StateDir); err != nil {
+		return "", err
+	}
+	markerPath, err := canonicalAbsolutePath(filepath.Join(p.paths.StateDir, installStateMarkerName))
+	if err != nil {
+		return "", err
+	}
+	if !sameFilePath(filepath.Dir(markerPath), p.paths.StateDir) {
+		return "", errors.New("install state marker escapes state directory")
+	}
+	return markerPath, nil
+}
 
 type installConfigSnapshot struct {
 	exists bool
@@ -1140,24 +1400,33 @@ func writeNewInstallConfig(path string, data []byte) (returnErr error) {
 	return writeNewInstallFile(path, data, installConfigTemporaryPattern)
 }
 
-func writeNewInstallFile(path string, data []byte, pattern string) (returnErr error) {
+func writeNewInstallFile(path string, data []byte, pattern string) error {
+	_, err := createNewInstallFile(path, data, pattern)
+	return err
+}
+
+func createInstallStateMarker(path string, data []byte) (os.FileInfo, error) {
+	return createNewInstallFile(path, data, installMarkerTemporaryPattern)
+}
+
+func createNewInstallFile(path string, data []byte, pattern string) (os.FileInfo, error) {
 	directory := filepath.Dir(path)
 	_, statErr := os.Lstat(directory)
 	directoryMissing := errors.Is(statErr, os.ErrNotExist)
 	if statErr != nil && !directoryMissing {
-		return statErr
+		return nil, statErr
 	}
 	if err := config.EnsurePrivateDir(directory); err != nil {
-		return err
+		return nil, err
 	}
 	if directoryMissing {
 		if err := platform.SyncParent(directory); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	temporary, err := os.CreateTemp(directory, pattern)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	temporaryPath := temporary.Name()
 	defer func() {
@@ -1165,21 +1434,25 @@ func writeNewInstallFile(path string, data []byte, pattern string) (returnErr er
 		_ = os.Remove(temporaryPath)
 	}()
 	if err := temporary.Chmod(0o600); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := temporary.Write(data); err != nil {
-		return err
+		return nil, err
 	}
 	if err := temporary.Sync(); err != nil {
-		return err
+		return nil, err
+	}
+	temporaryInfo, err := temporary.Stat()
+	if err != nil {
+		return nil, err
 	}
 	if err := temporary.Close(); err != nil {
-		return err
+		return nil, err
 	}
 	if err := platform.RenameNoReplace(temporaryPath, path); err != nil {
-		return err
+		return nil, err
 	}
-	return platform.SyncParent(path)
+	return temporaryInfo, platform.SyncParent(path)
 }
 
 func readInstallConfigSnapshot(path string) (installConfigSnapshot, error) {
@@ -1264,19 +1537,7 @@ func writeInstallConfig(paths config.Paths, data []byte, mode os.FileMode) error
 }
 
 func ensureInstallStateMarker(paths config.Paths) error {
-	markerPath := filepath.Join(paths.StateDir, ".codex-usage-state")
-	want := []byte("codex-usage-state-v1\n")
-	marker, err := readInstallConfigSnapshot(markerPath)
-	if err != nil {
-		return err
-	}
-	if marker.exists {
-		if bytes.Equal(marker.data, want) {
-			return nil
-		}
-		return fmt.Errorf("install state marker has unexpected content: %s", markerPath)
-	}
-	return writeNewInstallFile(markerPath, want, installMarkerTemporaryPattern)
+	return config.EnsureStateMarker(paths)
 }
 
 func waitForInstallIdentity(ctx context.Context, serviceURL string, expected buildIdentity) error {
@@ -1593,7 +1854,7 @@ func installCommandFailure(err error, fallbackCode string) error {
 	}
 	var preflight *installPreflightFailure
 	if errors.As(err, &preflight) {
-		fallbackCode = preflight.code
+		return &codedError{Code: preflight.code, ExitCode: 1, Err: err}
 	}
 	var preview *installConfigPreviewFailure
 	if errors.As(err, &preview) {
@@ -1607,12 +1868,15 @@ func installCommandFailure(err error, fallbackCode string) error {
 	if errors.As(err, &permission) || errors.Is(err, os.ErrPermission) {
 		fallbackCode = "permission_required"
 	}
+	if fallbackCode == "permission_required" {
+		return &codedError{Code: fallbackCode, ExitCode: 1, Err: err}
+	}
 	var identity *identityProbeError
 	if errors.As(err, &identity) {
 		fallbackCode = "health_check_failed"
 	}
 	var persistence *installConfigPersistenceError
-	if errors.As(err, &persistence) {
+	if errors.As(err, &persistence) && fallbackCode != "permission_required" {
 		return &codedError{Code: "config_write_failed", ExitCode: 1, Err: err}
 	}
 	lower := strings.ToLower(err.Error())

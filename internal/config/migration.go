@@ -303,7 +303,25 @@ func (m *MigrationTransaction) Rollback() error {
 }
 
 func (m *MigrationTransaction) Commit() (MigrationResult, error) {
+	return m.commit(nil)
+}
+
+// CommitPreparedStateMarker commits an already prepared state marker before
+// migration cleanup can become irreversible.
+func (m *MigrationTransaction) CommitPreparedStateMarker(commitMarker func() error) (MigrationResult, error) {
+	if commitMarker == nil {
+		return MigrationResult{}, errors.New("prepared state marker commit is nil")
+	}
+	return m.commit(commitMarker)
+}
+
+func (m *MigrationTransaction) commit(commitPreparedMarker func() error) (MigrationResult, error) {
 	if m == nil {
+		if commitPreparedMarker != nil {
+			if err := commitPreparedMarker(); err != nil {
+				return MigrationResult{}, fmt.Errorf("提交已准备的当前状态标记: %w", err)
+			}
+		}
 		return MigrationResult{}, nil
 	}
 	switch m.state {
@@ -312,21 +330,29 @@ func (m *MigrationTransaction) Commit() (MigrationResult, error) {
 	case migrationTransactionCommitted:
 		return m.plan.result, nil
 	case migrationTransactionActive:
-		m.state = migrationTransactionCommitting
 	case migrationTransactionCommitting:
 	default:
 		return m.plan.result, errors.New("migration transaction has invalid state")
 	}
 	result := m.plan.result
-	if !result.Found {
-		m.state = migrationTransactionCommitted
-		return result, nil
-	}
-	if err := EnsureStateMarker(m.plan.paths); err != nil {
-		return result, fmt.Errorf("写入当前状态标记: %w", err)
-	}
-	if err := m.syncParent(filepath.Join(m.plan.paths.StateDir, ".codex-usage-state")); err != nil {
-		return result, fmt.Errorf("同步当前状态标记目录: %w", err)
+	if m.state == migrationTransactionActive {
+		if commitPreparedMarker != nil {
+			if err := commitPreparedMarker(); err != nil {
+				return result, fmt.Errorf("提交已准备的当前状态标记: %w", err)
+			}
+		} else if result.Found {
+			if err := EnsureStateMarker(m.plan.paths); err != nil {
+				return result, fmt.Errorf("写入当前状态标记: %w", err)
+			}
+			if err := m.syncParent(filepath.Join(m.plan.paths.StateDir, ".codex-usage-state")); err != nil {
+				return result, fmt.Errorf("同步当前状态标记目录: %w", err)
+			}
+		}
+		if !result.Found {
+			m.state = migrationTransactionCommitted
+			return result, nil
+		}
+		m.state = migrationTransactionCommitting
 	}
 	if err := removePreviousMigrationMarker(m.plan.previous, m.syncParent); err != nil {
 		return result, err
