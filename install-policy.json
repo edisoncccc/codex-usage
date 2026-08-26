@@ -1,0 +1,64 @@
+{
+  "schema_version": "1",
+  "canonical_repository": {
+    "host": "github.com",
+    "owner": "edisoncccc",
+    "name": "codex-usage",
+    "url": "https://github.com/edisoncccc/codex-usage"
+  },
+  "stable_tag_pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$",
+  "binary_release_enabled": false,
+  "release": {
+    "source": "github_release",
+    "must_be_immutable": true,
+    "allow_draft": false,
+    "allow_prerelease": false,
+    "require_sha256sums": true,
+    "require_asset_digest": true,
+    "require_artifact_attestation": true
+  },
+  "windows": {
+    "require_authenticode": true,
+    "require_timestamp": true,
+    "publisher_subject": null
+  },
+  "platforms": [
+    {
+      "os": "windows",
+      "arch": "amd64",
+      "asset": "codex-usage-windows-amd64.exe"
+    },
+    {
+      "os": "windows",
+      "arch": "arm64",
+      "asset": "codex-usage-windows-arm64.exe"
+    },
+    {
+      "os": "linux",
+      "arch": "amd64",
+      "asset": "codex-usage-linux-amd64"
+    },
+    {
+      "os": "linux",
+      "arch": "arm64",
+      "asset": "codex-usage-linux-arm64"
+    }
+  ],
+  "installation": {
+    "scope": "current_user",
+    "allow_elevation": false,
+    "allow_silent_source_fallback": false,
+    "automatic_background_updates": false,
+    "listen_address": "127.0.0.1",
+    "windows": {
+      "program_path": "%LOCALAPPDATA%\\Programs\\codex-usage\\codex-usage.exe",
+      "state_path": "%LOCALAPPDATA%\\codex-usage",
+      "service": "HKCU Run"
+    },
+    "linux": {
+      "program_path": "~/.local/bin/codex-usage",
+      "state_path": "${XDG_DATA_HOME:-~/.local/share}/codex-usage",
+      "service": "systemd --user"
+    }
+  }
+}
