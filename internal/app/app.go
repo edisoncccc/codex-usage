@@ -39,6 +39,7 @@ type CLI struct {
 	Now               func() time.Time
 	HeartbeatInterval time.Duration
 	locale            cliui.Locale
+	openScanState     func() (*scanRuntime, error)
 }
 
 func (c CLI) Run(args []string) int {
@@ -88,7 +89,7 @@ func (c CLI) Run(args []string) int {
 	case "uninstall":
 		err = c.uninstall(args)
 	case "scan":
-		err = c.scan(args)
+		return c.runStructured("scan", args, c.scanCommand)
 	case "summary":
 		err = c.summary(args)
 	case "doctor":
@@ -128,6 +129,9 @@ func (c CLI) withDefaults() CLI {
 	}
 	if c.HeartbeatInterval == 0 {
 		c.HeartbeatInterval = 4 * time.Second
+	}
+	if c.openScanState == nil {
+		c.openScanState = defaultOpenScanState
 	}
 	return c
 }
@@ -448,35 +452,6 @@ func healthOK(baseURL string) bool {
 		return false
 	}
 	return payload.OK
-}
-
-func (c CLI) scan(args []string) error {
-	flags := flag.NewFlagSet("scan", flag.ContinueOnError)
-	flags.SetOutput(c.Stderr)
-	rebuild := flags.Bool("rebuild", false, c.tr("flag.rebuild"))
-	asJSON := flags.Bool("json", false, c.tr("flag.json"))
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	state, err := openState()
-	if err != nil {
-		return err
-	}
-	defer state.store.Close()
-	result, err := state.scanner.Scan(context.Background(), state.homes, *rebuild)
-	if err != nil {
-		return err
-	}
-	if *asJSON {
-		return writePrettyJSON(c.Stdout, result)
-	}
-	fmt.Fprintf(c.Stdout, c.tr("scan.complete"),
-		result.Homes, result.Files, result.EventsInserted, result.Duplicates,
-		result.Warnings, float64(result.ElapsedMillis)/1000)
-	if result.Unattributed > 0 {
-		fmt.Fprintf(c.Stdout, c.tr("scan.unattributed"), result.Unattributed)
-	}
-	return nil
 }
 
 func (c CLI) summary(args []string) error {

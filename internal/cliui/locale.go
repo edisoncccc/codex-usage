@@ -27,7 +27,7 @@ var messages = map[Locale]map[string]string{
   codex-usage open                    打开本机 Dashboard
   codex-usage install                 用户级安装、初始化 JSONL 扫描并启动
   codex-usage summary --since 7d      命令行摘要（支持 --json / --csv）
-  codex-usage scan [--rebuild]        增量扫描本机 Codex session
+  codex-usage scan [--rebuild] [--json] 增量扫描本机 Codex session
   codex-usage doctor                  检查路径、JSONL 数据源与服务状态
   codex-usage config add-home PATH    添加一个额外 CODEX_HOME
   codex-usage uninstall [--purge]     卸载；默认保留统计库
@@ -57,7 +57,8 @@ var messages = map[Locale]map[string]string{
 		"summary.cached":         "  Cached Input    %s  (Input 的子集)\n",
 		"summary.reasoning":      "  Reasoning       %s  (Output 的子集)\n",
 		"summary.unattributed":   "历史未归属        %s  (只属于累计，不属于所选日期)\n",
-		"scan.complete":          "扫描完成：%d 个 Home，%d 个文件，新增 %d 个事件，忽略 %d 个重复，%d 条提示，耗时 %.2fs\n",
+		"scan.progress":          "扫描进度：Home %d/%d，发现 %d 个文件，处理 %d 个文件，处理 %d 条记录，新增 %d 个事件，%d 条提示。\n",
+		"scan.complete":          "扫描完成：%d 个 Home，发现 %d 个文件，处理 %d 条记录，新增 %d 个事件，忽略 %d 个重复，%d 条提示，耗时 %.2fs\n",
 		"scan.unattributed":      "有 %d 个 session 的差额仅计入“历史未归属”，未伪造每日分布。\n",
 		"install.stopOld":        "停止旧版后台服务: %w",
 		"install.stopCurrent":    "停止现有后台服务: %w",
@@ -111,7 +112,7 @@ Usage:
   codex-usage open                    Open the local Dashboard
   codex-usage install                 Install for this user, initialize JSONL scanning, and start
   codex-usage summary --since 7d      Print a CLI summary (supports --json / --csv)
-  codex-usage scan [--rebuild]        Incrementally scan local Codex sessions
+  codex-usage scan [--rebuild] [--json] Incrementally scan local Codex sessions
   codex-usage doctor                  Check paths, JSONL sources, and service state
   codex-usage config add-home PATH    Add another CODEX_HOME
   codex-usage uninstall [--purge]     Uninstall; keep the usage database by default
@@ -141,7 +142,8 @@ Boundary:
 		"summary.cached":         "  Cached Input    %s  (subset of Input)\n",
 		"summary.reasoning":      "  Reasoning       %s  (subset of Output)\n",
 		"summary.unattributed":   "Historical only   %s  (part of all-time totals, not the selected dates)\n",
-		"scan.complete":          "Scan complete: %d Homes, %d files, %d events added, %d duplicates ignored, %d notices, %.2fs\n",
+		"scan.progress":          "Scan progress: Homes %d/%d, %d files discovered, %d files processed, %d records processed, %d events added, %d notices.\n",
+		"scan.complete":          "Scan complete: %d Homes, %d files discovered, %d records processed, %d events added, %d duplicates ignored, %d notices, %.2fs\n",
 		"scan.unattributed":      "%d sessions have deltas counted only as historical unattributed usage; no daily distribution was invented.\n",
 		"install.stopOld":        "stop previous background service: %w",
 		"install.stopCurrent":    "stop the current background service: %w",
