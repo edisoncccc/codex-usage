@@ -698,6 +698,9 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	// helper script waits for this process to exit, removes only the resolved
 	// install file, optionally removes the codex-usage state directory, then
 	// deletes itself.
+	if err := ValidateInstalledRemoval(executable, stateDir, purge); err != nil {
+		return err
+	}
 	exeAbs, err := filepath.Abs(executable)
 	if err != nil {
 		return err
@@ -705,15 +708,6 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	stateAbs, err := filepath.Abs(stateDir)
 	if err != nil {
 		return err
-	}
-	if !strings.EqualFold(filepath.Base(exeAbs), "codex-usage.exe") ||
-		exeAbs == filepath.VolumeName(exeAbs)+string(os.PathSeparator) {
-		return fmt.Errorf("拒绝清理非 codex-usage 可执行文件")
-	}
-	if purge {
-		if err := ValidatePurgeStateDir(stateAbs); err != nil {
-			return err
-		}
 	}
 	if strings.ContainsAny(exeAbs+stateAbs, "\"\r\n") {
 		return fmt.Errorf("拒绝包含批处理控制字符的路径")

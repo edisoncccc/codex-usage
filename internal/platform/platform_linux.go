@@ -453,6 +453,149 @@ func StopService(executable, stateDir string) error {
 	return stopLinuxService(executable, stateDir, ops)
 }
 
+type currentLinuxPIDInspection struct {
+	path          string
+	info          os.FileInfo
+	pid           int
+	exists        bool
+	processExists bool
+}
+
+type currentLinuxUninstallInspection struct {
+	unit               currentLinuxUnitInspection
+	pid                currentLinuxPIDInspection
+	systemctlAvailable bool
+	managerOwned       bool
+}
+
+func inspectCurrentLinuxUninstall(executable, stateDir string, ops linuxServiceOperations) (currentLinuxUninstallInspection, error) {
+	inspection := currentLinuxUninstallInspection{}
+	unit, err := inspectCurrentLinuxUnit(executable, stateDir)
+	if err != nil {
+		return inspection, err
+	}
+	inspection.unit = unit
+	if _, err := ops.LookPath("systemctl"); err == nil {
+		inspection.systemctlAvailable = true
+		snapshot, err := inspectCurrentLinuxSystemdSnapshot(ops)
+		if err != nil {
+			return inspection, err
+		}
+		if err := validateCurrentLinuxSystemdSnapshot(unit, snapshot); err != nil {
+			return inspection, err
+		}
+		inspection.managerOwned = !snapshot.clearlyAbsent()
+	}
+	pid, err := inspectCurrentLinuxPIDFile(filepath.Join(stateDir, "codex-usage.pid"), executable, ops)
+	if err != nil {
+		return inspection, err
+	}
+	inspection.pid = pid
+	return inspection, nil
+}
+
+func inspectCurrentLinuxPIDFile(path, expectedExecutable string, ops linuxServiceOperations) (currentLinuxPIDInspection, error) {
+	inspection := currentLinuxPIDInspection{path: path}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := validateNoLinkedAncestor(path); err != nil {
+			return inspection, untrustedPreviousService("current PID metadata boundary: %v", err)
+		}
+		return inspection, nil
+	}
+	if err != nil {
+		return inspection, untrustedPreviousService("inspect current PID metadata: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return inspection, untrustedPreviousService("current PID metadata is not a safe regular file: %s", path)
+	}
+	if err := validateNoLinkedAncestor(path); err != nil {
+		return inspection, untrustedPreviousService("current PID metadata boundary: %v", err)
+	}
+	pid, err := readPIDFile(path)
+	if err != nil {
+		return inspection, untrustedPreviousService("current PID metadata is invalid: %v", err)
+	}
+	after, err := os.Lstat(path)
+	if err != nil || !os.SameFile(info, after) {
+		return inspection, untrustedPreviousService("current PID metadata changed during inspection")
+	}
+	if pid == os.Getpid() {
+		return inspection, untrustedPreviousService("PID metadata points to the installer process")
+	}
+	expectedAbsolute, err := filepath.Abs(expectedExecutable)
+	if err != nil || expectedAbsolute != filepath.Clean(expectedExecutable) {
+		return inspection, untrustedPreviousService("expected executable must be a canonical absolute path: %s", expectedExecutable)
+	}
+	inspection.info = after
+	inspection.pid = pid
+	inspection.exists = true
+	observed, err := ops.ReadProcessExecutable(pid)
+	if errors.Is(err, os.ErrNotExist) {
+		return inspection, nil
+	}
+	if err != nil {
+		return inspection, fmt.Errorf("读取 PID %d 可执行路径: %w", pid, err)
+	}
+	observedAbsolute, err := filepath.Abs(observed)
+	if err != nil || observedAbsolute != filepath.Clean(observed) || !samePlatformPath(observedAbsolute, expectedAbsolute) {
+		return inspection, untrustedPreviousService("PID %d executable mismatch: %s", pid, observed)
+	}
+	inspection.processExists = true
+	return inspection, nil
+}
+
+func revalidateCurrentLinuxPIDFile(
+	expected currentLinuxPIDInspection,
+	expectedExecutable string,
+	ops linuxServiceOperations,
+) (currentLinuxPIDInspection, error) {
+	current, err := inspectCurrentLinuxPIDFile(expected.path, expectedExecutable, ops)
+	if err != nil {
+		return current, err
+	}
+	if !current.exists {
+		return current, nil
+	}
+	if !expected.exists || expected.info == nil || current.pid != expected.pid || !os.SameFile(expected.info, current.info) {
+		return current, untrustedPreviousService("current PID metadata changed before removal")
+	}
+	if !expected.processExists && current.processExists {
+		return current, untrustedPreviousService("PID %d appeared after ownership preflight", current.pid)
+	}
+	return current, nil
+}
+
+func stopInspectedLinuxPIDFile(
+	preflight currentLinuxPIDInspection,
+	expectedExecutable string,
+	ops linuxServiceOperations,
+) (bool, error) {
+	current, err := revalidateCurrentLinuxPIDFile(preflight, expectedExecutable, ops)
+	if err != nil {
+		return false, err
+	}
+	if !current.exists || !current.processExists {
+		return false, nil
+	}
+	if err := ops.SignalProcess(current.pid, syscall.SIGTERM); err != nil {
+		return false, fmt.Errorf("停止后台服务 PID %d: %w", current.pid, err)
+	}
+	for attempt := 0; attempt < 20; attempt++ {
+		alive, err := ops.ProcessAlive(current.pid)
+		if err != nil {
+			return false, fmt.Errorf("确认后台服务 PID %d 退出: %w", current.pid, err)
+		}
+		if !alive {
+			return true, nil
+		}
+		if attempt < 19 {
+			ops.Sleep(50 * time.Millisecond)
+		}
+	}
+	return false, fmt.Errorf("等待后台服务 PID %d 退出超时", current.pid)
+}
+
 func stopLinuxService(executable, stateDir string, ops linuxServiceOperations) error {
 	preflight, err := inspectCurrentLinuxUnit(executable, stateDir)
 	if err != nil {
@@ -480,52 +623,72 @@ func stopLinuxService(executable, stateDir string, ops linuxServiceOperations) e
 
 func UninstallService(executable, stateDir string) error {
 	ops := activeLinuxServiceOperations
-	preflight, err := inspectCurrentLinuxUnit(executable, stateDir)
+	syncParent := syncServiceParent
+	preflight, err := inspectCurrentLinuxUninstall(executable, stateDir, ops)
 	if err != nil {
 		return err
 	}
-	if err := stopLinuxService(executable, stateDir, ops); err != nil {
-		return err
-	}
-	systemctlAvailable := false
-	if preflight.exists {
-		if err := validateExactCurrentLinuxUnit(preflight.path, preflight.contents); err != nil {
+	var systemdErr error
+	if preflight.managerOwned {
+		if err := validateExactCurrentLinuxUnit(preflight.unit.path, preflight.unit.contents); err != nil {
 			return err
 		}
-		if _, err := ops.LookPath("systemctl"); err == nil {
-			systemctlAvailable = true
+		output, stopErr := ops.RunSystemctl("--user", "stop", "codex-usage.service")
+		if stopErr != nil {
+			systemdErr = fmt.Errorf("systemctl --user stop: %w: %s", stopErr, strings.TrimSpace(string(output)))
+		}
+	}
+	if !preflight.managerOwned || systemdErr != nil {
+		stopped, pidErr := stopInspectedLinuxPIDFile(preflight.pid, executable, ops)
+		if pidErr != nil {
+			return pidErr
+		}
+		if systemdErr != nil && !stopped {
+			return systemdErr
+		}
+	}
+	preflight.pid, err = revalidateCurrentLinuxPIDFile(preflight.pid, executable, ops)
+	if err != nil {
+		return err
+	}
+	if preflight.unit.exists {
+		if err := validateExactCurrentLinuxUnit(preflight.unit.path, preflight.unit.contents); err != nil {
+			return err
+		}
+		if preflight.managerOwned {
 			if output, disableErr := ops.RunSystemctl("--user", "disable", "codex-usage.service"); disableErr != nil {
 				return fmt.Errorf("systemctl --user disable: %w: %s", disableErr, strings.TrimSpace(string(output)))
 			}
 		}
-		if err := validateExactCurrentLinuxUnit(preflight.path, preflight.contents); err != nil {
+		if err := validateExactCurrentLinuxUnit(preflight.unit.path, preflight.unit.contents); err != nil {
 			return err
 		}
-		if err := os.Remove(preflight.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := ops.RemoveUnit(preflight.unit.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err := SyncParent(preflight.path); err != nil {
+		if err := syncParent(preflight.unit.path); err != nil {
 			return fmt.Errorf("sync removed systemd unit: %w", err)
 		}
 	}
-	if systemctlAvailable {
+	if preflight.systemctlAvailable && preflight.unit.exists {
 		if output, reloadErr := ops.RunSystemctl("--user", "daemon-reload"); reloadErr != nil {
 			return fmt.Errorf("systemctl --user daemon-reload: %w: %s", reloadErr, strings.TrimSpace(string(output)))
 		}
 	}
-	pidPath := filepath.Join(stateDir, "codex-usage.pid")
-	if _, err := os.Lstat(pidPath); err == nil {
-		if _, err := readPIDFile(pidPath); err != nil {
-			return untrustedPreviousService("current PID metadata: %v", err)
-		}
-		if err := os.Remove(pidPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if preflight.pid.exists {
+		currentPID, err := revalidateCurrentLinuxPIDFile(preflight.pid, executable, ops)
+		if err != nil {
 			return err
 		}
-		if err := SyncParent(pidPath); err != nil {
+		if !currentPID.exists {
+			return nil
+		}
+		if err := os.Remove(currentPID.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := syncParent(currentPID.path); err != nil {
 			return fmt.Errorf("sync removed PID metadata: %w", err)
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
 	}
 	return nil
 }
@@ -561,49 +724,11 @@ func SuspendPreviousService(previous PreviousService) error {
 }
 
 func stopLinuxPIDFile(pidPath, expectedExecutable string, ops linuxServiceOperations) (bool, error) {
-	if _, err := os.Lstat(pidPath); errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	} else if err != nil {
-		return false, untrustedPreviousService("inspect PID metadata: %v", err)
-	}
-	pid, err := readPIDFile(pidPath)
+	preflight, err := inspectCurrentLinuxPIDFile(pidPath, expectedExecutable, ops)
 	if err != nil {
-		return false, untrustedPreviousService("read PID metadata: %v", err)
+		return false, err
 	}
-	if pid == os.Getpid() {
-		return false, untrustedPreviousService("PID metadata points to the installer process")
-	}
-	expectedAbsolute, err := filepath.Abs(expectedExecutable)
-	if err != nil || expectedAbsolute != filepath.Clean(expectedExecutable) {
-		return false, untrustedPreviousService("expected executable must be a canonical absolute path: %s", expectedExecutable)
-	}
-	observed, err := ops.ReadProcessExecutable(pid)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("读取 PID %d 可执行路径: %w", pid, err)
-	}
-	observedAbsolute, err := filepath.Abs(observed)
-	if err != nil || observedAbsolute != filepath.Clean(observed) || !samePlatformPath(observedAbsolute, expectedAbsolute) {
-		return false, untrustedPreviousService("PID %d executable mismatch: %s", pid, observed)
-	}
-	if err := ops.SignalProcess(pid, syscall.SIGTERM); err != nil {
-		return false, fmt.Errorf("停止后台服务 PID %d: %w", pid, err)
-	}
-	for attempt := 0; attempt < 20; attempt++ {
-		alive, err := ops.ProcessAlive(pid)
-		if err != nil {
-			return false, fmt.Errorf("确认后台服务 PID %d 退出: %w", pid, err)
-		}
-		if !alive {
-			return true, nil
-		}
-		if attempt < 19 {
-			ops.Sleep(50 * time.Millisecond)
-		}
-	}
-	return false, fmt.Errorf("等待后台服务 PID %d 退出超时", pid)
+	return stopInspectedLinuxPIDFile(preflight, expectedExecutable, ops)
 }
 
 func ResumePreviousService(previous PreviousService) error {
@@ -807,6 +932,9 @@ func OpenURL(rawURL string) error {
 }
 
 func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
+	if err := ValidateInstalledRemoval(executable, stateDir, purge); err != nil {
+		return err
+	}
 	exeAbs, err := filepath.Abs(executable)
 	if err != nil {
 		return err
@@ -815,19 +943,17 @@ func RemoveInstalledExecutable(executable, stateDir string, purge bool) error {
 	if err != nil {
 		return err
 	}
-	if filepath.Base(exeAbs) != "codex-usage" {
-		return fmt.Errorf("拒绝清理非 codex-usage 可执行文件")
-	}
-	if purge {
-		if err := ValidatePurgeStateDir(stateAbs); err != nil {
-			return err
-		}
-	}
 	if err := os.Remove(exeAbs); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	if err := SyncParent(exeAbs); err != nil {
+		return fmt.Errorf("sync removed executable: %w", err)
+	}
 	if purge {
-		return os.RemoveAll(stateAbs)
+		if err := os.RemoveAll(stateAbs); err != nil {
+			return err
+		}
+		return SyncParent(stateAbs)
 	}
 	return nil
 }

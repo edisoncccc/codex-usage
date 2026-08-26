@@ -458,6 +458,9 @@ func ValidatePurgeStateDir(stateDir string) error {
 		return err
 	}
 	clean := filepath.Clean(absolute)
+	if !filepath.IsAbs(stateDir) || !samePlatformPath(clean, filepath.Clean(stateDir)) {
+		return fmt.Errorf("拒绝 purge：状态目录必须是规范绝对路径")
+	}
 	root := filepath.Clean(filepath.VolumeName(clean) + string(os.PathSeparator))
 	if samePlatformPath(clean, root) {
 		return fmt.Errorf("拒绝 purge：状态目录不能是文件系统根目录")
@@ -465,14 +468,88 @@ func ValidatePurgeStateDir(stateDir string) error {
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && samePlatformPath(clean, filepath.Clean(home)) {
 		return fmt.Errorf("拒绝 purge：状态目录不能是用户主目录")
 	}
-	data, err := os.ReadFile(filepath.Join(absolute, ".codex-usage-state"))
+	if err := validateSafePreviousDirectory(clean); err != nil {
+		return fmt.Errorf("拒绝 purge：状态目录边界不安全: %w", err)
+	}
+	markerPath := filepath.Join(clean, ".codex-usage-state")
+	data, err := readSafeRegularFile(markerPath, 64)
 	if err != nil {
-		return fmt.Errorf("拒绝 purge：%s 缺少 codex-usage 状态标记", absolute)
+		return fmt.Errorf("拒绝 purge：%s 缺少安全的 codex-usage 状态标记: %w", clean, err)
 	}
 	if strings.TrimSpace(string(data)) != "codex-usage-state-v1" {
-		return fmt.Errorf("拒绝 purge：%s 状态标记无效", absolute)
+		return fmt.Errorf("拒绝 purge：%s 状态标记无效", clean)
 	}
 	return nil
+}
+
+// ValidateInstalledRemoval verifies the current-user program and state
+// boundaries before any uninstall hook is allowed to mutate service state.
+func ValidateInstalledRemoval(executable, stateDir string, purge bool) error {
+	executableAbsolute, err := filepath.Abs(executable)
+	if err != nil {
+		return err
+	}
+	stateAbsolute, err := filepath.Abs(stateDir)
+	if err != nil {
+		return err
+	}
+	executableAbsolute = filepath.Clean(executableAbsolute)
+	stateAbsolute = filepath.Clean(stateAbsolute)
+	if !filepath.IsAbs(executable) || !samePlatformPath(executableAbsolute, filepath.Clean(executable)) ||
+		!filepath.IsAbs(stateDir) || !samePlatformPath(stateAbsolute, filepath.Clean(stateDir)) {
+		return fmt.Errorf("existing_install_untrusted: uninstall paths must be canonical and absolute")
+	}
+	wantExecutable := "codex-usage"
+	if runtime.GOOS == "windows" {
+		wantExecutable += ".exe"
+	}
+	if !samePlatformPath(filepath.Base(executableAbsolute), wantExecutable) {
+		return fmt.Errorf("existing_install_untrusted: executable name is not %s", wantExecutable)
+	}
+	root := filepath.Clean(filepath.VolumeName(stateAbsolute) + string(os.PathSeparator))
+	if samePlatformPath(stateAbsolute, root) {
+		return fmt.Errorf("existing_install_untrusted: state directory is the filesystem root")
+	}
+	if home, homeErr := os.UserHomeDir(); homeErr == nil && samePlatformPath(stateAbsolute, filepath.Clean(home)) {
+		return fmt.Errorf("existing_install_untrusted: state directory is the user home")
+	}
+	if err := validateSafePreviousDirectory(stateAbsolute); err != nil {
+		return fmt.Errorf("existing_install_untrusted: unsafe state directory: %w", err)
+	}
+	if err := validateSafePreviousRegular(executableAbsolute); err != nil {
+		return fmt.Errorf("existing_install_untrusted: unsafe executable: %w", err)
+	}
+	if !knownCurrentUserInstallBoundary(executableAbsolute, stateAbsolute) {
+		return fmt.Errorf("existing_install_untrusted: executable is outside the current-user install boundary")
+	}
+	if purge {
+		return ValidatePurgeStateDir(stateAbsolute)
+	}
+	return nil
+}
+
+func knownCurrentUserInstallBoundary(executable, stateDir string) bool {
+	if samePlatformPath(filepath.Dir(executable), filepath.Join(stateDir, "bin")) {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		base := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
+		if base == "" {
+			base = filepath.Join(home, "AppData", "Local")
+		}
+		return samePlatformPath(stateDir, filepath.Join(base, "codex-usage")) &&
+			samePlatformPath(executable, filepath.Join(base, "Programs", "codex-usage", "codex-usage.exe"))
+	}
+	data := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
+	if data == "" {
+		data = filepath.Join(home, ".local", "share")
+	}
+	return samePlatformPath(stateDir, filepath.Join(data, "codex-usage")) &&
+		samePlatformPath(executable, filepath.Join(home, ".local", "bin", "codex-usage"))
 }
 
 func samePlatformPath(a, b string) bool {

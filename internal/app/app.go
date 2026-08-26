@@ -40,6 +40,7 @@ type CLI struct {
 	openScanState     func() (*scanRuntime, error)
 	doctorDeps        *doctorDependencies
 	installDeps       *installCommandDeps
+	uninstallDeps     *uninstallCommandDeps
 }
 
 func (c CLI) Run(args []string) int {
@@ -86,8 +87,10 @@ func (c CLI) Run(args []string) int {
 		err = c.serve(args, true)
 	case "install":
 		return c.runStructured("install", args, c.installCommand)
+	case "update":
+		return c.runStructured("update", args, c.updateCommand)
 	case "uninstall":
-		err = c.uninstall(args)
+		return c.runStructured("uninstall", args, c.uninstallCommand)
 	case "scan":
 		return c.runStructured("scan", args, c.scanCommand)
 	case "summary":
@@ -180,7 +183,7 @@ func structuredCommandPhase(args []string) (string, bool) {
 		return "", false
 	}
 	switch command {
-	case "version", "install", "scan", "doctor", "uninstall":
+	case "version", "install", "scan", "doctor", "update", "uninstall":
 		return command, true
 	default:
 		return "", false
@@ -529,46 +532,6 @@ func (c CLI) config(args []string) error {
 	default:
 		return fmt.Errorf("未知 config 子命令 %q", args[0])
 	}
-}
-
-func (c CLI) uninstall(args []string) error {
-	flags := flag.NewFlagSet("uninstall", flag.ContinueOnError)
-	flags.SetOutput(c.Stderr)
-	purge := flags.Bool("purge", false, c.tr("flag.purge"))
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	paths, err := config.ResolvePaths()
-	if err != nil {
-		return err
-	}
-	cfg, loadErr := config.Load(paths)
-	if loadErr != nil {
-		cfg = config.Default()
-	}
-	homes, _ := config.CodexHomes(cfg)
-	if err := platform.UninstallService(paths.InstalledEXE, paths.StateDir); err != nil {
-		return err
-	}
-	for _, home := range homes {
-		changed, removeErr := config.RemoveLegacyManagedOTel(home)
-		if removeErr != nil {
-			return fmt.Errorf("移除 %s managed stanza: %w", home, removeErr)
-		}
-		if changed {
-			fmt.Fprintln(c.Stdout, "已移除旧版工具管理的 OTel 配置:", home)
-		}
-	}
-	if err := platform.RemoveInstalledExecutable(paths.InstalledEXE, paths.StateDir, *purge); err != nil {
-		return err
-	}
-	if *purge {
-		fmt.Fprintln(c.Stdout, "已卸载服务、工具和统计数据（不可从工具内恢复）。")
-	} else {
-		fmt.Fprintln(c.Stdout, "已卸载服务和工具；统计库保留在:", paths.Database)
-		fmt.Fprintln(c.Stdout, "如需删除数据，请显式运行 codex-usage uninstall --purge。")
-	}
-	return nil
 }
 
 func copyExecutable(source, destination string) error {

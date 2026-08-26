@@ -30,7 +30,8 @@ var messages = map[Locale]map[string]string{
   codex-usage scan [--rebuild] [--json] 增量扫描本机 Codex session
   codex-usage doctor                  检查路径、JSONL 数据源与服务状态
   codex-usage config add-home PATH    添加一个额外 CODEX_HOME
-  codex-usage uninstall [--purge]     卸载；默认保留统计库
+  codex-usage update --check|--yes [--json] 显式检查或执行更新
+  codex-usage uninstall [--purge] [--yes] [--json] 卸载；默认保留统计库与配置
   codex-usage serve                   前台运行本地服务
   codex-usage version [--json]        显示版本或输出机器可读构建身份
 
@@ -41,18 +42,34 @@ var messages = map[Locale]map[string]string{
   “电脑”是运行 Codex 客户端和 codex-usage 的主机；不是 shell/tool 实际执行的远程环境。
   不读取 auth.json、prompt、回复、reasoning 或工具输出；不读取真实账单或账号配额，
   仅按本机 Token 与内置 Standard API 价格提供等价成本估算。`,
-		"serve.running":          "Codex Usage 正在 %s 运行；按 Ctrl+C 停止。\n",
-		"open.start":             "启动本地服务: %w",
-		"open.notReady":          "本地服务未在 12 秒内就绪；请运行 codex-usage doctor",
-		"open.opened":            "已打开",
-		"open.noGUI":             "无图形环境时，在你的电脑运行：ssh -N -L %d:127.0.0.1:%d %s@%s\n",
-		"flag.rebuild":           "清空派生统计后从全部 JSONL 重建",
-		"flag.json":              "输出 JSON",
-		"flag.csv":               "输出 CSV",
-		"flag.since":             "范围：7d、30d、today、all 或 RFC3339",
-		"flag.skipScan":          "跳过首次历史扫描",
-		"flag.yes":               "确认已获得用户授权并执行",
-		"flag.purge":             "同时删除统计库和工具配置",
+		"serve.running": "Codex Usage 正在 %s 运行；按 Ctrl+C 停止。\n",
+		"open.start":    "启动本地服务: %w",
+		"open.notReady": "本地服务未在 12 秒内就绪；请运行 codex-usage doctor",
+		"open.opened":   "已打开",
+		"open.noGUI":    "无图形环境时，在你的电脑运行：ssh -N -L %d:127.0.0.1:%d %s@%s\n",
+		"flag.rebuild":  "清空派生统计后从全部 JSONL 重建",
+		"flag.json":     "输出 JSON",
+		"flag.csv":      "输出 CSV",
+		"flag.since":    "范围：7d、30d、today、all 或 RFC3339",
+		"flag.skipScan": "跳过首次历史扫描",
+		"flag.yes":      "确认已获得用户授权并执行",
+		"flag.purge":    "同时删除统计库和工具配置",
+
+		"flag.updateCheck":                  "只读检查可用更新",
+		"update.disabled":                   "当前仓库仅发布源码（source-only），可信二进制更新渠道尚未启用；请阅读 INSTALL.md。不会联网、下载、修改文件或自动降级为源码构建。",
+		"uninstall.confirm.required":        "需要显式确认；请检查卸载路径后使用 --yes",
+		"uninstall.confirm.declined":        "未获得卸载确认",
+		"uninstall.confirm.title":           "卸载前确认",
+		"uninstall.confirm.installPath":     "程序路径: %s",
+		"uninstall.confirm.statePath":       "状态目录: %s",
+		"uninstall.confirm.preserve":        "将保留统计数据库和配置: %s",
+		"uninstall.confirm.purge":           "将永久删除此规范状态目录中的统计数据库和配置: %s",
+		"uninstall.confirm.prompt":          "是否继续？输入 yes 或 是: ",
+		"uninstall.complete.preserved":      "卸载已完成；统计数据库和配置保留在: %s",
+		"uninstall.complete.purged":         "卸载已完成；程序、统计数据库和配置已删除。",
+		"uninstall.complete.scheduled":      "卸载已安排；程序将在当前进程退出后删除，统计数据库和配置保留在: %s",
+		"uninstall.complete.purgeScheduled": "卸载已安排；程序和状态目录将在当前进程退出后删除: %s",
+
 		"summary.conflict":       "--json 与 --csv 不能同时使用",
 		"summary.title":          "Codex Usage · 当前电脑 · %s\n",
 		"summary.cached":         "  Cached Input    %s  (Input 的子集)\n",
@@ -158,7 +175,8 @@ Usage:
   codex-usage scan [--rebuild] [--json] Incrementally scan local Codex sessions
   codex-usage doctor                  Check paths, JSONL sources, and service state
   codex-usage config add-home PATH    Add another CODEX_HOME
-  codex-usage uninstall [--purge]     Uninstall; keep the usage database by default
+  codex-usage update --check|--yes [--json] Explicitly check for or apply an update
+  codex-usage uninstall [--purge] [--yes] [--json] Uninstall; keep the usage database and config by default
   codex-usage serve                   Run the local service in the foreground
   codex-usage version [--json]        Print the version or machine-readable build identity
 
@@ -169,18 +187,34 @@ Boundary:
   “Machine” means the host running the Codex client and codex-usage, not a remote shell/tool target.
   Codex Usage never reads auth.json, prompts, replies, reasoning, or tool output. It does not read
   bills or account quotas; cost is only a Standard API-equivalent estimate of local token usage.`,
-		"serve.running":          "Codex Usage is running at %s; press Ctrl+C to stop.\n",
-		"open.start":             "start local service: %w",
-		"open.notReady":          "the local service was not ready within 12 seconds; run codex-usage doctor",
-		"open.opened":            "Opened",
-		"open.noGUI":             "With no graphical session, run this on your computer: ssh -N -L %d:127.0.0.1:%d %s@%s\n",
-		"flag.rebuild":           "Clear derived accounting and rebuild it from all JSONL files",
-		"flag.json":              "Output JSON",
-		"flag.csv":               "Output CSV",
-		"flag.since":             "Range: 7d, 30d, today, all, or RFC3339",
-		"flag.skipScan":          "Skip the first historical scan",
-		"flag.yes":               "Confirm user authorization and proceed",
-		"flag.purge":             "Also delete the usage database and tool configuration",
+		"serve.running": "Codex Usage is running at %s; press Ctrl+C to stop.\n",
+		"open.start":    "start local service: %w",
+		"open.notReady": "the local service was not ready within 12 seconds; run codex-usage doctor",
+		"open.opened":   "Opened",
+		"open.noGUI":    "With no graphical session, run this on your computer: ssh -N -L %d:127.0.0.1:%d %s@%s\n",
+		"flag.rebuild":  "Clear derived accounting and rebuild it from all JSONL files",
+		"flag.json":     "Output JSON",
+		"flag.csv":      "Output CSV",
+		"flag.since":    "Range: 7d, 30d, today, all, or RFC3339",
+		"flag.skipScan": "Skip the first historical scan",
+		"flag.yes":      "Confirm user authorization and proceed",
+		"flag.purge":    "Also delete the usage database and tool configuration",
+
+		"flag.updateCheck":                  "Only check for an available update",
+		"update.disabled":                   "This repository is source-only; the trusted binary update channel is not enabled. Read INSTALL.md. No network request, download, file modification, or automatic source-build fallback was attempted.",
+		"uninstall.confirm.required":        "explicit confirmation is required; review the uninstall paths and use --yes",
+		"uninstall.confirm.declined":        "uninstall was not confirmed",
+		"uninstall.confirm.title":           "Uninstall confirmation",
+		"uninstall.confirm.installPath":     "Program path: %s",
+		"uninstall.confirm.statePath":       "State directory: %s",
+		"uninstall.confirm.preserve":        "The usage database and configuration will be preserved at: %s",
+		"uninstall.confirm.purge":           "The usage database and configuration in this canonical state directory will be permanently deleted: %s",
+		"uninstall.confirm.prompt":          "Proceed? Enter yes: ",
+		"uninstall.complete.preserved":      "Uninstall complete; the usage database and configuration remain at: %s",
+		"uninstall.complete.purged":         "Uninstall complete; the program, usage database, and configuration were removed.",
+		"uninstall.complete.scheduled":      "Uninstall scheduled; the program will be removed after this process exits. The usage database and configuration remain at: %s",
+		"uninstall.complete.purgeScheduled": "Uninstall scheduled; the program and state directory will be removed after this process exits: %s",
+
 		"summary.conflict":       "--json and --csv cannot be used together",
 		"summary.title":          "Codex Usage · this machine · %s\n",
 		"summary.cached":         "  Cached Input    %s  (subset of Input)\n",
