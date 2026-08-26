@@ -58,7 +58,7 @@ func TestDashboardAPIAndExport(t *testing.T) {
 			savedOverrides = value
 			return nil
 		},
-		Address: "127.0.0.1", Port: 43189, Version: "test",
+		Address: "127.0.0.1", Port: 43189, BuildIdentity: BuildIdentity{Version: "test"},
 	}
 	httpServer := httptest.NewServer(srv.Handler())
 	defer httpServer.Close()
@@ -293,6 +293,58 @@ func TestDashboardAPIAndExport(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("cross-origin pricing update was not blocked: %d", response.StatusCode)
+	}
+}
+
+func TestHealthzReturnsCompleteBuildIdentity(t *testing.T) {
+	identity := BuildIdentity{
+		Version:   "2.3.6",
+		Commit:    "0123456789abcdef0123456789abcdef01234567",
+		Dirty:     false,
+		BuildDate: "2026-08-26T00:00:00Z",
+		OS:        "windows",
+		Arch:      "amd64",
+	}
+	server := &Server{BuildIdentity: identity}
+	handler := server.Handler()
+	server.BuildIdentity = BuildIdentity{Version: "mutated-after-handler-construction"}
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("content-type=%q", contentType)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"ok":         true,
+		"version":    identity.Version,
+		"commit":     identity.Commit,
+		"dirty":      identity.Dirty,
+		"build_date": identity.BuildDate,
+		"os":         identity.OS,
+		"arch":       identity.Arch,
+	}
+	if len(payload) != len(want) {
+		t.Fatalf("health fields=%#v want=%#v", payload, want)
+	}
+	for key, value := range want {
+		if payload[key] != value {
+			t.Fatalf("health[%q]=%#v want=%#v; payload=%#v", key, payload[key], value, payload)
+		}
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/healthz", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != http.MethodGet {
+		t.Fatalf("POST /healthz status=%d allow=%q", response.Code, response.Header().Get("Allow"))
 	}
 }
 

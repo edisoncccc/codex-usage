@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -40,6 +38,7 @@ type CLI struct {
 	HeartbeatInterval time.Duration
 	locale            cliui.Locale
 	openScanState     func() (*scanRuntime, error)
+	doctorDeps        *doctorDependencies
 }
 
 func (c CLI) Run(args []string) int {
@@ -93,7 +92,7 @@ func (c CLI) Run(args []string) int {
 	case "summary":
 		err = c.summary(args)
 	case "doctor":
-		err = c.doctor(args)
+		return c.runStructured("doctor", args, c.doctorCommand)
 	case "config":
 		err = c.config(args)
 	case "version", "--version", "-v":
@@ -216,6 +215,10 @@ func openState() (*runtimeState, error) {
 	if err != nil {
 		return nil, err
 	}
+	identity, err := currentBuildIdentity()
+	if err != nil {
+		return nil, err
+	}
 	st, err := store.Open(paths.Database)
 	if err != nil {
 		return nil, err
@@ -253,7 +256,11 @@ func openState() (*runtimeState, error) {
 			current.PricingOverrides = overrides
 			return config.Save(paths, current)
 		},
-		Address: cfg.ListenAddress, Port: cfg.Port, Version: Version,
+		Address: cfg.ListenAddress, Port: cfg.Port,
+		BuildIdentity: usageServer.BuildIdentity{
+			Version: identity.Version, Commit: identity.Commit, Dirty: identity.Dirty,
+			BuildDate: identity.BuildDate, OS: identity.OS, Arch: identity.Arch,
+		},
 	}
 	return &runtimeState{
 		paths: paths, cfg: cfg, homes: homes, store: st,
@@ -430,28 +437,13 @@ func (c CLI) open(args []string) error {
 }
 
 func healthOK(baseURL string) bool {
-	client := &http.Client{
-		Timeout: 650 * time.Millisecond,
-		Transport: &http.Transport{
-			Proxy:       nil,
-			DialContext: (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext,
-		},
-	}
-	response, err := client.Get(baseURL + "/healthz")
+	identity, err := currentBuildIdentity()
 	if err != nil {
 		return false
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return false
-	}
-	var payload struct {
-		OK bool `json:"ok"`
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&payload); err != nil {
-		return false
-	}
-	return payload.OK
+	ctx, cancel := context.WithTimeout(context.Background(), 650*time.Millisecond)
+	defer cancel()
+	return probeIdentity(ctx, baseURL, identity) == nil
 }
 
 func (c CLI) summary(args []string) error {
@@ -710,131 +702,6 @@ func (c CLI) uninstall(args []string) error {
 	} else {
 		fmt.Fprintln(c.Stdout, "已卸载服务和工具；统计库保留在:", paths.Database)
 		fmt.Fprintln(c.Stdout, "如需删除数据，请显式运行 codex-usage uninstall --purge。")
-	}
-	return nil
-}
-
-func (c CLI) doctor(args []string) error {
-	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	flags.SetOutput(c.Stderr)
-	asJSON := flags.Bool("json", false, c.tr("flag.json"))
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if *asJSON {
-		// Structured output stays byte-compatible with the pre-localization
-		// diagnostic vocabulary; --lang only affects human-readable output.
-		c.locale = cliui.Chinese
-	}
-	paths, err := config.ResolvePaths()
-	if err != nil {
-		return err
-	}
-	cfg, err := config.Load(paths)
-	if err != nil {
-		return err
-	}
-	homes, err := config.CodexHomes(cfg)
-	if err != nil {
-		return err
-	}
-	type check struct {
-		Level  string `json:"level"`
-		Name   string `json:"name"`
-		Detail string `json:"detail"`
-	}
-	var checks []check
-	add := func(level, name, detail string) { checks = append(checks, check{level, name, detail}) }
-	if cfg.ListenAddress == "127.0.0.1" || cfg.ListenAddress == "localhost" {
-		add("ok", "loopback", c.tr("doctor.loopbackOK", cfg.ListenAddress, cfg.Port))
-	} else {
-		add("error", "loopback", c.tr("doctor.loopbackError"))
-	}
-	st, dbErr := store.Open(paths.Database)
-	if dbErr != nil {
-		add("error", "database", dbErr.Error())
-	} else {
-		if markerErr := config.EnsureStateMarker(paths); markerErr != nil {
-			add("warn", "state_marker", markerErr.Error())
-		}
-		if permissionErr := platform.LockDown(paths.StateDir); permissionErr != nil {
-			add("warn", "permissions", permissionErr.Error())
-		} else {
-			add("ok", "permissions", c.tr("doctor.permissions"))
-		}
-		status, statusErr := st.Status(context.Background())
-		if statusErr != nil {
-			add("error", "database", statusErr.Error())
-		} else {
-			add("ok", "machine", fmt.Sprintf("%s / %s (%s/%s)", status.Machine.Label, status.Machine.ID, status.Machine.OS, status.Machine.Arch))
-			if currentHostname, hostErr := os.Hostname(); hostErr == nil &&
-				currentHostname != "" && !strings.EqualFold(currentHostname, status.Machine.Hostname) {
-				add("warn", "machine_identity",
-					c.tr("doctor.machineHost", status.Machine.Hostname, currentHostname))
-			}
-			if status.Machine.OS != runtime.GOOS || status.Machine.Arch != runtime.GOARCH {
-				add("warn", "machine_identity",
-					c.tr("doctor.machinePlatform",
-						status.Machine.OS, status.Machine.Arch, runtime.GOOS, runtime.GOARCH))
-			}
-			add("ok", "database", c.tr("doctor.database", paths.Database, status.EventCount, status.SessionCount))
-			add("ok", "accounting", c.tr("doctor.jsonlOnly"))
-			if status.WarningCount > 0 {
-				add("warn", "coverage", c.tr("doctor.coverage", status.WarningCount))
-			}
-		}
-		st.Close()
-	}
-
-	sessionHomes := map[string]string{}
-	for _, home := range homes {
-		info, statErr := os.Stat(home)
-		if statErr != nil || !info.IsDir() {
-			add("warn", "codex_home", c.tr("doctor.homeUnreadable", home))
-			continue
-		}
-		discovery := usage.DiscoverHome(context.Background(), home)
-		if discovery.Warning != "" {
-			add("warn", "state_db", c.tr("doctor.stateWarning", home, discovery.Warning, len(discovery.Paths)))
-		} else if discovery.StateDB != "" && !discovery.Fallback {
-			add("ok", "state_db", c.tr("doctor.stateDB", discovery.StateDB, len(discovery.Paths)))
-		} else {
-			add("warn", "state_db", c.tr("doctor.stateMissing", home, len(discovery.Paths)))
-		}
-		for _, session := range discovery.Sessions {
-			if previous, ok := sessionHomes[session.SessionID]; ok && !sameFilePath(previous, home) {
-				add("warn", "shared_history",
-					c.tr("doctor.sharedHistory", session.SessionID, previous, home))
-				break
-			}
-			sessionHomes[session.SessionID] = home
-		}
-		legacyManaged, legacyErr := config.HasLegacyManagedOTel(home)
-		if legacyErr != nil {
-			add("warn", "codex_config", legacyErr.Error())
-		} else if legacyManaged {
-			add("warn", "codex_config", c.tr("doctor.legacyManaged", home))
-		} else {
-			add("ok", "codex_config", c.tr("doctor.configUntouched", home))
-		}
-		if runtime.GOOS == "linux" && strings.Contains(filepath.ToSlash(home), "/mnt/") {
-			add("warn", "shared_home", c.tr("doctor.sharedHome", home))
-		}
-	}
-	if healthOK(fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)) {
-		add("ok", "service", c.tr("doctor.serviceOK"))
-	} else {
-		add("warn", "service", c.tr("doctor.serviceDown"))
-	}
-	add("ok", "privacy_schema", c.tr("doctor.privacy"))
-	add("ok", "network", c.tr("doctor.network"))
-
-	if *asJSON {
-		return writePrettyJSON(c.Stdout, map[string]any{"checks": checks, "paths": paths, "homes": homes})
-	}
-	for _, item := range checks {
-		symbol := map[string]string{"ok": "✓", "warn": "!", "error": "✗"}[item.Level]
-		fmt.Fprintf(c.Stdout, "%s %-16s %s\n", symbol, item.Name, item.Detail)
 	}
 	return nil
 }

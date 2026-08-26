@@ -29,7 +29,7 @@ type Server struct {
 	Homes                func() ([]string, error)
 	Address              string
 	Port                 int
-	Version              string
+	BuildIdentity        BuildIdentity
 	LoadPricingOverrides func() (map[string]pricing.Override, error)
 	SavePricingOverrides func(map[string]pricing.Override) error
 
@@ -44,6 +44,20 @@ type Server struct {
 	scanning             atomic.Bool
 }
 
+type BuildIdentity struct {
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	Dirty     bool   `json:"dirty"`
+	BuildDate string `json:"build_date"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+}
+
+type HealthResponse struct {
+	OK bool `json:"ok"`
+	BuildIdentity
+}
+
 func (s *Server) URL() string {
 	host := s.Address
 	if host == "" || host == "localhost" {
@@ -53,9 +67,14 @@ func (s *Server) URL() string {
 }
 
 func (s *Server) Handler() http.Handler {
+	buildIdentity := s.BuildIdentity
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.Version})
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w, http.MethodGet)
+			return
+		}
+		writeJSON(w, http.StatusOK, HealthResponse{OK: true, BuildIdentity: buildIdentity})
 	})
 	mux.HandleFunc("/api/v1/status", s.handleStatus)
 	mux.HandleFunc("/api/v1/summary", s.handleSummary)
@@ -140,7 +159,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	homes, _ := s.Homes()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":          s.Version,
+		"version":          s.BuildIdentity.Version,
 		"url":              s.URL(),
 		"scanning":         s.scanning.Load() || s.Scanner.Busy(),
 		"status":           status,
