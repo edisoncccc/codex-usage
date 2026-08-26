@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/zJay26/codex-usage/internal/platform"
 )
 
 type PreviousPaths struct {
@@ -33,6 +35,43 @@ type MigrationResult struct {
 	BackupsMoved      bool
 	PreviousStateGone bool
 }
+
+type migrationMove struct {
+	source      string
+	target      string
+	sourceRoot  string
+	targetRoot  string
+	sourceInfo  os.FileInfo
+	createdDirs []string
+}
+
+type MigrationPlan struct {
+	paths    Paths
+	previous PreviousPaths
+	result   MigrationResult
+	moves    []migrationMove
+}
+
+type MigrationTransaction struct {
+	plan       MigrationPlan
+	completed  []migrationMove
+	state      migrationTransactionState
+	syncParent func(string) error
+}
+
+type migrationTransactionState uint8
+
+const (
+	migrationTransactionActive migrationTransactionState = iota
+	migrationTransactionRolledBack
+	migrationTransactionCommitting
+	migrationTransactionCommitted
+)
+
+var (
+	removePreviousStateDirForMigration = removePreviousStateDirIfEmpty
+	syncMigrationParent                = platform.SyncParent
+)
 
 func previousProductName() string { return "codex-" + "me" + "ter" }
 
@@ -97,150 +136,812 @@ func ResolvePreviousPaths() (PreviousPaths, error) {
 	}, nil
 }
 
-func MigratePreviousState(paths Paths, previous PreviousPaths) (MigrationResult, error) {
-	result := MigrationResult{}
-	currentPreviousDatabase := filepath.Join(paths.StateDir, previousDatabaseName())
-	if conflict, err := databaseConflict(currentPreviousDatabase, paths.Database); err != nil {
-		return result, err
-	} else if conflict {
-		result.Found = true
-		result.DatabaseConflict = true
-		return result, nil
+func InspectPreviousState(paths Paths, previous PreviousPaths) (MigrationPlan, MigrationResult, error) {
+	plan, result, err := inspectPreviousState(paths, previous)
+	if err != nil {
+		return plan, result, err
 	}
-	if moved, err := moveDatabaseSet(currentPreviousDatabase, paths.Database); err != nil {
-		return result, err
-	} else if moved {
-		result.Found = true
-		result.DatabaseMoved = true
+	if err := sealMigrationPlan(&plan); err != nil {
+		return plan, result, err
+	}
+	return plan, result, nil
+}
+
+func inspectPreviousState(paths Paths, previous PreviousPaths) (MigrationPlan, MigrationResult, error) {
+	plan := MigrationPlan{paths: paths, previous: previous}
+	inspection := MigrationResult{}
+	if err := validateCurrentMigrationPaths(paths); err != nil {
+		return plan, inspection, err
 	}
 
-	info, err := os.Stat(previous.StateDir)
+	currentPreviousDatabase := filepath.Join(paths.StateDir, previousDatabaseName())
+	databaseMoves, found, conflict, err := inspectDatabaseMoves(currentPreviousDatabase, paths.Database, plan.moves)
+	if err != nil {
+		return plan, inspection, err
+	}
+	if found {
+		inspection.Found = true
+		plan.result.Found = true
+	}
+	if conflict {
+		inspection.DatabaseConflict = true
+		plan.result.DatabaseConflict = true
+		return plan, inspection, nil
+	}
+	if len(databaseMoves) != 0 {
+		plan.moves = append(plan.moves, databaseMoves...)
+		plan.result.DatabaseMoved = true
+	}
+
+	previousInfo, err := os.Lstat(previous.StateDir)
 	if errors.Is(err, os.ErrNotExist) {
-		return result, nil
+		return plan, inspection, nil
 	}
 	if err != nil {
-		return result, err
+		return plan, inspection, err
 	}
-	if !info.IsDir() {
-		return result, fmt.Errorf("旧版状态路径不是目录: %s", previous.StateDir)
+	if previousInfo.Mode()&os.ModeSymlink != 0 || !previousInfo.IsDir() {
+		return plan, inspection, fmt.Errorf("旧版状态路径不是安全目录: %s", previous.StateDir)
 	}
 	if samePath(previous.StateDir, paths.StateDir) {
-		return result, nil
+		return plan, inspection, nil
+	}
+	if err := validatePreviousMigrationPaths(previous); err != nil {
+		return plan, inspection, err
 	}
 	if err := validatePreviousStateDir(previous); err != nil {
-		return result, err
+		return plan, inspection, err
 	}
-	result.Found = true
-	if err := EnsurePrivateDir(paths.StateDir); err != nil {
-		return result, err
+	inspection.Found = true
+	plan.result.Found = true
+
+	databaseMoves, found, conflict, err = inspectDatabaseMoves(previous.Database, paths.Database, plan.moves)
+	if err != nil {
+		return plan, inspection, err
 	}
-	if conflict, err := databaseConflict(previous.Database, paths.Database); err != nil {
-		return result, err
-	} else if conflict {
-		result.DatabaseConflict = true
-		return result, nil
+	if conflict {
+		inspection.DatabaseConflict = true
+		plan.result.DatabaseConflict = true
+		plan.moves = nil
+		plan.result.DatabaseMoved = false
+		return plan, inspection, nil
+	}
+	if found {
+		plan.moves = append(plan.moves, databaseMoves...)
+		plan.result.DatabaseMoved = true
 	}
 
-	moved, err := moveDatabaseSet(previous.Database, paths.Database)
+	configMove, found, err := inspectConfigMove(previous.ConfigPath, paths.ConfigPath, paths.BackupDir, plan.moves)
+	if err != nil {
+		return plan, inspection, err
+	}
+	if found {
+		plan.moves = append(plan.moves, configMove)
+		plan.result.ConfigMoved = true
+	}
+
+	backupMove, found, err := inspectBackupsMove(previous.BackupDir, paths.BackupDir, plan.moves)
+	if err != nil {
+		return plan, inspection, err
+	}
+	if found {
+		plan.moves = append(plan.moves, backupMove)
+		plan.result.BackupsMoved = true
+	}
+
+	logMove, found, err := inspectLogMove(filepath.Join(previous.StateDir, "daemon.log"), paths.StateDir, plan.moves)
+	if err != nil {
+		return plan, inspection, err
+	}
+	if found {
+		plan.moves = append(plan.moves, logMove)
+	}
+	return plan, inspection, nil
+}
+
+func BeginPreviousStateMigration(plan MigrationPlan) (*MigrationTransaction, error) {
+	transaction := &MigrationTransaction{
+		plan: plan, state: migrationTransactionActive, syncParent: syncMigrationParent,
+	}
+	if plan.result.DatabaseConflict {
+		return nil, errors.New("旧版与当前数据库同时存在，拒绝覆盖")
+	}
+	for _, plannedMove := range plan.moves {
+		move := plannedMove
+		moved, err := executeMigrationMove(&move, transaction.syncParent)
+		if moved {
+			transaction.completed = append(transaction.completed, move)
+		}
+		if err != nil {
+			primary := fmt.Errorf("迁移 %s 到 %s: %w", move.source, move.target, err)
+			if rollbackErr := transaction.Rollback(); rollbackErr != nil {
+				return nil, errors.Join(primary, fmt.Errorf("migration rollback: %w", rollbackErr))
+			}
+			return nil, primary
+		}
+	}
+	return transaction, nil
+}
+
+func (m *MigrationTransaction) Rollback() error {
+	if m == nil {
+		return nil
+	}
+	switch m.state {
+	case migrationTransactionRolledBack:
+		return nil
+	case migrationTransactionCommitting, migrationTransactionCommitted:
+		return errors.New("migration transaction cannot rollback after commit started")
+	case migrationTransactionActive:
+	default:
+		return errors.New("migration transaction has invalid state")
+	}
+	if len(m.completed) == 0 {
+		m.state = migrationTransactionRolledBack
+		return nil
+	}
+	var rollbackErrors []error
+	remaining := make([]migrationMove, 0, len(m.completed))
+	for index := len(m.completed) - 1; index >= 0; index-- {
+		move := m.completed[index]
+		restored, err := reverseMigrationMove(move, m.syncParent)
+		if err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("restore %s from %s: %w", move.source, move.target, err))
+		}
+		if !restored {
+			remaining = append(remaining, move)
+		}
+	}
+	for left, right := 0, len(remaining)-1; left < right; left, right = left+1, right-1 {
+		remaining[left], remaining[right] = remaining[right], remaining[left]
+	}
+	m.completed = remaining
+	if len(m.completed) == 0 {
+		m.state = migrationTransactionRolledBack
+	}
+	return errors.Join(rollbackErrors...)
+}
+
+func (m *MigrationTransaction) Commit() (MigrationResult, error) {
+	if m == nil {
+		return MigrationResult{}, nil
+	}
+	switch m.state {
+	case migrationTransactionRolledBack:
+		return m.plan.result, errors.New("migration transaction cannot commit after rollback")
+	case migrationTransactionCommitted:
+		return m.plan.result, nil
+	case migrationTransactionActive:
+		m.state = migrationTransactionCommitting
+	case migrationTransactionCommitting:
+	default:
+		return m.plan.result, errors.New("migration transaction has invalid state")
+	}
+	result := m.plan.result
+	if !result.Found {
+		m.state = migrationTransactionCommitted
+		return result, nil
+	}
+	if err := EnsureStateMarker(m.plan.paths); err != nil {
+		return result, fmt.Errorf("写入当前状态标记: %w", err)
+	}
+	if err := m.syncParent(filepath.Join(m.plan.paths.StateDir, ".codex-usage-state")); err != nil {
+		return result, fmt.Errorf("同步当前状态标记目录: %w", err)
+	}
+	if err := removePreviousMigrationMarker(m.plan.previous, m.syncParent); err != nil {
+		return result, err
+	}
+	removed, err := removePreviousStateDirForMigration(m.plan.previous.StateDir)
 	if err != nil {
 		return result, err
 	}
-	result.DatabaseMoved = result.DatabaseMoved || moved
-
-	if moved, err = movePreviousConfig(previous.ConfigPath, paths.ConfigPath, paths.BackupDir); err != nil {
-		return result, err
-	}
-	result.ConfigMoved = moved
-	if moved, err = movePreviousBackups(previous.BackupDir, paths.BackupDir); err != nil {
-		return result, err
-	}
-	result.BackupsMoved = moved
-	if err := movePreviousLog(filepath.Join(previous.StateDir, "daemon.log"), paths.StateDir); err != nil {
-		return result, err
-	}
-
-	for _, obsolete := range []string{previous.PIDPath, previous.LauncherPath, previous.MarkerPath} {
-		if err := os.Remove(obsolete); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return result, err
+	if removed {
+		if err := m.syncParent(m.plan.previous.StateDir); err != nil {
+			return result, fmt.Errorf("同步已移除旧版状态目录: %w", err)
 		}
 	}
-	entries, readErr := os.ReadDir(previous.StateDir)
-	if readErr != nil {
-		return result, readErr
-	}
-	if readErr == nil && len(entries) == 0 {
-		if err := os.Remove(previous.StateDir); err != nil {
-			return result, err
-		}
-		result.PreviousStateGone = true
-	}
-	if err := EnsureStateMarker(paths); err != nil {
-		return result, err
-	}
+	result.PreviousStateGone = removed
+	m.plan.result = result
+	m.state = migrationTransactionCommitted
 	return result, nil
 }
 
-func movePreviousConfig(source, activeTarget, backupDir string) (bool, error) {
-	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	} else if err != nil {
-		return false, err
+func MigratePreviousState(paths Paths, previous PreviousPaths) (MigrationResult, error) {
+	plan, inspection, err := InspectPreviousState(paths, previous)
+	if err != nil || inspection.DatabaseConflict || !inspection.Found {
+		return inspection, err
 	}
-	if _, err := os.Stat(activeTarget); errors.Is(err, os.ErrNotExist) {
-		return moveIfTargetMissing(source, activeTarget)
-	} else if err != nil {
-		return false, err
+	transaction, err := BeginPreviousStateMigration(plan)
+	if err != nil {
+		return inspection, err
 	}
-	if err := EnsurePrivateDir(backupDir); err != nil {
-		return false, err
-	}
-	target := filepath.Join(backupDir, "previous-config-"+randomSuffix()+".json")
-	if err := os.Rename(source, target); err != nil {
-		return false, err
-	}
-	return true, nil
+	return transaction.Commit()
 }
 
-func movePreviousBackups(source, target string) (bool, error) {
-	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	} else if err != nil {
-		return false, err
+func validateCurrentMigrationPaths(paths Paths) error {
+	if strings.TrimSpace(paths.StateDir) == "" {
+		return errors.New("当前状态目录为空")
 	}
-	if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
-		return moveIfTargetMissing(source, target)
-	} else if err != nil {
-		return false, err
+	if err := validateMigrationOwnedRoot(paths.StateDir, "当前状态目录"); err != nil {
+		return err
 	}
-	if err := EnsurePrivateDir(target); err != nil {
-		return false, err
+	for name, path := range map[string]string{
+		"config":   paths.ConfigPath,
+		"database": paths.Database,
+		"backups":  paths.BackupDir,
+	} {
+		if err := validateMigrationOwnedPath(paths.StateDir, path); err != nil {
+			return fmt.Errorf("当前%s路径越过状态目录边界: %s: %w", name, path, err)
+		}
 	}
-	archive := filepath.Join(target, "previous-installation-"+randomSuffix())
-	if err := os.Rename(source, archive); err != nil {
-		return false, err
-	}
-	return true, nil
+	return nil
 }
 
-func databaseConflict(source, target string) (bool, error) {
-	sourceExists, err := regularFileExists(source)
-	if err != nil || !sourceExists {
-		return false, err
+func validatePreviousMigrationPaths(previous PreviousPaths) error {
+	if err := validateMigrationOwnedRoot(previous.StateDir, "旧版状态目录"); err != nil {
+		return err
 	}
-	targetExists, err := regularFileExists(target)
-	return targetExists, err
+	for name, path := range map[string]string{
+		"config":   previous.ConfigPath,
+		"database": previous.Database,
+		"backups":  previous.BackupDir,
+		"pid":      previous.PIDPath,
+		"launcher": previous.LauncherPath,
+		"marker":   previous.MarkerPath,
+	} {
+		if err := validateMigrationOwnedPath(previous.StateDir, path); err != nil {
+			return fmt.Errorf("旧版%s路径越过状态目录边界: %s: %w", name, path, err)
+		}
+	}
+	return nil
 }
 
-func regularFileExists(path string) (bool, error) {
-	info, err := os.Stat(path)
+func validateMigrationOwnedRoot(root, label string) error {
+	if err := validateMigrationCanonicalPath(root); err != nil {
+		return fmt.Errorf("%s无效: %w", label, err)
+	}
+	if err := validateExistingMigrationDirectoryChain(root); err != nil {
+		return fmt.Errorf("%s包含 symlink/reparse 或非目录 ancestor: %w", label, err)
+	}
+	return nil
+}
+
+func validateMigrationOwnedPath(root, path string) error {
+	if err := validateMigrationCanonicalPath(path); err != nil {
+		return err
+	}
+	if !pathWithin(root, path) {
+		return fmt.Errorf("path is outside owned root")
+	}
+	if err := validateExistingMigrationDirectoryChain(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path is a symlink/reparse point: %s", path)
+		}
+		resolved, resolveErr := filepath.EvalSymlinks(path)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if !samePathRaw(filepath.Clean(resolved), filepath.Clean(path)) {
+			return fmt.Errorf("path resolves through symlink/reparse point: %s", path)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func validateMigrationCanonicalPath(path string) error {
+	if strings.TrimSpace(path) == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("path must be absolute: %s", path)
+	}
+	clean := filepath.Clean(path)
+	if !samePathRaw(path, clean) {
+		return fmt.Errorf("path must be clean: %s", path)
+	}
+	return nil
+}
+
+func validateExistingMigrationDirectoryChain(directory string) error {
+	current := filepath.Clean(directory)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("unsafe directory ancestor: %s", current)
+			}
+			resolved, resolveErr := filepath.EvalSymlinks(current)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			if !samePathRaw(filepath.Clean(resolved), current) {
+				return fmt.Errorf("symlink/reparse directory ancestor: %s", current)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil
+		}
+		current = parent
+	}
+}
+
+func samePathRaw(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func pathWithin(root, path string) bool {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
+		return false
+	}
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." || relative == ".." {
+		return false
+	}
+	return !strings.HasPrefix(relative, ".."+string(os.PathSeparator)) && !filepath.IsAbs(relative)
+}
+
+func sealMigrationPlan(plan *MigrationPlan) error {
+	if plan == nil {
+		return nil
+	}
+	for index := range plan.moves {
+		move := &plan.moves[index]
+		sourceRoot, err := migrationOwnedRootForSource(*plan, move.source)
+		if err != nil {
+			return err
+		}
+		if !migrationPathWithinOrEqual(plan.paths.StateDir, move.target) {
+			return fmt.Errorf("迁移目标越过当前状态目录边界: %s", move.target)
+		}
+		move.sourceRoot = sourceRoot
+		move.targetRoot = plan.paths.StateDir
+		if err := validateMigrationMoveBoundaries(*move); err != nil {
+			return err
+		}
+		info, closeSource, err := openAndValidateMigrationSource(move.source, nil)
+		if err != nil {
+			return fmt.Errorf("检查迁移源 %s: %w", move.source, err)
+		}
+		move.sourceInfo = info
+		if err := closeSource(); err != nil {
+			return fmt.Errorf("关闭迁移源 %s: %w", move.source, err)
+		}
+		if err := validateMigrationTargetMissing(move.target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrationOwnedRootForSource(plan MigrationPlan, source string) (string, error) {
+	if migrationPathWithinOrEqual(plan.paths.StateDir, source) {
+		return plan.paths.StateDir, nil
+	}
+	if migrationPathWithinOrEqual(plan.previous.StateDir, source) {
+		return plan.previous.StateDir, nil
+	}
+	return "", fmt.Errorf("迁移源越过已知状态目录边界: %s", source)
+}
+
+func migrationPathWithinOrEqual(root, path string) bool {
+	return samePath(root, path) || pathWithin(root, path)
+}
+
+func validateMigrationMoveBoundaries(move migrationMove) error {
+	if err := validateMigrationOwnedRoot(move.sourceRoot, "迁移源根目录"); err != nil {
+		return err
+	}
+	if err := validateMigrationOwnedRoot(move.targetRoot, "迁移目标根目录"); err != nil {
+		return err
+	}
+	if err := validateMigrationMovePath(move.sourceRoot, move.source, "迁移源"); err != nil {
+		return err
+	}
+	if err := validateMigrationMovePath(move.targetRoot, move.target, "迁移目标"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateMigrationMovePath(root, path, label string) error {
+	if err := validateMigrationCanonicalPath(path); err != nil {
+		return fmt.Errorf("%s路径无效: %w", label, err)
+	}
+	if !migrationPathWithinOrEqual(root, path) || samePath(root, path) {
+		return fmt.Errorf("%s越过 owned root: %s", label, path)
+	}
+	if err := validateExistingMigrationDirectoryChain(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("%s ancestor 不安全: %w", label, err)
+	}
+	return nil
+}
+
+func openAndValidateMigrationSource(path string, expected os.FileInfo) (os.FileInfo, func() error, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || (!before.Mode().IsRegular() && !before.IsDir()) {
+		return nil, nil, fmt.Errorf("迁移源不是安全普通文件或目录: %s", path)
+	}
+	source, err := platform.OpenForRenameValidation(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	closeSource := source.Close
+	opened, err := source.Stat()
+	if err != nil {
+		_ = source.Close()
+		return nil, nil, err
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		_ = source.Close()
+		return nil, nil, err
+	}
+	if after.Mode()&os.ModeSymlink != 0 || (!after.Mode().IsRegular() && !after.IsDir()) ||
+		!os.SameFile(before, opened) || !os.SameFile(after, opened) {
+		_ = source.Close()
+		return nil, nil, fmt.Errorf("迁移源在打开期间发生变化: %s", path)
+	}
+	if expected != nil && !os.SameFile(expected, opened) {
+		_ = source.Close()
+		return nil, nil, fmt.Errorf("迁移源与只读检查时不是同一文件: %s", path)
+	}
+	return opened, closeSource, nil
+}
+
+func validateMigrationTargetMissing(path string) error {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("迁移目标是 symlink/reparse point: %s", path)
+		}
+		return fmt.Errorf("迁移目标已存在: %s", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func inspectDatabaseMoves(source, target string, existing []migrationMove) ([]migrationMove, bool, bool, error) {
+	if samePath(source, target) {
+		return nil, false, false, nil
+	}
+	info, err := os.Lstat(source)
 	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, false, nil
+	}
+	if err != nil {
+		return nil, false, false, err
+	}
+	if !safeMigrationRegular(info) {
+		return nil, false, false, fmt.Errorf("旧版数据库不是安全普通文件: %s", source)
+	}
+
+	moves := make([]migrationMove, 0, 4)
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		targetPath := target + suffix
+		conflict, err := migrationTargetExistsOrPlanned(targetPath, existing)
+		if err != nil {
+			return nil, true, false, err
+		}
+		if conflict {
+			return nil, true, true, nil
+		}
+	}
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		sourcePath := source + suffix
+		info, err := os.Lstat(sourcePath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, true, false, err
+		}
+		if !safeMigrationRegular(info) {
+			return nil, true, false, fmt.Errorf("旧版数据库 sidecar 不是安全普通文件: %s", sourcePath)
+		}
+		moves = append(moves, migrationMove{source: sourcePath, target: target + suffix})
+	}
+	return moves, true, false, nil
+}
+
+func inspectConfigMove(source, activeTarget, backupDir string, existing []migrationMove) (migrationMove, bool, error) {
+	info, err := os.Lstat(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return migrationMove{}, false, nil
+	}
+	if err != nil {
+		return migrationMove{}, false, err
+	}
+	if !safeMigrationRegular(info) {
+		return migrationMove{}, false, fmt.Errorf("旧版配置不是安全普通文件: %s", source)
+	}
+	target := activeTarget
+	if _, err := os.Lstat(activeTarget); err == nil {
+		target = filepath.Join(backupDir, "previous-config-"+randomSuffix()+".json")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return migrationMove{}, false, err
+	}
+	if conflict, err := migrationTargetExistsOrPlanned(target, existing); err != nil {
+		return migrationMove{}, false, err
+	} else if conflict {
+		return migrationMove{}, false, fmt.Errorf("迁移目标已存在: %s", target)
+	}
+	return migrationMove{source: source, target: target}, true, nil
+}
+
+func inspectBackupsMove(source, target string, existing []migrationMove) (migrationMove, bool, error) {
+	info, err := os.Lstat(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return migrationMove{}, false, nil
+	}
+	if err != nil {
+		return migrationMove{}, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return migrationMove{}, false, fmt.Errorf("旧版备份路径不是安全目录: %s", source)
+	}
+	archive := target
+	targetInfo, targetErr := os.Lstat(target)
+	if targetErr == nil || migrationPlanNeedsDirectory(target, existing) {
+		if targetErr == nil && (targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.IsDir()) {
+			return migrationMove{}, false, fmt.Errorf("当前备份路径不是安全目录: %s", target)
+		}
+		archive = filepath.Join(target, "previous-installation-"+randomSuffix())
+	} else if !errors.Is(targetErr, os.ErrNotExist) {
+		return migrationMove{}, false, targetErr
+	}
+	if conflict, err := migrationTargetExistsOrPlanned(archive, existing); err != nil {
+		return migrationMove{}, false, err
+	} else if conflict {
+		return migrationMove{}, false, fmt.Errorf("迁移目标已存在: %s", archive)
+	}
+	return migrationMove{source: source, target: archive}, true, nil
+}
+
+func inspectLogMove(source, stateDir string, existing []migrationMove) (migrationMove, bool, error) {
+	info, err := os.Lstat(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return migrationMove{}, false, nil
+	}
+	if err != nil {
+		return migrationMove{}, false, err
+	}
+	if !safeMigrationRegular(info) {
+		return migrationMove{}, false, fmt.Errorf("旧版日志不是安全普通文件: %s", source)
+	}
+	target := filepath.Join(stateDir, "previous-daemon.log")
+	if conflict, err := migrationTargetExistsOrPlanned(target, existing); err != nil {
+		return migrationMove{}, false, err
+	} else if conflict {
+		target = filepath.Join(stateDir, "previous-daemon-"+randomSuffix()+".log")
+	}
+	if conflict, err := migrationTargetExistsOrPlanned(target, existing); err != nil {
+		return migrationMove{}, false, err
+	} else if conflict {
+		return migrationMove{}, false, fmt.Errorf("迁移目标已存在: %s", target)
+	}
+	return migrationMove{source: source, target: target}, true, nil
+}
+
+func migrationTargetExistsOrPlanned(target string, moves []migrationMove) (bool, error) {
+	if _, err := os.Lstat(target); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	for _, move := range moves {
+		if samePath(move.target, target) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func migrationPlanNeedsDirectory(path string, moves []migrationMove) bool {
+	for _, move := range moves {
+		if pathWithin(path, move.target) {
+			return true
+		}
+	}
+	return false
+}
+
+func safeMigrationRegular(info os.FileInfo) bool {
+	return info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular()
+}
+
+func ensureMigrationPrivateDir(directory string, syncParent func(string) error) ([]string, error) {
+	missing := make([]string, 0, 2)
+	for current := filepath.Clean(directory); ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return nil, fmt.Errorf("迁移目标 ancestor 不是安全目录: %s", current)
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		missing = append(missing, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil, fmt.Errorf("无法定位迁移目标的现有父目录: %s", directory)
+		}
+	}
+	if err := EnsurePrivateDir(directory); err != nil {
+		return nil, err
+	}
+	for index := len(missing) - 1; index >= 0; index-- {
+		if err := syncParent(missing[index]); err != nil {
+			cleanupErr := cleanupMigrationCreatedDirs(missing, syncParent)
+			return nil, errors.Join(fmt.Errorf("同步新建迁移目录 %s: %w", missing[index], err), cleanupErr)
+		}
+	}
+	return missing, nil
+}
+
+func cleanupMigrationCreatedDirs(directories []string, syncParent func(string) error) error {
+	var cleanupErrors []error
+	for _, directory := range directories {
+		entries, err := os.ReadDir(directory)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("检查迁移创建目录 %s: %w", directory, err))
+			continue
+		}
+		if len(entries) != 0 {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("拒绝移除非空迁移创建目录: %s", directory))
+			continue
+		}
+		if err := os.Remove(directory); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("移除迁移创建目录 %s: %w", directory, err))
+			continue
+		}
+		if err := syncParent(directory); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("同步已移除迁移创建目录 %s: %w", directory, err))
+		}
+	}
+	return errors.Join(cleanupErrors...)
+}
+
+func syncMigrationRename(source, target string, syncParent func(string) error) error {
+	if err := syncParent(target); err != nil {
+		return err
+	}
+	if !samePath(filepath.Dir(source), filepath.Dir(target)) {
+		if err := syncParent(source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func executeMigrationMove(move *migrationMove, syncParent func(string) error) (bool, error) {
+	if move == nil {
+		return false, errors.New("migration move is nil")
+	}
+	if err := validateMigrationMoveBoundaries(*move); err != nil {
+		return false, err
+	}
+	_, closeSource, err := openAndValidateMigrationSource(move.source, move.sourceInfo)
+	if err != nil {
+		return false, err
+	}
+	defer closeSource()
+	if err := validateMigrationTargetMissing(move.target); err != nil {
+		return false, err
+	}
+	createdDirs, err := ensureMigrationPrivateDir(filepath.Dir(move.target), syncParent)
+	if err != nil {
+		return false, err
+	}
+	move.createdDirs = createdDirs
+	cleanupBeforeRename := func(primary error) (bool, error) {
+		return false, errors.Join(primary, cleanupMigrationCreatedDirs(move.createdDirs, syncParent))
+	}
+	if err := validateMigrationMoveBoundaries(*move); err != nil {
+		return cleanupBeforeRename(err)
+	}
+	if err := validateMigrationTargetMissing(move.target); err != nil {
+		return cleanupBeforeRename(err)
+	}
+	after, err := os.Lstat(move.source)
+	if err != nil {
+		return cleanupBeforeRename(err)
+	}
+	if after.Mode()&os.ModeSymlink != 0 || !os.SameFile(move.sourceInfo, after) {
+		return cleanupBeforeRename(fmt.Errorf("迁移源在 rename 前发生变化: %s", move.source))
+	}
+	if err := platform.RenameNoReplace(move.source, move.target); err != nil {
+		return cleanupBeforeRename(err)
+	}
+	if err := syncMigrationRename(move.source, move.target, syncParent); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func reverseMigrationMove(move migrationMove, syncParent func(string) error) (bool, error) {
+	if _, err := os.Lstat(move.target); errors.Is(err, os.ErrNotExist) {
+		if _, sourceErr := os.Lstat(move.source); sourceErr == nil {
+			return true, cleanupMigrationCreatedDirs(move.createdDirs, syncParent)
+		} else {
+			return false, sourceErr
+		}
+	} else if err != nil {
+		return false, err
+	}
+	if _, err := os.Lstat(move.source); err == nil {
+		return false, fmt.Errorf("恢复源已存在: %s", move.source)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	reverse := migrationMove{
+		source: move.target, target: move.source,
+		sourceRoot: move.targetRoot, targetRoot: move.sourceRoot,
+		sourceInfo: move.sourceInfo,
+	}
+	restored, restoreErr := executeMigrationMove(&reverse, syncParent)
+	if !restored {
+		return false, restoreErr
+	}
+	return true, errors.Join(restoreErr, cleanupMigrationCreatedDirs(move.createdDirs, syncParent))
+}
+
+func removePreviousMigrationMarker(previous PreviousPaths, syncParent func(string) error) error {
+	if strings.TrimSpace(previous.MarkerPath) == "" {
+		return nil
+	}
+	data, err := os.ReadFile(previous.MarkerPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(data)) != previous.MarkerValue {
+		return fmt.Errorf("旧版迁移标记在提交前发生变化: %s", previous.MarkerPath)
+	}
+	if err := os.Remove(previous.MarkerPath); err != nil {
+		return fmt.Errorf("清理旧版迁移标记: %w", err)
+	}
+	if err := syncParent(previous.MarkerPath); err != nil {
+		return fmt.Errorf("同步旧版迁移标记目录: %w", err)
+	}
+	return nil
+}
+
+func removePreviousStateDirIfEmpty(stateDir string) (bool, error) {
+	if strings.TrimSpace(stateDir) == "" {
 		return false, nil
+	}
+	entries, err := os.ReadDir(stateDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("路径不是普通文件: %s", path)
+	if len(entries) != 0 {
+		return false, nil
+	}
+	if err := os.Remove(stateDir); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -283,92 +984,6 @@ func validatePreviousStateDir(previous PreviousPaths) error {
 		return fmt.Errorf("拒绝迁移状态标记不匹配的目录 %s", previous.StateDir)
 	}
 	return nil
-}
-
-func movePreviousLog(source, stateDir string) error {
-	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	target := filepath.Join(stateDir, "previous-daemon.log")
-	if _, err := os.Stat(target); err == nil {
-		target = filepath.Join(stateDir, "previous-daemon-"+randomSuffix()+".log")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	_, err := moveIfTargetMissing(source, target)
-	return err
-}
-
-func moveDatabaseSet(source, target string) (bool, error) {
-	if samePath(source, target) {
-		return false, nil
-	}
-	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	} else if err != nil {
-		return false, err
-	}
-	if _, err := os.Stat(target); err == nil {
-		return false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, err
-	}
-	if err := EnsurePrivateDir(filepath.Dir(target)); err != nil {
-		return false, err
-	}
-
-	suffixes := []string{"", "-wal", "-shm", "-journal"}
-	type pair struct{ source, target string }
-	pairs := make([]pair, 0, len(suffixes))
-	for _, suffix := range suffixes {
-		sourcePath := source + suffix
-		if _, err := os.Stat(sourcePath); errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return false, err
-		}
-		targetPath := target + suffix
-		if _, err := os.Stat(targetPath); err == nil {
-			return false, fmt.Errorf("迁移目标已存在: %s", targetPath)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return false, err
-		}
-		pairs = append(pairs, pair{source: sourcePath, target: targetPath})
-	}
-
-	moved := make([]pair, 0, len(pairs))
-	for _, item := range pairs {
-		if err := os.Rename(item.source, item.target); err != nil {
-			for i := len(moved) - 1; i >= 0; i-- {
-				_ = os.Rename(moved[i].target, moved[i].source)
-			}
-			return false, fmt.Errorf("迁移数据库文件 %s: %w", filepath.Base(item.source), err)
-		}
-		moved = append(moved, item)
-	}
-	return true, nil
-}
-
-func moveIfTargetMissing(source, target string) (bool, error) {
-	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	} else if err != nil {
-		return false, err
-	}
-	if _, err := os.Stat(target); err == nil {
-		return false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, err
-	}
-	if err := EnsurePrivateDir(filepath.Dir(target)); err != nil {
-		return false, err
-	}
-	if err := os.Rename(source, target); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 func samePath(a, b string) bool {
