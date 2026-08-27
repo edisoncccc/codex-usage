@@ -195,7 +195,9 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string, progress *progre
 			}
 		}
 
-		_ = s.Store.UpdateScanState(ctx, home, discovery.StateDB, files, discovery.Warning)
+		if err := s.Store.UpdateScanState(ctx, home, discovery.StateDB, files, discovery.Warning); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }

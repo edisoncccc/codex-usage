@@ -972,6 +972,46 @@ func TestScannerContextCancellationInsideFileIsHardError(t *testing.T) {
 	}
 }
 
+func TestScannerUpdateScanStateFailureIsHardError(t *testing.T) {
+	root, home, _ := writeScannerRollout(t,
+		`{"timestamp":"2026-08-27T01:00:00Z","type":"turn_context","payload":{"turn_id":"scan-state-failure","model":"gpt-test"}}`,
+	)
+	databasePath := filepath.Join(root, "usage.sqlite")
+	st, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	installScannerAbortTrigger(t, databasePath, "scan_state", "forced UpdateScanState failure")
+
+	result, err := (&Scanner{Store: st}).Scan(context.Background(), []string{home}, false)
+	if err == nil || !strings.Contains(err.Error(), "forced UpdateScanState failure") {
+		t.Fatalf("UpdateScanState failure was ignored: result=%+v err=%v", result, err)
+	}
+}
+
+func TestScannerContextCancellationBeforeScanStateCommitIsHardError(t *testing.T) {
+	root, home, _ := writeScannerRollout(t,
+		`{"timestamp":"2026-08-27T01:00:00Z","type":"turn_context","payload":{"turn_id":"cancel-before-state","model":"gpt-test"}}`,
+	)
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result, err := (&Scanner{Store: st}).ScanWithProgress(ctx, []string{home}, false, func(progress ScanProgress) {
+		if progress.FilesProcessed == 1 {
+			cancel()
+		}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("context cancellation before scan-state commit was ignored: result=%+v err=%v", result, err)
+	}
+}
+
 func TestScannerMalformedRecordRemainsWarningAndContinues(t *testing.T) {
 	root, home, _ := writeScannerRollout(t,
 		`{"timestamp":"2026-08-27T01:00:00Z","type":"session_meta","payload":BROKEN}`,
