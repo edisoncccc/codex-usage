@@ -176,6 +176,189 @@ func TestSourceOnlyWorkflowValidatorRejectsPublishingBypasses(t *testing.T) {
 	}
 }
 
+func TestLifecycleScriptsRequireHostedRunnerGateBeforeSideEffects(t *testing.T) {
+	tests := []struct {
+		name              string
+		path              string
+		firstExecutable   string
+		gateClose         string
+		canonicalFragment string
+		requiredGate      []string
+		sideEffects       []*regexp.Regexp
+	}{
+		{
+			name:              "Windows",
+			path:              filepath.Join("tests", "install-windows.ps1"),
+			firstExecutable:   "if (",
+			gateClose:         "\n}",
+			canonicalFragment: "Resolve-Path",
+			requiredGate: []string{
+				"$env:GITHUB_ACTIONS", "$env:CI", "$env:RUNNER_ENVIRONMENT",
+				"github-hosted", "$env:RUNNER_TEMP", "IsPathFullyQualified", "GetFullPath",
+			},
+			sideEffects: []*regexp.Regexp{
+				regexp.MustCompile(`(?m)^\s*New-Item\b`),
+				regexp.MustCompile(`(?m)^\s*&\s+\$Go\s+build\b`),
+				regexp.MustCompile(`(?m)^\s*&\s+\$(?:Old|New|Installed)Binary\b`),
+				regexp.MustCompile(`(?m)^\s*(?:Start-Process|Set-ItemProperty)\b`),
+			},
+		},
+		{
+			name:              "Linux",
+			path:              filepath.Join("tests", "install-linux.sh"),
+			firstExecutable:   "if [[",
+			gateClose:         "\nfi",
+			canonicalFragment: "pwd -P",
+			requiredGate: []string{
+				"GITHUB_ACTIONS", "CI", "RUNNER_ENVIRONMENT", "github-hosted", "RUNNER_TEMP",
+			},
+			sideEffects: []*regexp.Regexp{
+				regexp.MustCompile(`(?m)^\s*(?:mkdir|mktemp)\b`),
+				regexp.MustCompile(`(?m)^\s*CGO_ENABLED=0\s+go\s+build\b`),
+				regexp.MustCompile(`(?m)^\s*systemctl\b`),
+				regexp.MustCompile(`(?m)^\s*"\$(?:old|new|installed)_binary"\s+`),
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			script := readRepositoryDocument(t, test.path)
+			if line := firstExecutableScriptLine(script); !strings.HasPrefix(line, test.firstExecutable) {
+				t.Fatalf("first executable line = %q, want prefix %q", line, test.firstExecutable)
+			}
+			gateEnd := strings.Index(script, test.gateClose)
+			if gateEnd < 0 {
+				t.Fatalf("hosted-runner gate has no closing %q", test.gateClose)
+			}
+			gate := script[:gateEnd]
+			for _, fragment := range append(test.requiredGate, test.canonicalFragment) {
+				if !strings.Contains(gate, fragment) {
+					t.Errorf("hosted-runner gate is missing %q", fragment)
+				}
+			}
+			for _, sideEffect := range test.sideEffects {
+				if location := sideEffect.FindStringIndex(script); location != nil && location[0] < gateEnd {
+					t.Errorf("side effect %q appears before hosted-runner gate closes", sideEffect)
+				}
+			}
+			lower := strings.ToLower(script)
+			for _, forbidden := range []string{"allow_local", "local_override", "bypass_runner_gate", "self-hosted", "sudo ", "runas"} {
+				if strings.Contains(lower, forbidden) {
+					t.Errorf("script contains forbidden local/elevation escape %q", forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestLifecycleScriptsIsolateHomesAndLockJSONLContract(t *testing.T) {
+	windows := readRepositoryDocument(t, filepath.Join("tests", "install-windows.ps1"))
+	linux := readRepositoryDocument(t, filepath.Join("tests", "install-linux.sh"))
+
+	for _, fragment := range []string{
+		"CODEX_USAGE_HOME", "CODEX_HOME",
+		"codex-usage-lifecycle-state-", "codex-usage-lifecycle-codex-",
+	} {
+		if !strings.Contains(windows, fragment) {
+			t.Errorf("Windows lifecycle script is missing isolated path contract %q", fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"CODEX_USAGE_HOME", "CODEX_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
+		"codex-usage-lifecycle-state.", "codex-usage-lifecycle-codex.",
+		"codex-usage-lifecycle-xdg-data.", "codex-usage-lifecycle-xdg-config.",
+	} {
+		if !strings.Contains(linux, fragment) {
+			t.Errorf("Linux lifecycle script is missing isolated path contract %q", fragment)
+		}
+	}
+
+	requiredProtocol := []string{
+		"schema_version", "event", "phase", "status", "timestamp", "terminal",
+		"install --yes --json", "doctor --json", "scan --json",
+		"uninstall --yes --json", "uninstall --purge --yes --json",
+		"2.3.5", "2.3.6", "service_mode", "install_path", "state_path",
+		"database_path", "program_removed", "removal_scheduled", "data_preserved", "purged",
+		"session_meta", "token_count", "sha256",
+	}
+	for _, script := range []struct {
+		name string
+		text string
+	}{{name: "Windows", text: windows}, {name: "Linux", text: linux}} {
+		for _, fragment := range requiredProtocol {
+			if !strings.Contains(strings.ToLower(script.text), strings.ToLower(fragment)) {
+				t.Errorf("%s lifecycle script is missing protocol fragment %q", script.name, fragment)
+			}
+		}
+	}
+}
+
+func TestCIWorkflowUsesHostedLifecycleMatrixWithoutPublishing(t *testing.T) {
+	ci := readRepositoryDocument(t, filepath.Join(".github", "workflows", "ci.yml"))
+	for _, fragment := range []string{
+		"  unit:", "  lifecycle:", "  cross-build:", "  dashboard:",
+		"os: [ubuntu-latest, windows-latest]", "runs-on: ${{ matrix.os }}",
+		"pwsh ./tests/install-windows.ps1", "bash ./tests/install-linux.sh",
+		"node --check internal/web/static/app.js", "node --check internal/web/static/i18n.js",
+		"node --check tests/dashboard.spec.mjs", "node --check tests/demo.spec.mjs",
+	} {
+		if !strings.Contains(ci, fragment) {
+			t.Errorf("CI workflow is missing %q", fragment)
+		}
+	}
+	assertWorkflowHasNoPublishingCapability(t, "ci.yml", ci)
+}
+
+func TestWorkflowsKeepLifecycleOutsidePagesAndReleaseTrust(t *testing.T) {
+	for _, name := range []string{"ci.yml", "release.yml", "pages.yml"} {
+		workflow := readRepositoryDocument(t, filepath.Join(".github", "workflows", name))
+		if name != "pages.yml" {
+			assertWorkflowHasNoPublishingCapability(t, name, workflow)
+			continue
+		}
+		if !strings.Contains(workflow, "workflow_dispatch:") || strings.Contains(workflow, "tests/install-") {
+			t.Fatal("Pages must remain manual and outside lifecycle installation trust")
+		}
+		for _, forbidden := range []string{"pull_request:", "tags:", "gh release create", "actions/upload-artifact"} {
+			if strings.Contains(strings.ToLower(workflow), strings.ToLower(forbidden)) {
+				t.Errorf("Pages workflow contains forbidden trust/publishing fragment %q", forbidden)
+			}
+		}
+	}
+}
+
+func firstExecutableScriptLine(script string) string {
+	for _, line := range strings.Split(script, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		return trimmed
+	}
+	return ""
+}
+
+func assertWorkflowHasNoPublishingCapability(t *testing.T, name, workflow string) {
+	t.Helper()
+	lower := strings.ToLower(workflow)
+	for _, forbidden := range []string{
+		"self-hosted", "actions/upload-artifact", "gh release create", "gh api --method post",
+	} {
+		if strings.Contains(lower, forbidden) {
+			t.Errorf("%s contains forbidden capability %q", name, forbidden)
+		}
+	}
+	for _, pattern := range []*regexp.Regexp{
+		regexp.MustCompile(`(?mi)^\s*tags\s*:`),
+		regexp.MustCompile(`(?mi)^\s*release\s*:`),
+	} {
+		if pattern.MatchString(workflow) {
+			t.Errorf("%s contains forbidden trigger %q", name, pattern)
+		}
+	}
+}
+
 func TestInstallationDocumentsMatchPolicyState(t *testing.T) {
 	policy := loadRepositoryPolicy(t)
 	if policy.BinaryReleaseEnabled || BinaryReleaseEnabled {

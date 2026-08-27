@@ -28,6 +28,29 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
 
+  lifecycle:
+    name: lifecycle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - name: Windows current-user lifecycle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: pwsh ./tests/install-windows.ps1
+      - name: Linux current-user lifecycle
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash ./tests/install-linux.sh
+
   cross-build:
     name: cross-build
     runs-on: ubuntu-latest
@@ -56,6 +79,10 @@ jobs:
           cache: npm
       - run: go build -trimpath -o codex-usage ./cmd/codex-usage
       - run: npm ci
+      - run: node --check internal/web/static/app.js
+      - run: node --check internal/web/static/i18n.js
+      - run: node --check tests/dashboard.spec.mjs
+      - run: node --check tests/demo.spec.mjs
       - run: npx playwright install --with-deps chromium
       - run: npm test
         env:
