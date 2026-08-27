@@ -157,7 +157,7 @@ function Assert-DoctorHealthy {
     if ($Version.Terminal.result.version -ne $ExpectedVersion -or $Version.Terminal.result.dirty -ne $false) {
         throw "Installed build identity mismatch: $($Version.Terminal.result | ConvertTo-Json -Compress)"
     }
-    $Doctor = Invoke-JsonLinesCommand -Executable $Executable -Arguments @("doctor", "--json") # doctor --json
+    $Doctor = Invoke-JsonLinesCommand -Executable $Executable -Arguments @("doctor", "--json")
     if ($Doctor.Terminal.result.status -eq "error") {
         throw "Doctor reported an error"
     }
@@ -272,11 +272,11 @@ function Assert-WindowsServiceRemoved {
     $ExpectedExecutable = $CanonicalExecutable
     $RunValue = Get-ItemPropertyValue -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" -Name "CodexUsage" -ErrorAction SilentlyContinue
     if ($null -ne $RunValue) {
-        throw "HKCU Run entry remained after default uninstall"
+        throw "HKCU Run entry remained after uninstall"
     }
     foreach ($Path in @((Join-Path $StateRoot "codex-usage-start.vbs"), (Join-Path $StateRoot "codex-usage.pid"))) {
         if (Test-Path -LiteralPath $Path) {
-            throw "Windows service metadata remained after default uninstall: $Path"
+            throw "Windows service metadata remained after uninstall: $Path"
         }
     }
 
@@ -295,7 +295,7 @@ function Assert-WindowsServiceRemoved {
             return
         }
         if ([DateTime]::UtcNow -ge $Deadline) {
-            throw "Installed service process remained after default uninstall: $ExpectedPID"
+            throw "Installed service process remained after uninstall: $ExpectedPID"
         }
         Start-Sleep -Milliseconds 100
     }
@@ -383,7 +383,7 @@ $ConfigJSON = [ordered]@{
 [System.IO.File]::WriteAllText($ConfigPath, $ConfigJSON + "`n", [System.Text.UTF8Encoding]::new($false))
 
 Write-Host "Scenario 1: fresh old identity install"
-$OldInstall = Invoke-JsonLinesCommand -Executable $OldBinary -Arguments @("install", "--yes", "--json") # install --yes --json
+$OldInstall = Invoke-JsonLinesCommand -Executable $OldBinary -Arguments @("install", "--yes", "--json")
 Assert-ReceiptPaths -Result $OldInstall.Terminal.result
 if ($OldInstall.Terminal.result.identity.version -ne "2.3.5" -or $OldInstall.Terminal.result.service_mode -ne "persistent") {
     throw "Fresh install identity/service mode mismatch"
@@ -399,7 +399,7 @@ Write-Host "Scenario 2: idempotent same-binary install"
 $InstalledSHA256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $InstalledBinary).Hash
 $RecordPath = Join-Path $StateRoot "install.json"
 $RecordSHA256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $RecordPath).Hash
-$SameInstall = Invoke-JsonLinesCommand -Executable $OldBinary -Arguments @("install", "--yes", "--json") # install --yes --json
+$SameInstall = Invoke-JsonLinesCommand -Executable $OldBinary -Arguments @("install", "--yes", "--json")
 Assert-ReceiptPaths -Result $SameInstall.Terminal.result
 if ((Get-FileHash -Algorithm SHA256 -LiteralPath $InstalledBinary).Hash -ne $InstalledSHA256 -or
     (Get-FileHash -Algorithm SHA256 -LiteralPath $RecordPath).Hash -ne $RecordSHA256) {
@@ -410,7 +410,7 @@ Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary
 
 Write-Host "Scenario 3: stopped service repair"
 Stop-TestService -ExpectedExecutable $InstalledBinary
-$Repair = Invoke-JsonLinesCommand -Executable $OldBinary -Arguments @("install", "--yes", "--json") # install --yes --json
+$Repair = Invoke-JsonLinesCommand -Executable $OldBinary -Arguments @("install", "--yes", "--json")
 Assert-ReceiptPaths -Result $Repair.Terminal.result
 Assert-DoctorHealthy -Executable $InstalledBinary -ExpectedVersion "2.3.5"
 Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary
@@ -423,7 +423,7 @@ if ([int64]$BeforeSummary.event_count -lt 1) {
 }
 
 Write-Host "Scenario 4: upgrade to the new identity"
-$Upgrade = Invoke-JsonLinesCommand -Executable $NewBinary -Arguments @("install", "--yes", "--json") # install --yes --json
+$Upgrade = Invoke-JsonLinesCommand -Executable $NewBinary -Arguments @("install", "--yes", "--json")
 Assert-ReceiptPaths -Result $Upgrade.Terminal.result
 if ($Upgrade.Terminal.result.identity.version -ne "2.3.6" -or
     (Get-FileHash -Algorithm SHA256 -LiteralPath $InstalledBinary).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $NewBinary).Hash) {
@@ -440,7 +440,7 @@ Assert-DoctorHealthy -Executable $InstalledBinary -ExpectedVersion "2.3.6"
 Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary
 
 Write-Host "Scenario 5: JSON Lines scan"
-$Scan = Invoke-JsonLinesCommand -Executable $InstalledBinary -Arguments @("scan", "--json") # scan --json
+$Scan = Invoke-JsonLinesCommand -Executable $InstalledBinary -Arguments @("scan", "--json")
 $ScanProgress = @($Scan.Events | Where-Object { $_.event -eq "progress" -and $_.phase -eq "scan" })
 if ($ScanProgress.Count -lt 1) {
     throw "Scan emitted no progress event"
@@ -448,7 +448,7 @@ if ($ScanProgress.Count -lt 1) {
 
 Write-Host "Scenario 6-7: default uninstall and scheduled removal"
 $DefaultServicePID = Get-WindowsServicePID
-$DefaultUninstall = Invoke-JsonLinesCommand -Executable $InstalledBinary -Arguments @("uninstall", "--yes", "--json") # uninstall --yes --json
+$DefaultUninstall = Invoke-JsonLinesCommand -Executable $InstalledBinary -Arguments @("uninstall", "--yes", "--json")
 Assert-ReceiptPaths -Result $DefaultUninstall.Terminal.result
 if ($DefaultUninstall.Terminal.result.program_removed -ne $false -or
     $DefaultUninstall.Terminal.result.removal_scheduled -ne $true -or
@@ -463,11 +463,13 @@ Assert-WindowsServiceRemoved -ExpectedExecutable $InstalledBinary -ExpectedPID $
 Wait-PathAbsent -Path $InstalledBinary
 
 Write-Host "Scenario 8: reinstall then purge"
-$Reinstall = Invoke-JsonLinesCommand -Executable $NewBinary -Arguments @("install", "--yes", "--json") # install --yes --json
+$Reinstall = Invoke-JsonLinesCommand -Executable $NewBinary -Arguments @("install", "--yes", "--json")
 Assert-ReceiptPaths -Result $Reinstall.Terminal.result
 $InstalledBinary = [string]$Reinstall.Terminal.result.install_path
 Assert-DoctorHealthy -Executable $InstalledBinary -ExpectedVersion "2.3.6"
-$Purge = Invoke-JsonLinesCommand -Executable $InstalledBinary -Arguments @("uninstall", "--purge", "--yes", "--json") # uninstall --purge --yes --json
+Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary
+$PurgeServicePID = Get-WindowsServicePID
+$Purge = Invoke-JsonLinesCommand -Executable $InstalledBinary -Arguments @("uninstall", "--purge", "--yes", "--json")
 Assert-ReceiptPaths -Result $Purge.Terminal.result
 if ($Purge.Terminal.result.program_removed -ne $false -or
     $Purge.Terminal.result.removal_scheduled -ne $true -or
@@ -475,10 +477,21 @@ if ($Purge.Terminal.result.program_removed -ne $false -or
     $Purge.Terminal.result.purged -ne $false) {
     throw "Windows purge receipt is inaccurate"
 }
+Assert-WindowsServiceRemoved -ExpectedExecutable $InstalledBinary -ExpectedPID $PurgeServicePID
 
 Write-Host "Scenario 9: wait for scheduled executable/state removal"
 Wait-PathAbsent -Path $InstalledBinary
 Wait-PathAbsent -Path $StateRoot
+foreach ($Path in @(
+    $InstalledBinary,
+    $StateRoot,
+    (Join-Path $StateRoot "codex-usage-start.vbs"),
+    (Join-Path $StateRoot "codex-usage.pid")
+)) {
+    if (Test-Path -LiteralPath $Path) {
+        throw "Windows final removal left a path: $Path"
+    }
+}
 $RunValue = Get-ItemPropertyValue -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" -Name "CodexUsage" -ErrorAction SilentlyContinue
 if ($null -ne $RunValue) {
     throw "HKCU Run entry remained after purge"

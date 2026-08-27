@@ -152,7 +152,7 @@ assert_doctor_healthy() {
   [[ "$version" == "$expected_version" ]] || fail "installed version is $version, want $expected_version"
   [[ "$(json_get "$json_terminal" result.dirty)" == false ]] || fail "host lifecycle build is unexpectedly dirty"
 
-  run_jsonl "$executable" doctor --json # doctor --json
+  run_jsonl "$executable" doctor --json
   doctor_status="$(json_get "$json_terminal" result.status)"
   [[ "$doctor_status" != error ]] || fail "doctor reported an error"
   identity_matches="$(python3 - "$json_terminal" <<'PY'
@@ -372,7 +372,7 @@ cat >"$config_path" <<JSON
 JSON
 
 printf '%s\n' 'Scenario 1: fresh old identity install'
-run_jsonl "$old_binary" install --yes --json # install --yes --json
+run_jsonl "$old_binary" install --yes --json
 old_install_terminal="$json_terminal"
 assert_receipt_paths "$old_install_terminal"
 [[ "$(json_get "$old_install_terminal" result.identity.version)" == 2.3.5 ]] || fail 'fresh identity mismatch'
@@ -390,7 +390,7 @@ printf '%s\n' 'Scenario 2: idempotent same-binary install'
 installed_sha256="$(sha256sum "$installed_binary" | awk '{print $1}')"
 record_path="$state_root/install.json"
 record_sha256="$(sha256sum "$record_path" | awk '{print $1}')"
-run_jsonl "$old_binary" install --yes --json # install --yes --json
+run_jsonl "$old_binary" install --yes --json
 assert_receipt_paths "$json_terminal"
 [[ "$(sha256sum "$installed_binary" | awk '{print $1}')" == "$installed_sha256" ]] || fail 'idempotent install changed executable sha256'
 [[ "$(sha256sum "$record_path" | awk '{print $1}')" == "$record_sha256" ]] || fail 'idempotent install changed record sha256'
@@ -400,7 +400,7 @@ assert_service_state "$installed_binary" "$service_mode"
 
 printf '%s\n' 'Scenario 3: stopped service repair'
 stop_test_service "$installed_binary" "$service_mode"
-run_jsonl "$old_binary" install --yes --json # install --yes --json
+run_jsonl "$old_binary" install --yes --json
 service_mode="$(json_get "$json_terminal" result.service_mode)"
 assert_doctor_healthy "$installed_binary" 2.3.5
 assert_service_state "$installed_binary" "$service_mode"
@@ -411,7 +411,7 @@ before_events="$(json_get "$object_json" event_count)"
 (( before_events >= 1 )) || fail 'synthetic token fixture did not create an event before upgrade'
 
 printf '%s\n' 'Scenario 4: upgrade to the new identity'
-run_jsonl "$new_binary" install --yes --json # install --yes --json
+run_jsonl "$new_binary" install --yes --json
 upgrade_terminal="$json_terminal"
 assert_receipt_paths "$upgrade_terminal"
 [[ "$(json_get "$upgrade_terminal" result.identity.version)" == 2.3.6 ]] || fail 'upgrade identity mismatch'
@@ -425,7 +425,7 @@ assert_doctor_healthy "$installed_binary" 2.3.6
 assert_service_state "$installed_binary" "$service_mode"
 
 printf '%s\n' 'Scenario 5: JSON Lines scan'
-run_jsonl "$installed_binary" scan --json # scan --json
+run_jsonl "$installed_binary" scan --json
 python3 - "$json_events_file" <<'PY'
 import json
 import sys
@@ -437,7 +437,7 @@ PY
 
 printf '%s\n' 'Scenario 6: default uninstall preserves data'
 default_service_pid="$(read_service_pid)"
-run_jsonl "$installed_binary" uninstall --yes --json # uninstall --yes --json
+run_jsonl "$installed_binary" uninstall --yes --json
 default_uninstall_terminal="$json_terminal"
 assert_receipt_paths "$default_uninstall_terminal"
 [[ "$(json_get "$default_uninstall_terminal" result.removal_scheduled)" == false ]] || fail 'Linux uninstall unexpectedly scheduled removal'
@@ -449,22 +449,28 @@ assert_service_removed "$installed_binary" "$default_service_pid"
 
 printf '%s\n' 'Scenario 7-8: synchronous state, reinstall, then purge'
 wait_path_absent "$installed_binary"
-run_jsonl "$new_binary" install --yes --json # install --yes --json
+run_jsonl "$new_binary" install --yes --json
 reinstall_terminal="$json_terminal"
 assert_receipt_paths "$reinstall_terminal"
 installed_binary="$(json_get "$reinstall_terminal" result.install_path)"
+service_mode="$(json_get "$reinstall_terminal" result.service_mode)"
 assert_doctor_healthy "$installed_binary" 2.3.6
-run_jsonl "$installed_binary" uninstall --purge --yes --json # uninstall --purge --yes --json
+assert_service_state "$installed_binary" "$service_mode"
+purge_service_pid="$(read_service_pid)"
+run_jsonl "$installed_binary" uninstall --purge --yes --json
 purge_terminal="$json_terminal"
 assert_receipt_paths "$purge_terminal"
 [[ "$(json_get "$purge_terminal" result.removal_scheduled)" == false ]] || fail 'Linux purge unexpectedly scheduled removal'
 [[ "$(json_get "$purge_terminal" result.program_removed)" == true ]] || fail 'Linux purge did not report synchronous program removal'
 [[ "$(json_get "$purge_terminal" result.data_preserved)" == false ]] || fail 'Linux purge reported preserved data'
 [[ "$(json_get "$purge_terminal" result.purged)" == true ]] || fail 'Linux purge did not report completion'
+assert_service_removed "$installed_binary" "$purge_service_pid"
 
 printf '%s\n' 'Scenario 9: final executable/state deletion'
 wait_path_absent "$installed_binary"
 wait_path_absent "$state_root"
-[[ ! -e "$unit_path" ]] || fail 'Linux purge left the user unit'
+for final_path in "$installed_binary" "$state_root" "$unit_path" "$state_root/codex-usage.pid"; do
+  [[ ! -e "$final_path" ]] || fail "Linux final removal left a path: $final_path"
+done
 
 printf '%s\n' 'Linux current-user lifecycle completed with stable schema_version/event/phase/status/timestamp and one terminal event per command.'

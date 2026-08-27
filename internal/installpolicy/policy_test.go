@@ -273,8 +273,6 @@ func TestLifecycleScriptsIsolateHomesAndLockJSONLContract(t *testing.T) {
 
 	requiredProtocol := []string{
 		"schema_version", "event", "phase", "status", "timestamp", "terminal",
-		"install --yes --json", "doctor --json", "scan --json",
-		"uninstall --yes --json", "uninstall --purge --yes --json",
 		"2.3.5", "2.3.6", "service_mode", "install_path", "state_path",
 		"database_path", "program_removed", "removal_scheduled", "data_preserved", "purged",
 		"session_meta", "token_count", "sha256",
@@ -288,6 +286,49 @@ func TestLifecycleScriptsIsolateHomesAndLockJSONLContract(t *testing.T) {
 				t.Errorf("%s lifecycle script is missing protocol fragment %q", script.name, fragment)
 			}
 		}
+	}
+}
+
+func TestLifecycleScriptsUseExecutableMachineCommandProtocol(t *testing.T) {
+	windows := parsePowerShellMachineCalls(t, readRepositoryDocument(t, filepath.Join("tests", "install-windows.ps1")))
+	assertMachineCalls(t, "Windows", windows, []machineCommandCall{
+		{executable: "$Executable", arguments: []string{"version", "--json"}},
+		{executable: "$Executable", arguments: []string{"doctor", "--json"}},
+		{executable: "$OldBinary", arguments: []string{"install", "--yes", "--json"}},
+		{executable: "$OldBinary", arguments: []string{"install", "--yes", "--json"}},
+		{executable: "$OldBinary", arguments: []string{"install", "--yes", "--json"}},
+		{executable: "$NewBinary", arguments: []string{"install", "--yes", "--json"}},
+		{executable: "$InstalledBinary", arguments: []string{"scan", "--json"}},
+		{executable: "$InstalledBinary", arguments: []string{"uninstall", "--yes", "--json"}},
+		{executable: "$NewBinary", arguments: []string{"install", "--yes", "--json"}},
+		{executable: "$InstalledBinary", arguments: []string{"uninstall", "--purge", "--yes", "--json"}},
+	})
+	if len(windows) >= 2 {
+		assertScenarioCallOrder(t, "Windows", windows[2:], []string{
+			`Write-Host "Scenario 1:`, `Write-Host "Scenario 2:`, `Write-Host "Scenario 3:`,
+			`Write-Host "Scenario 4:`, `Write-Host "Scenario 5:`, `Write-Host "Scenario 6-7:`,
+			`Write-Host "Scenario 8:`, `Write-Host "Scenario 8:`,
+		}, `Write-Host "Scenario 9:`, readRepositoryDocument(t, filepath.Join("tests", "install-windows.ps1")))
+	}
+
+	linux := parseBashMachineCalls(t, readRepositoryDocument(t, filepath.Join("tests", "install-linux.sh")))
+	assertMachineCalls(t, "Linux", linux, []machineCommandCall{
+		{executable: "$executable", arguments: []string{"version", "--json"}},
+		{executable: "$executable", arguments: []string{"doctor", "--json"}},
+		{executable: "$old_binary", arguments: []string{"install", "--yes", "--json"}},
+		{executable: "$old_binary", arguments: []string{"install", "--yes", "--json"}},
+		{executable: "$old_binary", arguments: []string{"install", "--yes", "--json"}},
+		{executable: "$new_binary", arguments: []string{"install", "--yes", "--json"}},
+		{executable: "$installed_binary", arguments: []string{"scan", "--json"}},
+		{executable: "$installed_binary", arguments: []string{"uninstall", "--yes", "--json"}},
+		{executable: "$new_binary", arguments: []string{"install", "--yes", "--json"}},
+		{executable: "$installed_binary", arguments: []string{"uninstall", "--purge", "--yes", "--json"}},
+	})
+	if len(linux) >= 2 {
+		assertScenarioCallOrder(t, "Linux", linux[2:], []string{
+			"'Scenario 1:", "'Scenario 2:", "'Scenario 3:", "'Scenario 4:",
+			"'Scenario 5:", "'Scenario 6:", "'Scenario 7-8:", "'Scenario 7-8:",
+		}, "'Scenario 9:", readRepositoryDocument(t, filepath.Join("tests", "install-linux.sh")))
 	}
 }
 
@@ -306,8 +347,8 @@ func TestLifecycleScriptsVerifyServiceOwnershipAndRemoval(t *testing.T) {
 			t.Errorf("Windows lifecycle script is missing executable ownership assertion %q", fragment)
 		}
 	}
-	if count := strings.Count(windows, "Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary"); count != 4 {
-		t.Errorf("Windows service state assertion calls = %d, want 4", count)
+	if count := strings.Count(windows, "Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary"); count != 5 {
+		t.Errorf("Windows service state assertion calls = %d, want 5", count)
 	}
 	assertFragmentsInOrder(t, "Windows lifecycle", windows, []string{
 		`Write-Host "Scenario 1:`, "Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary",
@@ -316,7 +357,11 @@ func TestLifecycleScriptsVerifyServiceOwnershipAndRemoval(t *testing.T) {
 		`Write-Host "Scenario 4:`, "Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary",
 		`Write-Host "Scenario 6-7:`, "$DefaultServicePID = Get-WindowsServicePID", "$DefaultUninstall =",
 		"Assert-WindowsServiceRemoved -ExpectedExecutable $InstalledBinary -ExpectedPID $DefaultServicePID",
-		`Write-Host "Scenario 8:`,
+		`Write-Host "Scenario 8:`, "Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary",
+		"$PurgeServicePID = Get-WindowsServicePID", "$Purge =",
+		"Assert-WindowsServiceRemoved -ExpectedExecutable $InstalledBinary -ExpectedPID $PurgeServicePID",
+		`Write-Host "Scenario 9:`, "Wait-PathAbsent -Path $InstalledBinary", "Wait-PathAbsent -Path $StateRoot",
+		"Windows final removal left a path",
 	})
 
 	linux := executableScriptBody(readRepositoryDocument(t, filepath.Join("tests", "install-linux.sh")))
@@ -339,8 +384,8 @@ func TestLifecycleScriptsVerifyServiceOwnershipAndRemoval(t *testing.T) {
 			t.Errorf("Linux lifecycle script is missing executable ownership assertion %q", fragment)
 		}
 	}
-	if count := strings.Count(linux, `assert_service_state "$installed_binary" "$service_mode"`); count != 4 {
-		t.Errorf("Linux service state assertion calls = %d, want 4", count)
+	if count := strings.Count(linux, `assert_service_state "$installed_binary" "$service_mode"`); count != 5 {
+		t.Errorf("Linux service state assertion calls = %d, want 5", count)
 	}
 	assertFragmentsInOrder(t, "Linux lifecycle", linux, []string{
 		"'Scenario 1:", `assert_service_state "$installed_binary" "$service_mode"`,
@@ -348,7 +393,11 @@ func TestLifecycleScriptsVerifyServiceOwnershipAndRemoval(t *testing.T) {
 		"'Scenario 3:", `assert_service_state "$installed_binary" "$service_mode"`,
 		"'Scenario 4:", `assert_service_state "$installed_binary" "$service_mode"`,
 		"'Scenario 6:", `default_service_pid="$(read_service_pid)"`, "default_uninstall_terminal=", "assert_service_removed",
-		"'Scenario 7-8:",
+		"'Scenario 7-8:", `assert_service_state "$installed_binary" "$service_mode"`,
+		`purge_service_pid="$(read_service_pid)"`, `run_jsonl "$installed_binary" uninstall --purge --yes --json`,
+		`assert_service_removed "$installed_binary" "$purge_service_pid"`,
+		"'Scenario 9:", `wait_path_absent "$installed_binary"`, `wait_path_absent "$state_root"`,
+		"Linux final removal left a path",
 	})
 }
 
@@ -424,6 +473,132 @@ func assertFragmentsInOrder(t *testing.T, name, document string, fragments []str
 			return
 		}
 		cursor += location + len(fragment)
+	}
+}
+
+type machineCommandCall struct {
+	executable string
+	arguments  []string
+	line       int
+}
+
+func parsePowerShellMachineCalls(t *testing.T, script string) []machineCommandCall {
+	t.Helper()
+	pattern := regexp.MustCompile(`^(?:\$[A-Za-z][A-Za-z0-9]*\s*=\s*)?Invoke-JsonLinesCommand\s+-Executable\s+(\$[A-Za-z][A-Za-z0-9]*)\s+-Arguments\s+@\((.*)\)\s*$`)
+	var calls []machineCommandCall
+	for index, line := range strings.Split(strings.ReplaceAll(script, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if !strings.Contains(trimmed, "Invoke-JsonLinesCommand -Executable") {
+			continue
+		}
+		match := pattern.FindStringSubmatch(trimmed)
+		if match == nil {
+			t.Errorf("PowerShell machine call on line %d is not pure executable syntax: %s", index+1, trimmed)
+			continue
+		}
+		arguments, ok := parsePowerShellArgumentArray(match[2])
+		if !ok {
+			t.Errorf("PowerShell machine call on line %d has unsupported arguments: %s", index+1, match[2])
+			continue
+		}
+		calls = append(calls, machineCommandCall{executable: match[1], arguments: arguments, line: index + 1})
+	}
+	return calls
+}
+
+func parsePowerShellArgumentArray(raw string) ([]string, bool) {
+	parts := strings.Split(raw, ",")
+	arguments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value, err := strconv.Unquote(strings.TrimSpace(part))
+		if err != nil {
+			return nil, false
+		}
+		arguments = append(arguments, value)
+	}
+	return arguments, len(arguments) > 0
+}
+
+func parseBashMachineCalls(t *testing.T, script string) []machineCommandCall {
+	t.Helper()
+	pattern := regexp.MustCompile(`^run_jsonl\s+"(\$[a-z_][a-z0-9_]*)"\s+([a-z]+(?:\s+--[a-z-]+)*)\s*$`)
+	var calls []machineCommandCall
+	for index, line := range strings.Split(strings.ReplaceAll(script, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, `run_jsonl "`) {
+			continue
+		}
+		match := pattern.FindStringSubmatch(trimmed)
+		if match == nil {
+			t.Errorf("Bash machine call on line %d is not pure executable syntax: %s", index+1, trimmed)
+			continue
+		}
+		calls = append(calls, machineCommandCall{executable: match[1], arguments: strings.Fields(match[2]), line: index + 1})
+	}
+	return calls
+}
+
+func assertMachineCalls(t *testing.T, name string, got, want []machineCommandCall) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("%s executable machine calls = %d, want %d", name, len(got), len(want))
+	}
+	for index := 0; index < min(len(got), len(want)); index++ {
+		gotSignature := got[index].executable + " " + strings.Join(got[index].arguments, " ")
+		wantSignature := want[index].executable + " " + strings.Join(want[index].arguments, " ")
+		if gotSignature != wantSignature {
+			t.Errorf("%s machine call %d = %q, want %q", name, index+1, gotSignature, wantSignature)
+		}
+	}
+}
+
+func assertScenarioCallOrder(t *testing.T, name string, calls []machineCommandCall, markers []string, terminalMarker, script string) {
+	t.Helper()
+	lines := strings.Split(strings.ReplaceAll(script, "\r\n", "\n"), "\n")
+	if len(calls) != len(markers) {
+		t.Errorf("%s scenario calls = %d, markers = %d", name, len(calls), len(markers))
+		return
+	}
+	markerLine := func(marker string) int {
+		for lineIndex, line := range lines {
+			if strings.Contains(line, marker) {
+				return lineIndex + 1
+			}
+		}
+		return 0
+	}
+	terminalLine := markerLine(terminalMarker)
+	if terminalLine == 0 {
+		t.Errorf("%s is missing terminal scenario marker %q", name, terminalMarker)
+		return
+	}
+	previousCallLine := 0
+	for index, marker := range markers {
+		startLine := markerLine(marker)
+		if startLine == 0 {
+			t.Errorf("%s is missing scenario marker %q", name, marker)
+			continue
+		}
+		endLine := terminalLine
+		for next := index + 1; next < len(markers); next++ {
+			if markers[next] != marker {
+				endLine = markerLine(markers[next])
+				break
+			}
+		}
+		if endLine == 0 || calls[index].line <= startLine || calls[index].line >= endLine {
+			t.Errorf("%s call %d on line %d is outside scenario %q lines (%d, %d)", name, index+1, calls[index].line, marker, startLine, endLine)
+		}
+		if calls[index].line <= previousCallLine {
+			t.Errorf("%s scenario machine calls are not strictly ordered at call %d", name, index+1)
+		}
+		previousCallLine = calls[index].line
 	}
 }
 
