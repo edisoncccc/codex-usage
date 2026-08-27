@@ -184,8 +184,8 @@ func (s *Scanner) scanPass(ctx context.Context, homes []string, progress *progre
 			result.Warnings += fileResult.Warnings
 			progress.fileProcessed()
 			if err != nil {
-				var changed *RebuildRequiredError
-				if errors.As(err, &changed) {
+				var recoverable *recoverableScanInputError
+				if !errors.As(err, &recoverable) {
 					return result, err
 				}
 				result.Warnings++
@@ -222,6 +222,31 @@ func (e *RebuildRequiredError) Error() string {
 	return e.Detail + "；现有统计已保留，需要用户确认后才能重建"
 }
 
+// recoverableScanInputError marks a malformed individual JSONL record or a
+// rollout that vanished while Codex rotated its session files. Only this
+// explicit input class is downgraded to a warning; execution failures from the
+// context, store, or reader must abort the scan.
+type recoverableScanInputError struct {
+	err error
+}
+
+func (e *recoverableScanInputError) Error() string { return e.err.Error() }
+func (e *recoverableScanInputError) Unwrap() error { return e.err }
+
+func recoverableScanInput(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &recoverableScanInputError{err: err}
+}
+
+func recoverableMissingRollout(err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return recoverableScanInput(err)
+	}
+	return err
+}
+
 func (s *Scanner) scanFile(
 	ctx context.Context,
 	home, path string,
@@ -255,7 +280,7 @@ func (s *Scanner) scanFile(
 		}
 		prefix, hashErr := hashFilePrefix(path, probeBytes)
 		if hashErr != nil {
-			return result, hashErr
+			return result, recoverableMissingRollout(hashErr)
 		}
 		if cursor.PrefixHash != "" && prefix != cursor.PrefixHash {
 			return result, &RebuildRequiredError{Kind: "rollout_rewritten", Path: path,
@@ -264,7 +289,7 @@ func (s *Scanner) scanFile(
 		if pendingForkReplay {
 			inspection, inspectErr := s.inspectRollout(ctx, path)
 			if inspectErr != nil {
-				return result, inspectErr
+				return result, recoverableMissingRollout(inspectErr)
 			}
 			if inspection.ReplayOffset > 0 {
 				cursor.Offset = inspection.ReplayOffset
@@ -275,7 +300,7 @@ func (s *Scanner) scanFile(
 				cursor.ModifiedNanos = info.ModTime().UnixNano()
 				cursor.PrefixHash, err = hashFilePrefix(path, minInt64(info.Size(), 4096))
 				if err != nil {
-					return result, err
+					return result, recoverableMissingRollout(err)
 				}
 				if err := s.Store.PutCursor(ctx, cursor); err != nil {
 					return result, err
@@ -296,7 +321,7 @@ func (s *Scanner) scanFile(
 		}
 		inspection, inspectErr := s.inspectRollout(ctx, path)
 		if inspectErr != nil {
-			return result, inspectErr
+			return result, recoverableMissingRollout(inspectErr)
 		}
 		if inspection.OwnerID != "" {
 			cursor.SessionID = inspection.OwnerID
@@ -318,7 +343,7 @@ func (s *Scanner) scanFile(
 			cursor.ModifiedNanos = info.ModTime().UnixNano()
 			cursor.PrefixHash, err = hashFilePrefix(path, minInt64(info.Size(), 4096))
 			if err != nil {
-				return result, err
+				return result, recoverableMissingRollout(err)
 			}
 			if err := s.Store.PutCursor(ctx, cursor); err != nil {
 				return result, err
@@ -333,7 +358,7 @@ func (s *Scanner) scanFile(
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return result, err
+		return result, recoverableMissingRollout(err)
 	}
 	defer file.Close()
 	if _, err := file.Seek(cursor.Offset, io.SeekStart); err != nil {
@@ -383,6 +408,10 @@ func (s *Scanner) scanFile(
 			if errors.As(parseErr, &changed) {
 				return result, parseErr
 			}
+			var recoverable *recoverableScanInputError
+			if !errors.As(parseErr, &recoverable) {
+				return result, parseErr
+			}
 			result.Warnings++
 			_ = s.Store.AddWarning(ctx, "jsonl_record", path,
 				fmt.Sprintf("offset=%d: %v", recordStart, parseErr))
@@ -400,7 +429,7 @@ func (s *Scanner) scanFile(
 	cursor.ModifiedNanos = info.ModTime().UnixNano()
 	cursor.PrefixHash, err = hashFilePrefix(path, minInt64(info.Size(), 4096))
 	if err != nil {
-		return result, err
+		return result, recoverableMissingRollout(err)
 	}
 	if err := s.Store.PutCursor(ctx, cursor); err != nil {
 		return result, err
@@ -508,13 +537,13 @@ func (s *Scanner) processRecord(
 ) error {
 	var env envelope
 	if err := json.Unmarshal(record, &env); err != nil {
-		return fmt.Errorf("损坏 JSON: %w", err)
+		return recoverableScanInput(fmt.Errorf("损坏 JSON: %w", err))
 	}
 	switch env.Type {
 	case "session_meta":
 		var payload sessionMetaPayload
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
-			return err
+			return recoverableScanInput(err)
 		}
 		candidateID := firstNonEmpty(payload.ID, payload.SessionID)
 		if cursor.SessionID == "" {
@@ -566,7 +595,7 @@ func (s *Scanner) processRecord(
 	case "turn_context":
 		var payload turnContextPayload
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
-			return err
+			return recoverableScanInput(err)
 		}
 		cursor.TurnID = firstNonEmpty(payload.TurnID, cursor.TurnID)
 		cursor.Model = firstNonEmpty(payload.Model, cursor.Model, meta.Model)
@@ -575,7 +604,7 @@ func (s *Scanner) processRecord(
 	case "event_msg":
 		var payload eventPayload
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
-			return err
+			return recoverableScanInput(err)
 		}
 		if payload.Type != "token_count" {
 			return nil
@@ -585,7 +614,7 @@ func (s *Scanner) processRecord(
 		}
 		var info tokenInfo
 		if err := json.Unmarshal(payload.Info, &info); err != nil {
-			return err
+			return recoverableScanInput(err)
 		}
 		current := info.Total.withMissingSubsets(cursor.Cumulative)
 		if current.IsZero() {
@@ -631,8 +660,10 @@ func (s *Scanner) processRecord(
 			} else {
 				last := info.Last.usage()
 				if last.IsZero() || !last.NonNegative() {
-					return fmt.Errorf("累计 Token 回退且 last_token_usage 不可用: previous=(%s), current=(%s)",
-						cursor.Cumulative, current)
+					return recoverableScanInput(fmt.Errorf(
+						"累计 Token 回退且 last_token_usage 不可用: previous=(%s), current=(%s)",
+						cursor.Cumulative, current,
+					))
 				}
 				cursor.Segment++
 				delta = last
@@ -647,7 +678,7 @@ func (s *Scanner) processRecord(
 			return nil
 		}
 		if !delta.NonNegative() {
-			return fmt.Errorf("计算出负 Token 增量: %s", delta)
+			return recoverableScanInput(fmt.Errorf("计算出负 Token 增量: %s", delta))
 		}
 		timestamp, parseErr := parseTimestamp(env.Timestamp)
 		if parseErr != nil {

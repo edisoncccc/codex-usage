@@ -913,6 +913,141 @@ func TestRewriteAndTruncationWaitForApprovalBeforeReplacingHistory(t *testing.T)
 	}
 }
 
+func TestScannerPutCursorFailureIsHardError(t *testing.T) {
+	root, home, _ := writeScannerRollout(t,
+		`{"timestamp":"2026-08-27T01:00:00Z","type":"turn_context","payload":{"turn_id":"cursor-failure","model":"gpt-test"}}`,
+	)
+	databasePath := filepath.Join(root, "usage.sqlite")
+	st, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	installScannerAbortTrigger(t, databasePath, "file_cursors", "forced PutCursor failure")
+
+	result, err := (&Scanner{Store: st}).Scan(context.Background(), []string{home}, false)
+	if err == nil || !strings.Contains(err.Error(), "forced PutCursor failure") {
+		t.Fatalf("PutCursor failure was downgraded: result=%+v err=%v", result, err)
+	}
+}
+
+func TestScannerRecordUpsertSessionFailureIsHardError(t *testing.T) {
+	root, home, _ := writeScannerRollout(t,
+		`{"timestamp":"2026-08-27T01:00:00Z","type":"session_meta","payload":{"id":"upsert-failure","cwd":"/project"}}`,
+		tokenLine("2026-08-27T01:00:01Z", usage(8, 1, 0, 2, 0, 10), usage(8, 1, 0, 2, 0, 10)),
+	)
+	databasePath := filepath.Join(root, "usage.sqlite")
+	st, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	installScannerAbortTrigger(t, databasePath, "sessions", "forced UpsertSession failure")
+
+	result, err := (&Scanner{Store: st}).Scan(context.Background(), []string{home}, false)
+	if err == nil || !strings.Contains(err.Error(), "forced UpsertSession failure") {
+		t.Fatalf("record UpsertSession failure was downgraded: result=%+v err=%v", result, err)
+	}
+}
+
+func TestScannerContextCancellationInsideFileIsHardError(t *testing.T) {
+	root, home, _ := writeScannerRollout(t,
+		`{"timestamp":"2026-08-27T01:00:00Z","type":"turn_context","payload":{"turn_id":"cancelled-scan","model":"gpt-test"}}`,
+	)
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result, err := (&Scanner{Store: st}).ScanWithProgress(ctx, []string{home}, false, func(progress ScanProgress) {
+		if progress.HomesDiscovered == 1 && progress.FilesDiscovered == 0 {
+			cancel()
+		}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("in-file context cancellation was downgraded: result=%+v err=%v", result, err)
+	}
+}
+
+func TestScannerMalformedRecordRemainsWarningAndContinues(t *testing.T) {
+	root, home, _ := writeScannerRollout(t,
+		`{"timestamp":"2026-08-27T01:00:00Z","type":"session_meta","payload":BROKEN}`,
+		`{"timestamp":"2026-08-27T01:00:01Z","type":"session_meta","payload":{"id":"valid-after-warning","cwd":"/project"}}`,
+		tokenLine("2026-08-27T01:00:02Z", usage(8, 1, 0, 2, 0, 10), usage(8, 1, 0, 2, 0, 10)),
+	)
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	result, err := (&Scanner{Store: st}).Scan(context.Background(), []string{home}, false)
+	if err != nil {
+		t.Fatalf("malformed input should remain recoverable: %v", err)
+	}
+	if result.Warnings != 1 || result.EventsInserted != 1 {
+		t.Fatalf("scanner did not continue after malformed input: %+v", result)
+	}
+}
+
+func TestScannerVanishedRolloutRemainsWarning(t *testing.T) {
+	root, home, path := writeScannerRollout(t,
+		`{"timestamp":"2026-08-27T01:00:00Z","type":"turn_context","payload":{"turn_id":"vanished-rollout","model":"gpt-test"}}`,
+	)
+	st, err := store.Open(filepath.Join(root, "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	movedPath := path + ".moved"
+
+	result, err := (&Scanner{Store: st}).ScanWithProgress(context.Background(), []string{home}, false, func(progress ScanProgress) {
+		if progress.FilesDiscovered == 1 {
+			if renameErr := os.Rename(path, movedPath); renameErr != nil && !errors.Is(renameErr, os.ErrNotExist) {
+				t.Fatalf("move rollout after discovery: %v", renameErr)
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("a rollout that vanished after discovery should remain recoverable: %v", err)
+	}
+	if result.Warnings != 1 {
+		t.Fatalf("vanished rollout was not reported once: %+v", result)
+	}
+}
+
+func writeScannerRollout(t *testing.T, lines ...string) (root, home, path string) {
+	t.Helper()
+	root = t.TempDir()
+	home = filepath.Join(root, ".codex")
+	directory := filepath.Join(home, "sessions")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path = filepath.Join(directory, "scanner-error.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root, home, path
+}
+
+func installScannerAbortTrigger(t *testing.T, databasePath, table, message string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	statement := fmt.Sprintf(`CREATE TRIGGER fail_%s BEFORE INSERT ON %s
+		BEGIN SELECT RAISE(ABORT, %q); END`, table, table, message)
+	if _, err := db.Exec(statement); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExtendedWindowsPathPrefixNormalizesToOrdinaryPath(t *testing.T) {
 	ordinary := `C:\Users\demo\.codex\sessions\one.jsonl`
 	extended := `\\?\C:\Users\demo\.codex\sessions\one.jsonl`
