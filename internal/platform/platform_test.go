@@ -1757,6 +1757,72 @@ func TestLinuxUninstallServiceManagerOwnedPIDUsesSystemctlWithoutSignal(t *testi
 	}
 }
 
+func TestLinuxUninstallServiceManagerOwnedPIDSignalsResidualAfterSystemctlStop(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux manager-owned residual PID uninstall")
+	}
+	executable, stateDir, unitPath := linuxServiceFixture(t)
+	writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+	pidPath := filepath.Join(stateDir, "codex-usage.pid")
+	writeLinuxPIDFixture(t, stateDir, 424242)
+	commands := make([]string, 0, 4)
+	signaled, signalCalls, processProbes := false, 0, 0
+	ops := inertLinuxServiceOperations()
+	ops.LookPath = func(string) (string, error) { return "/fake/systemctl", nil }
+	ops.RunSystemctl = func(args ...string) ([]byte, error) {
+		command := strings.Join(args, " ")
+		commands = append(commands, command)
+		switch command {
+		case linuxSystemdSnapshotCommand:
+			return linuxSystemdSnapshotOutput(unitPath, "loaded", "enabled", "active", "no"), nil
+		case "--user stop codex-usage.service", "--user disable codex-usage.service", "--user daemon-reload":
+			return nil, nil
+		default:
+			t.Fatalf("unexpected systemctl command: %s", command)
+			return nil, nil
+		}
+	}
+	ops.ReadProcessExecutable = func(int) (string, error) {
+		if signaled {
+			return "", os.ErrNotExist
+		}
+		return executable, nil
+	}
+	ops.SignalProcess = func(pid int, signal os.Signal) error {
+		signalCalls++
+		if pid != 424242 || signal != syscall.SIGTERM {
+			t.Fatalf("unexpected signal target: pid=%d signal=%v", pid, signal)
+		}
+		signaled = true
+		return nil
+	}
+	ops.ProcessAlive = func(int) (bool, error) {
+		processProbes++
+		return !signaled, nil
+	}
+	restore := replaceLinuxServiceOperations(ops)
+	t.Cleanup(restore)
+
+	if err := UninstallService(executable, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	wantCommands := []string{
+		linuxSystemdSnapshotCommand,
+		"--user stop codex-usage.service",
+		"--user disable codex-usage.service",
+		"--user daemon-reload",
+	}
+	if !reflect.DeepEqual(commands, wantCommands) || signalCalls != 1 || processProbes == 0 {
+		t.Fatalf("residual uninstall commands=%v signal=%d probes=%d want commands=%v signal=1 bounded wait",
+			commands, signalCalls, processProbes, wantCommands)
+	}
+	for _, path := range []string{unitPath, pidPath} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("owned metadata remains after residual uninstall: %s: %v", path, err)
+		}
+	}
+}
+
 func TestLinuxUninstallServiceRejectsLoadedManagerWhenLocalUnitIsMissing(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux uninstall missing local unit manager ownership")
@@ -2096,6 +2162,95 @@ func TestLinuxStopServiceManagerOwnedPIDUsesSystemctlWithoutSignal(t *testing.T)
 	wantCommands := []string{linuxSystemdSnapshotCommand, "--user stop codex-usage.service"}
 	if !reflect.DeepEqual(commands, wantCommands) || signalCalls != 0 {
 		t.Fatalf("manager-owned stop commands=%v signal=%d want commands=%v signal=0", commands, signalCalls, wantCommands)
+	}
+}
+
+func TestLinuxStopServiceManagerOwnedPIDSignalsResidualAfterSystemctlStop(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux manager-owned residual PID stop")
+	}
+	executable, stateDir, unitPath := linuxServiceFixture(t)
+	writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+	writeLinuxPIDFixture(t, stateDir, 424242)
+	commands := make([]string, 0, 2)
+	signaled, signalCalls, processProbes := false, 0, 0
+	ops := inertLinuxServiceOperations()
+	ops.LookPath = func(string) (string, error) { return "/fake/systemctl", nil }
+	ops.RunSystemctl = func(args ...string) ([]byte, error) {
+		command := strings.Join(args, " ")
+		commands = append(commands, command)
+		if command == linuxSystemdSnapshotCommand {
+			return linuxSystemdSnapshotOutput(unitPath, "loaded", "enabled", "active", "no"), nil
+		}
+		if command != "--user stop codex-usage.service" {
+			t.Fatalf("unexpected systemctl command: %s", command)
+		}
+		return nil, nil
+	}
+	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
+	ops.SignalProcess = func(pid int, signal os.Signal) error {
+		signalCalls++
+		if pid != 424242 || signal != syscall.SIGTERM {
+			t.Fatalf("unexpected signal target: pid=%d signal=%v", pid, signal)
+		}
+		signaled = true
+		return nil
+	}
+	ops.ProcessAlive = func(int) (bool, error) {
+		processProbes++
+		return !signaled, nil
+	}
+	restore := replaceLinuxServiceOperations(ops)
+	t.Cleanup(restore)
+
+	if err := StopService(executable, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	wantCommands := []string{linuxSystemdSnapshotCommand, "--user stop codex-usage.service"}
+	if !reflect.DeepEqual(commands, wantCommands) || signalCalls != 1 || processProbes == 0 {
+		t.Fatalf("residual stop commands=%v signal=%d probes=%d want commands=%v signal=1 bounded wait",
+			commands, signalCalls, processProbes, wantCommands)
+	}
+}
+
+func TestLinuxStopServiceRejectsPostStopPIDReuseWithoutSignal(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux post-stop PID reuse")
+	}
+	executable, stateDir, unitPath := linuxServiceFixture(t)
+	writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+	writeLinuxPIDFixture(t, stateDir, 424242)
+	stopped, signalCalls := false, 0
+	ops := inertLinuxServiceOperations()
+	ops.LookPath = func(string) (string, error) { return "/fake/systemctl", nil }
+	ops.RunSystemctl = func(args ...string) ([]byte, error) {
+		switch strings.Join(args, " ") {
+		case linuxSystemdSnapshotCommand:
+			return linuxSystemdSnapshotOutput(unitPath, "loaded", "enabled", "active", "no"), nil
+		case "--user stop codex-usage.service":
+			stopped = true
+			return nil, nil
+		default:
+			t.Fatalf("unexpected systemctl command: %v", args)
+			return nil, nil
+		}
+	}
+	ops.ReadProcessExecutable = func(int) (string, error) {
+		if stopped {
+			return filepath.Join(filepath.Dir(stateDir), "foreign", "codex-usage"), nil
+		}
+		return executable, nil
+	}
+	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	restore := replaceLinuxServiceOperations(ops)
+	t.Cleanup(restore)
+
+	err := StopService(executable, stateDir)
+	if err == nil || !strings.Contains(err.Error(), "existing_install_untrusted") {
+		t.Fatalf("post-stop PID reuse error=%v want existing_install_untrusted", err)
+	}
+	if signalCalls != 0 {
+		t.Fatalf("post-stop foreign PID was signaled %d times", signalCalls)
 	}
 }
 

@@ -673,7 +673,7 @@ func stopInspectedLinuxPIDFile(
 	return true, nil
 }
 
-func waitForInspectedLinuxPIDFile(
+func stopResidualManagerOwnedLinuxPIDFile(
 	preflight currentLinuxPIDInspection,
 	expectedExecutable string,
 	ops linuxServiceOperations,
@@ -685,10 +685,7 @@ func waitForInspectedLinuxPIDFile(
 	if !current.exists || !current.processExists {
 		return false, nil
 	}
-	if err := waitForLinuxPIDExit(current.pid, ops); err != nil {
-		return false, err
-	}
-	return true, nil
+	return stopInspectedLinuxPIDFile(current, expectedExecutable, ops)
 }
 
 func waitForLinuxPIDExit(pid int, ops linuxServiceOperations) error {
@@ -723,8 +720,8 @@ func stopLinuxService(executable, stateDir string, ops linuxServiceOperations) e
 		}
 	}
 	if preflight.managerProcessOwned && systemdErr == nil {
-		_, waitErr := waitForInspectedLinuxPIDFile(preflight.pid, executable, ops)
-		return waitErr
+		_, stopErr := stopResidualManagerOwnedLinuxPIDFile(preflight.pid, executable, ops)
+		return stopErr
 	}
 	stopped, pidErr := stopInspectedLinuxPIDFile(preflight.pid, executable, ops)
 	if pidErr != nil {
@@ -754,8 +751,8 @@ func UninstallService(executable, stateDir string) error {
 		}
 	}
 	if preflight.managerProcessOwned && systemdErr == nil {
-		if _, waitErr := waitForInspectedLinuxPIDFile(preflight.pid, executable, ops); waitErr != nil {
-			return waitErr
+		if _, stopErr := stopResidualManagerOwnedLinuxPIDFile(preflight.pid, executable, ops); stopErr != nil {
+			return stopErr
 		}
 	} else {
 		stopped, pidErr := stopInspectedLinuxPIDFile(preflight.pid, executable, ops)
