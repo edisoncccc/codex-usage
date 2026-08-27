@@ -178,24 +178,26 @@ func TestSourceOnlyWorkflowValidatorRejectsPublishingBypasses(t *testing.T) {
 
 func TestLifecycleScriptsRequireHostedRunnerGateBeforeSideEffects(t *testing.T) {
 	tests := []struct {
-		name              string
-		path              string
-		firstExecutable   string
-		gateClose         string
-		canonicalFragment string
-		requiredGate      []string
-		sideEffects       []*regexp.Regexp
+		name         string
+		path         string
+		expectedGate string
+		sideEffects  []*regexp.Regexp
 	}{
 		{
-			name:              "Windows",
-			path:              filepath.Join("tests", "install-windows.ps1"),
-			firstExecutable:   "if (",
-			gateClose:         "\n}",
-			canonicalFragment: "Resolve-Path",
-			requiredGate: []string{
-				"$env:GITHUB_ACTIONS", "$env:CI", "$env:RUNNER_ENVIRONMENT",
-				"github-hosted", "$env:RUNNER_TEMP", "IsPathFullyQualified", "GetFullPath",
-			},
+			name: "Windows",
+			path: filepath.Join("tests", "install-windows.ps1"),
+			expectedGate: `if (
+    $env:GITHUB_ACTIONS -cne "true" -or
+    $env:CI -cne "true" -or
+    $env:RUNNER_ENVIRONMENT -cne "github-hosted" -or
+    [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -or
+    -not [System.IO.Path]::IsPathFullyQualified($env:RUNNER_TEMP) -or
+    -not (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container) -or
+    [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path)) -ne
+        [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($env:RUNNER_TEMP))
+) {
+    throw "This lifecycle test is restricted to a canonical GitHub-hosted RUNNER_TEMP."
+}`,
 			sideEffects: []*regexp.Regexp{
 				regexp.MustCompile(`(?m)^\s*New-Item\b`),
 				regexp.MustCompile(`(?m)^\s*&\s+\$Go\s+build\b`),
@@ -204,14 +206,15 @@ func TestLifecycleScriptsRequireHostedRunnerGateBeforeSideEffects(t *testing.T) 
 			},
 		},
 		{
-			name:              "Linux",
-			path:              filepath.Join("tests", "install-linux.sh"),
-			firstExecutable:   "if [[",
-			gateClose:         "\nfi",
-			canonicalFragment: "pwd -P",
-			requiredGate: []string{
-				"GITHUB_ACTIONS", "CI", "RUNNER_ENVIRONMENT", "github-hosted", "RUNNER_TEMP",
-			},
+			name: "Linux",
+			path: filepath.Join("tests", "install-linux.sh"),
+			expectedGate: `if [[ "${GITHUB_ACTIONS:-}" != "true" || "${CI:-}" != "true" ||
+      "${RUNNER_ENVIRONMENT:-}" != "github-hosted" || -z "${RUNNER_TEMP:-}" ||
+      "$RUNNER_TEMP" != /* || ! -d "$RUNNER_TEMP" ||
+      "$RUNNER_TEMP" != "$(cd -- "$RUNNER_TEMP" 2>/dev/null && pwd -P)" ]]; then
+  printf '%s\n' 'This lifecycle test is restricted to a canonical GitHub-hosted RUNNER_TEMP.' >&2
+  exit 1
+fi`,
 			sideEffects: []*regexp.Regexp{
 				regexp.MustCompile(`(?m)^\s*(?:mkdir|mktemp)\b`),
 				regexp.MustCompile(`(?m)^\s*CGO_ENABLED=0\s+go\s+build\b`),
@@ -224,21 +227,12 @@ func TestLifecycleScriptsRequireHostedRunnerGateBeforeSideEffects(t *testing.T) 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			script := readRepositoryDocument(t, test.path)
-			if line := firstExecutableScriptLine(script); !strings.HasPrefix(line, test.firstExecutable) {
-				t.Fatalf("first executable line = %q, want prefix %q", line, test.firstExecutable)
-			}
-			gateEnd := strings.Index(script, test.gateClose)
-			if gateEnd < 0 {
-				t.Fatalf("hosted-runner gate has no closing %q", test.gateClose)
-			}
-			gate := script[:gateEnd]
-			for _, fragment := range append(test.requiredGate, test.canonicalFragment) {
-				if !strings.Contains(gate, fragment) {
-					t.Errorf("hosted-runner gate is missing %q", fragment)
-				}
+			body := executableScriptBody(script)
+			if !strings.HasPrefix(body, test.expectedGate+"\n") {
+				t.Fatalf("first executable block is not the exact fail-closed hosted-runner gate\ngot:\n%s", body[:min(len(body), len(test.expectedGate)+80)])
 			}
 			for _, sideEffect := range test.sideEffects {
-				if location := sideEffect.FindStringIndex(script); location != nil && location[0] < gateEnd {
+				if location := sideEffect.FindStringIndex(body); location != nil && location[0] < len(test.expectedGate) {
 					t.Errorf("side effect %q appears before hosted-runner gate closes", sideEffect)
 				}
 			}
@@ -256,23 +250,26 @@ func TestLifecycleScriptsIsolateHomesAndLockJSONLContract(t *testing.T) {
 	windows := readRepositoryDocument(t, filepath.Join("tests", "install-windows.ps1"))
 	linux := readRepositoryDocument(t, filepath.Join("tests", "install-linux.sh"))
 
-	for _, fragment := range []string{
-		"CODEX_USAGE_HOME", "CODEX_HOME",
-		"codex-usage-lifecycle-state-", "codex-usage-lifecycle-codex-",
-	} {
-		if !strings.Contains(windows, fragment) {
-			t.Errorf("Windows lifecycle script is missing isolated path contract %q", fragment)
-		}
-	}
-	for _, fragment := range []string{
-		"CODEX_USAGE_HOME", "CODEX_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
-		"codex-usage-lifecycle-state.", "codex-usage-lifecycle-codex.",
-		"codex-usage-lifecycle-xdg-data.", "codex-usage-lifecycle-xdg-config.",
-	} {
-		if !strings.Contains(linux, fragment) {
-			t.Errorf("Linux lifecycle script is missing isolated path contract %q", fragment)
-		}
-	}
+	assertExecutableLines(t, "Windows", windows, []string{
+		`$RunnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP)`,
+		`$StateRoot = Join-Path $RunnerTemp "codex-usage-lifecycle-state-$RunID"`,
+		`$CodexHome = Join-Path $RunnerTemp "codex-usage-lifecycle-codex-$RunID"`,
+		`$BuildRoot = Join-Path $RunnerTemp "codex-usage-lifecycle-build-$RunID"`,
+		`$TempRoot = Join-Path $RunnerTemp "codex-usage-lifecycle-temp-$RunID"`,
+		`$env:CODEX_USAGE_HOME = $StateRoot`,
+		`$env:CODEX_HOME = $CodexHome`,
+	})
+	assertExecutableLines(t, "Linux", linux, []string{
+		`runner_temp="$RUNNER_TEMP"`,
+		`state_root="$(mktemp -d "$runner_temp/codex-usage-lifecycle-state.XXXXXX")"`,
+		`codex_home="$(mktemp -d "$runner_temp/codex-usage-lifecycle-codex.XXXXXX")"`,
+		`xdg_data="$(mktemp -d "$runner_temp/codex-usage-lifecycle-xdg-data.XXXXXX")"`,
+		`xdg_config="$(mktemp -d "$runner_temp/codex-usage-lifecycle-xdg-config.XXXXXX")"`,
+		`export CODEX_USAGE_HOME="$state_root"`,
+		`export CODEX_HOME="$codex_home"`,
+		`export XDG_DATA_HOME="$xdg_data"`,
+		`export XDG_CONFIG_HOME="$xdg_config"`,
+	})
 
 	requiredProtocol := []string{
 		"schema_version", "event", "phase", "status", "timestamp", "terminal",
@@ -292,6 +289,67 @@ func TestLifecycleScriptsIsolateHomesAndLockJSONLContract(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestLifecycleScriptsVerifyServiceOwnershipAndRemoval(t *testing.T) {
+	windows := executableScriptBody(readRepositoryDocument(t, filepath.Join("tests", "install-windows.ps1")))
+	for _, fragment := range []string{
+		"function Assert-WindowsServiceState {",
+		`Get-ItemPropertyValue -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" -Name "CodexUsage" -ErrorAction Stop`,
+		`$ExpectedRunValue = "wscript.exe //B //Nologo ` + "`\"" + `$LauncherPath` + "`\"" + `"`,
+		`[System.IO.File]::ReadAllText($LauncherPath)`,
+		`Get-Process -Id $ServicePID -ErrorAction Stop`,
+		"function Assert-WindowsServiceRemoved {",
+		`Get-Process -Id $ExpectedPID -ErrorAction SilentlyContinue`,
+	} {
+		if !strings.Contains(windows, fragment) {
+			t.Errorf("Windows lifecycle script is missing executable ownership assertion %q", fragment)
+		}
+	}
+	if count := strings.Count(windows, "Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary"); count != 4 {
+		t.Errorf("Windows service state assertion calls = %d, want 4", count)
+	}
+	assertFragmentsInOrder(t, "Windows lifecycle", windows, []string{
+		`Write-Host "Scenario 1:`, "Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary",
+		`Write-Host "Scenario 2:`, "Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary",
+		`Write-Host "Scenario 3:`, "Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary",
+		`Write-Host "Scenario 4:`, "Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary",
+		`Write-Host "Scenario 6-7:`, "$DefaultServicePID = Get-WindowsServicePID", "$DefaultUninstall =",
+		"Assert-WindowsServiceRemoved -ExpectedExecutable $InstalledBinary -ExpectedPID $DefaultServicePID",
+		`Write-Host "Scenario 8:`,
+	})
+
+	linux := executableScriptBody(readRepositoryDocument(t, filepath.Join("tests", "install-linux.sh")))
+	for _, fragment := range []string{
+		"assert_service_state() {",
+		"command -v systemctl >/dev/null || fail 'systemctl is unavailable'",
+		"systemctl --user show-environment >/dev/null 2>&1 || fail 'systemd user manager is unavailable'",
+		"systemctl --user import-environment CODEX_USAGE_HOME CODEX_HOME XDG_DATA_HOME XDG_CONFIG_HOME",
+		"ExecStart=",
+		"systemctl --user is-enabled codex-usage.service",
+		"systemctl --user is-active --quiet codex-usage.service",
+		"systemctl --user show -p MainPID --value codex-usage.service",
+		`readlink -f "/proc/$service_pid/exe"`,
+		`[[ "$mode" == persistent ]]`,
+		`[[ "$mode" == detached_fallback ]]`,
+		"assert_service_removed() {",
+		`"/proc/$expected_pid/stat"`,
+	} {
+		if !strings.Contains(linux, fragment) {
+			t.Errorf("Linux lifecycle script is missing executable ownership assertion %q", fragment)
+		}
+	}
+	if count := strings.Count(linux, `assert_service_state "$installed_binary" "$service_mode"`); count != 4 {
+		t.Errorf("Linux service state assertion calls = %d, want 4", count)
+	}
+	assertFragmentsInOrder(t, "Linux lifecycle", linux, []string{
+		"'Scenario 1:", `assert_service_state "$installed_binary" "$service_mode"`,
+		"'Scenario 2:", `assert_service_state "$installed_binary" "$service_mode"`,
+		"'Scenario 3:", `assert_service_state "$installed_binary" "$service_mode"`,
+		"'Scenario 4:", `assert_service_state "$installed_binary" "$service_mode"`,
+		"'Scenario 6:", `default_service_pid="$(read_service_pid)"`, "default_uninstall_terminal=", "assert_service_removed",
+		"'Scenario 7-8:",
+	})
 }
 
 func TestCIWorkflowUsesHostedLifecycleMatrixWithoutPublishing(t *testing.T) {
@@ -328,15 +386,45 @@ func TestWorkflowsKeepLifecycleOutsidePagesAndReleaseTrust(t *testing.T) {
 	}
 }
 
-func firstExecutableScriptLine(script string) string {
-	for _, line := range strings.Split(script, "\n") {
+func executableScriptBody(script string) string {
+	lines := strings.Split(strings.ReplaceAll(script, "\r\n", "\n"), "\n")
+	for index, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		return trimmed
+		return strings.Join(lines[index:], "\n")
 	}
 	return ""
+}
+
+func assertExecutableLines(t *testing.T, name, script string, required []string) {
+	t.Helper()
+	lines := map[string]int{}
+	for _, line := range strings.Split(executableScriptBody(script), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			lines[trimmed]++
+		}
+	}
+	for _, line := range required {
+		if lines[line] != 1 {
+			t.Errorf("%s executable line %q occurs %d times, want exactly once", name, line, lines[line])
+		}
+	}
+}
+
+func assertFragmentsInOrder(t *testing.T, name, document string, fragments []string) {
+	t.Helper()
+	cursor := 0
+	for _, fragment := range fragments {
+		location := strings.Index(document[cursor:], fragment)
+		if location < 0 {
+			t.Errorf("%s is missing ordered fragment %q after byte %d", name, fragment, cursor)
+			return
+		}
+		cursor += location + len(fragment)
+	}
 }
 
 func assertWorkflowHasNoPublishingCapability(t *testing.T, name, workflow string) {

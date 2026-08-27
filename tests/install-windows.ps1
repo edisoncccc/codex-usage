@@ -179,6 +179,128 @@ function Assert-DoctorHealthy {
     }
 }
 
+function Get-WindowsServicePID {
+    $PidPath = Join-Path $StateRoot "codex-usage.pid"
+    if (-not (Test-Path -LiteralPath $PidPath -PathType Leaf)) {
+        throw "Test service PID file is missing"
+    }
+    $ServicePID = 0
+    if (-not [int]::TryParse((Get-Content -LiteralPath $PidPath -Raw).Trim(), [ref]$ServicePID) -or $ServicePID -le 0 -or $ServicePID -eq $PID) {
+        throw "Test service PID metadata is invalid"
+    }
+    return $ServicePID
+}
+
+function Get-WindowsServiceProcess {
+    param([Parameter(Mandatory)][string]$ExpectedExecutable)
+
+    $CanonicalExecutable = [System.IO.Path]::GetFullPath($ExpectedExecutable)
+    if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($CanonicalExecutable, $ExpectedExecutable)) {
+        throw "Installed executable path is not canonical: $ExpectedExecutable"
+    }
+    $ExpectedExecutable = $CanonicalExecutable
+    $Deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ([DateTime]::UtcNow -lt $Deadline) {
+        $ServicePID = Get-WindowsServicePID
+        try {
+            $ServiceProcess = Get-Process -Id $ServicePID -ErrorAction Stop
+            $ProcessPath = [System.IO.Path]::GetFullPath($ServiceProcess.Path)
+            $ServiceProcess.Refresh()
+            if ($ServiceProcess.HasExited) {
+                throw "Service process exited during ownership validation"
+            }
+        } catch {
+            Start-Sleep -Milliseconds 100
+            continue
+        }
+        if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($ProcessPath, $ExpectedExecutable)) {
+            throw "PID points to an unexpected executable: $ProcessPath"
+        }
+        return $ServiceProcess
+    }
+    throw "Timed out validating the installed service process"
+}
+
+function Assert-WindowsServiceState {
+    param([Parameter(Mandatory)][string]$ExpectedExecutable)
+
+    $CanonicalExecutable = [System.IO.Path]::GetFullPath($ExpectedExecutable)
+    if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($CanonicalExecutable, $ExpectedExecutable)) {
+        throw "Installed executable path is not canonical: $ExpectedExecutable"
+    }
+    $ExpectedExecutable = $CanonicalExecutable
+    Assert-PathUnderRunnerTemp -Path $ExpectedExecutable
+    $LauncherPath = Join-Path $StateRoot "codex-usage-start.vbs"
+    Assert-PathUnderRunnerTemp -Path $LauncherPath
+    if (-not (Test-Path -LiteralPath $LauncherPath -PathType Leaf)) {
+        throw "Windows current-user launcher is missing"
+    }
+
+    $ExpectedRunValue = "wscript.exe //B //Nologo `"$LauncherPath`""
+    $RunValue = Get-ItemPropertyValue -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" -Name "CodexUsage" -ErrorAction Stop
+    if ($RunValue -cne $ExpectedRunValue) {
+        throw "HKCU Run entry does not target the isolated launcher: $RunValue"
+    }
+
+    $VBSExecutable = $ExpectedExecutable.Replace('"', '""')
+    $VBSState = $StateRoot.Replace('"', '""')
+    $ExpectedLauncher = 'Set shell = CreateObject("WScript.Shell")' + "`r`n" +
+        'shell.Environment("Process")("CODEX_USAGE_HOME") = "' + $VBSState + '"' + "`r`n" +
+        'shell.Run Chr(34) & "' + $VBSExecutable + '" & Chr(34) & " daemon", 0, False' + "`r`n"
+    $ActualLauncher = [System.IO.File]::ReadAllText($LauncherPath)
+    if ($ActualLauncher -cne $ExpectedLauncher) {
+        throw "Windows launcher does not exactly target the installed executable and daemon argument"
+    }
+
+    $ServicePID = Get-WindowsServicePID
+    $ServiceProcess = Get-WindowsServiceProcess -ExpectedExecutable $ExpectedExecutable
+    if ($ServiceProcess.Id -ne $ServicePID) {
+        throw "PID file changed during service ownership validation"
+    }
+}
+
+function Assert-WindowsServiceRemoved {
+    param(
+        [Parameter(Mandatory)][string]$ExpectedExecutable,
+        [Parameter(Mandatory)][int]$ExpectedPID
+    )
+
+    $CanonicalExecutable = [System.IO.Path]::GetFullPath($ExpectedExecutable)
+    if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($CanonicalExecutable, $ExpectedExecutable)) {
+        throw "Installed executable path is not canonical: $ExpectedExecutable"
+    }
+    $ExpectedExecutable = $CanonicalExecutable
+    $RunValue = Get-ItemPropertyValue -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" -Name "CodexUsage" -ErrorAction SilentlyContinue
+    if ($null -ne $RunValue) {
+        throw "HKCU Run entry remained after default uninstall"
+    }
+    foreach ($Path in @((Join-Path $StateRoot "codex-usage-start.vbs"), (Join-Path $StateRoot "codex-usage.pid"))) {
+        if (Test-Path -LiteralPath $Path) {
+            throw "Windows service metadata remained after default uninstall: $Path"
+        }
+    }
+
+    $Deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ($true) {
+        $ServiceProcess = Get-Process -Id $ExpectedPID -ErrorAction SilentlyContinue
+        if ($null -eq $ServiceProcess) {
+            return
+        }
+        try {
+            $ProcessPath = [System.IO.Path]::GetFullPath($ServiceProcess.Path)
+        } catch {
+            $ProcessPath = ""
+        }
+        if ($ProcessPath -and -not [System.StringComparer]::OrdinalIgnoreCase.Equals($ProcessPath, $ExpectedExecutable)) {
+            return
+        }
+        if ([DateTime]::UtcNow -ge $Deadline) {
+            throw "Installed service process remained after default uninstall: $ExpectedPID"
+        }
+        Start-Sleep -Milliseconds 100
+    }
+}
+
 function Stop-TestService {
     param([Parameter(Mandatory)][string]$ExpectedExecutable)
 
@@ -268,6 +390,7 @@ if ($OldInstall.Terminal.result.identity.version -ne "2.3.5" -or $OldInstall.Ter
 }
 $InstalledBinary = [string]$OldInstall.Terminal.result.install_path
 Assert-DoctorHealthy -Executable $InstalledBinary -ExpectedVersion "2.3.5"
+Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary
 if (-not (Test-Path -LiteralPath $OldInstall.Terminal.result.database_path -PathType Leaf)) {
     throw "Fresh install did not create the isolated database"
 }
@@ -283,12 +406,14 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $InstalledBinary).Hash -ne $Ins
     throw "Idempotent install changed the executable digest or install record"
 }
 Assert-DoctorHealthy -Executable $InstalledBinary -ExpectedVersion "2.3.5"
+Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary
 
 Write-Host "Scenario 3: stopped service repair"
 Stop-TestService -ExpectedExecutable $InstalledBinary
 $Repair = Invoke-JsonLinesCommand -Executable $OldBinary -Arguments @("install", "--yes", "--json") # install --yes --json
 Assert-ReceiptPaths -Result $Repair.Terminal.result
 Assert-DoctorHealthy -Executable $InstalledBinary -ExpectedVersion "2.3.5"
+Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary
 
 $ConfigSHA256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ConfigPath).Hash
 $DatabasePath = [string]$Repair.Terminal.result.database_path
@@ -312,6 +437,7 @@ if ([int64]$AfterSummary.event_count -lt [int64]$BeforeSummary.event_count) {
     throw "Upgrade lost synthetic database events"
 }
 Assert-DoctorHealthy -Executable $InstalledBinary -ExpectedVersion "2.3.6"
+Assert-WindowsServiceState -ExpectedExecutable $InstalledBinary
 
 Write-Host "Scenario 5: JSON Lines scan"
 $Scan = Invoke-JsonLinesCommand -Executable $InstalledBinary -Arguments @("scan", "--json") # scan --json
@@ -321,6 +447,7 @@ if ($ScanProgress.Count -lt 1) {
 }
 
 Write-Host "Scenario 6-7: default uninstall and scheduled removal"
+$DefaultServicePID = Get-WindowsServicePID
 $DefaultUninstall = Invoke-JsonLinesCommand -Executable $InstalledBinary -Arguments @("uninstall", "--yes", "--json") # uninstall --yes --json
 Assert-ReceiptPaths -Result $DefaultUninstall.Terminal.result
 if ($DefaultUninstall.Terminal.result.program_removed -ne $false -or
@@ -332,6 +459,7 @@ if ($DefaultUninstall.Terminal.result.program_removed -ne $false -or
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf) -or -not (Test-Path -LiteralPath $DatabasePath -PathType Leaf)) {
     throw "Default uninstall did not preserve config/database"
 }
+Assert-WindowsServiceRemoved -ExpectedExecutable $InstalledBinary -ExpectedPID $DefaultServicePID
 Wait-PathAbsent -Path $InstalledBinary
 
 Write-Host "Scenario 8: reinstall then purge"

@@ -176,7 +176,121 @@ import sys
 for home in json.loads(sys.argv[1])['result']['homes']:
     print(home)
 PY
-)
+  )
+}
+
+read_service_pid() {
+  local pid_path="$state_root/codex-usage.pid" service_pid
+  [[ -f "$pid_path" ]] || fail "test service PID file is missing"
+  service_pid="$(tr -d '[:space:]' <"$pid_path")"
+  [[ "$service_pid" =~ ^[1-9][0-9]*$ && "$service_pid" != "$$" ]] || fail "invalid test service PID"
+  printf '%s\n' "$service_pid"
+}
+
+assert_pid_owns_executable() {
+  local expected_executable="$1" service_pid="$2" expected_canonical observed attempt
+  expected_canonical="$(realpath -m -- "$expected_executable")"
+  for attempt in $(seq 1 50); do
+    if kill -0 "$service_pid" 2>/dev/null; then
+      observed="$(readlink -f "/proc/$service_pid/exe" 2>/dev/null || true)"
+      if [[ -n "$observed" ]]; then
+        [[ "$observed" == "$expected_canonical" ]] || fail "PID $service_pid targets unexpected executable: $observed"
+        return
+      fi
+    fi
+    sleep 0.1
+  done
+  fail "timed out validating service PID $service_pid"
+}
+
+assert_exact_user_unit() {
+  local expected_executable="$1"
+  [[ -f "$unit_path" ]] || fail "Linux install did not create the isolated user unit"
+  assert_under_runner_temp "$unit_path"
+  python3 - "$unit_path" "$expected_executable" "$state_root" <<'PY'
+import pathlib
+import sys
+
+def systemd_quote(value):
+    return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
+
+unit_path, executable, state_dir = sys.argv[1:]
+expected = f'''[Unit]
+Description=Codex Usage local JSONL analytics service
+After=default.target
+
+[Service]
+Type=simple
+Environment={systemd_quote("CODEX_USAGE_HOME=" + state_dir)}
+ExecStart={systemd_quote(executable)} daemon
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+'''
+actual = pathlib.Path(unit_path).read_text(encoding='utf-8')
+if actual != expected:
+    raise SystemExit('user unit does not exactly target the isolated executable/state and daemon argument')
+PY
+}
+
+assert_service_state() {
+  local expected_executable="$1" mode="$2" expected_canonical service_pid main_pid fragment_path
+  expected_canonical="$(realpath -m -- "$expected_executable")"
+  [[ "$expected_executable" == "$expected_canonical" ]] || fail "installed executable path is not canonical: $expected_executable"
+  assert_under_runner_temp "$expected_executable"
+  assert_exact_user_unit "$expected_executable"
+
+  service_pid="$(read_service_pid)"
+  if [[ "$mode" == persistent ]]; then
+    systemctl --user is-enabled codex-usage.service >/dev/null || fail "persistent user unit is not enabled"
+    systemctl --user is-active --quiet codex-usage.service || fail "persistent user unit is not active"
+    main_pid="$(systemctl --user show -p MainPID --value codex-usage.service)"
+    [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] || fail "persistent user unit has invalid MainPID: $main_pid"
+    [[ "$service_pid" == "$main_pid" ]] || fail "PID file $service_pid does not match systemd MainPID $main_pid"
+    fragment_path="$(systemctl --user show -p FragmentPath --value codex-usage.service)"
+    [[ "$fragment_path" == "$unit_path" ]] || fail "systemd loaded an unexpected unit: $fragment_path"
+    assert_pid_owns_executable "$expected_executable" "$service_pid"
+    return
+  fi
+  if [[ "$mode" == detached_fallback ]]; then
+    if systemctl --user is-active --quiet codex-usage.service 2>/dev/null; then
+      fail "detached fallback unit must not masquerade as active"
+    fi
+    assert_pid_owns_executable "$expected_executable" "$service_pid"
+    return
+  fi
+  fail "unexpected service_mode: $mode"
+}
+
+assert_service_removed() {
+  local expected_executable="$1" expected_pid="$2" expected_canonical observed process_state attempt
+  expected_canonical="$(realpath -m -- "$expected_executable")"
+  [[ ! -e "$state_root/codex-usage.pid" ]] || fail "Linux uninstall left PID metadata"
+  [[ ! -e "$unit_path" ]] || fail "Linux uninstall left the user unit"
+  if systemctl --user is-active --quiet codex-usage.service 2>/dev/null; then
+    fail "Linux uninstall left the user unit active"
+  fi
+  if systemctl --user is-enabled codex-usage.service >/dev/null 2>&1; then
+    fail "Linux uninstall left the user unit enabled"
+  fi
+
+  for attempt in $(seq 1 50); do
+    if ! kill -0 "$expected_pid" 2>/dev/null; then
+      return
+    fi
+    process_state="$(awk '{print $3}' "/proc/$expected_pid/stat" 2>/dev/null || true)"
+    [[ "$process_state" == Z ]] && return
+    observed="$(readlink "/proc/$expected_pid/exe" 2>/dev/null || true)"
+    if [[ -n "$observed" && "$observed" != "$expected_canonical" && "$observed" != "$expected_canonical (deleted)" ]]; then
+      return
+    fi
+    sleep 0.1
+  done
+  fail "installed service process remained after Linux uninstall: $expected_pid"
 }
 
 stop_test_service() {
@@ -214,6 +328,9 @@ wait_path_absent() {
 command -v go >/dev/null || fail 'Go is unavailable'
 command -v python3 >/dev/null || fail 'python3 is unavailable'
 command -v realpath >/dev/null || fail 'realpath is unavailable'
+command -v systemctl >/dev/null || fail 'systemctl is unavailable'
+systemctl --user show-environment >/dev/null 2>&1 || fail 'systemd user manager is unavailable'
+systemctl --user import-environment CODEX_USAGE_HOME CODEX_HOME XDG_DATA_HOME XDG_CONFIG_HOME
 commit="$(git rev-parse HEAD)"
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail 'cannot resolve a full source commit'
 module='github.com/zJay26/codex-usage/internal/app'
@@ -254,10 +371,6 @@ cat >"$config_path" <<JSON
 }
 JSON
 
-if command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
-  systemctl --user import-environment CODEX_USAGE_HOME CODEX_HOME XDG_DATA_HOME XDG_CONFIG_HOME
-fi
-
 printf '%s\n' 'Scenario 1: fresh old identity install'
 run_jsonl "$old_binary" install --yes --json # install --yes --json
 old_install_terminal="$json_terminal"
@@ -271,6 +384,7 @@ unit_path="$xdg_config/systemd/user/codex-usage.service"
 [[ -f "$unit_path" ]] || fail 'Linux install did not create an isolated user unit'
 [[ -f "$database_path" ]] || fail 'fresh install did not create the isolated database'
 assert_doctor_healthy "$installed_binary" 2.3.5
+assert_service_state "$installed_binary" "$service_mode"
 
 printf '%s\n' 'Scenario 2: idempotent same-binary install'
 installed_sha256="$(sha256sum "$installed_binary" | awk '{print $1}')"
@@ -282,12 +396,14 @@ assert_receipt_paths "$json_terminal"
 [[ "$(sha256sum "$record_path" | awk '{print $1}')" == "$record_sha256" ]] || fail 'idempotent install changed record sha256'
 service_mode="$(json_get "$json_terminal" result.service_mode)"
 assert_doctor_healthy "$installed_binary" 2.3.5
+assert_service_state "$installed_binary" "$service_mode"
 
 printf '%s\n' 'Scenario 3: stopped service repair'
 stop_test_service "$installed_binary" "$service_mode"
 run_jsonl "$old_binary" install --yes --json # install --yes --json
 service_mode="$(json_get "$json_terminal" result.service_mode)"
 assert_doctor_healthy "$installed_binary" 2.3.5
+assert_service_state "$installed_binary" "$service_mode"
 
 config_sha256="$(sha256sum "$config_path" | awk '{print $1}')"
 run_object "$installed_binary" summary --since all --json
@@ -306,6 +422,7 @@ after_events="$(json_get "$object_json" event_count)"
 (( after_events >= before_events )) || fail 'upgrade lost synthetic database events'
 service_mode="$(json_get "$upgrade_terminal" result.service_mode)"
 assert_doctor_healthy "$installed_binary" 2.3.6
+assert_service_state "$installed_binary" "$service_mode"
 
 printf '%s\n' 'Scenario 5: JSON Lines scan'
 run_jsonl "$installed_binary" scan --json # scan --json
@@ -319,6 +436,7 @@ if not any(event.get('event') == 'progress' and event.get('phase') == 'scan' for
 PY
 
 printf '%s\n' 'Scenario 6: default uninstall preserves data'
+default_service_pid="$(read_service_pid)"
 run_jsonl "$installed_binary" uninstall --yes --json # uninstall --yes --json
 default_uninstall_terminal="$json_terminal"
 assert_receipt_paths "$default_uninstall_terminal"
@@ -327,7 +445,7 @@ assert_receipt_paths "$default_uninstall_terminal"
 [[ "$(json_get "$default_uninstall_terminal" result.data_preserved)" == true ]] || fail 'Linux default uninstall did not preserve data'
 [[ "$(json_get "$default_uninstall_terminal" result.purged)" == false ]] || fail 'Linux default uninstall reported purge'
 [[ ! -e "$installed_binary" && -f "$config_path" && -f "$database_path" ]] || fail 'Linux default uninstall path/data semantics failed'
-[[ ! -e "$unit_path" ]] || fail 'Linux default uninstall left the user unit'
+assert_service_removed "$installed_binary" "$default_service_pid"
 
 printf '%s\n' 'Scenario 7-8: synchronous state, reinstall, then purge'
 wait_path_absent "$installed_binary"
