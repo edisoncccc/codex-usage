@@ -586,7 +586,32 @@ func (s *Store) CorrectEventUsage(
 	segment int64,
 	difference model.TokenUsage,
 ) (bool, error) {
+	return s.correctEventUsage(ctx, eventID, sessionID, segment, difference, nil)
+}
+
+// CorrectEventUsageWithSessionProgress applies a classification correction
+// and advances the corresponding session high-water mark in one transaction.
+// A failed progress write rolls back every event correction.
+func (s *Store) CorrectEventUsageWithSessionProgress(
+	ctx context.Context,
+	eventID, sessionID string,
+	segment int64,
+	difference, progress model.TokenUsage,
+) (bool, error) {
+	return s.correctEventUsage(ctx, eventID, sessionID, segment, difference, &progress)
+}
+
+func (s *Store) correctEventUsage(
+	ctx context.Context,
+	eventID, sessionID string,
+	segment int64,
+	difference model.TokenUsage,
+	progress *model.TokenUsage,
+) (bool, error) {
 	if difference.IsZero() {
+		if progress != nil {
+			return false, s.PutSessionProgress(ctx, sessionID, segment, *progress)
+		}
 		return false, nil
 	}
 	if difference.Total != 0 || difference.Input+difference.Output != 0 {
@@ -597,10 +622,38 @@ func (s *Store) CorrectEventUsage(
 		return false, err
 	}
 	defer tx.Rollback()
+	changed, err := correctEventUsageInTx(ctx, tx, eventID, sessionID, segment, difference)
+	if err != nil {
+		return false, err
+	}
+	if progress != nil {
+		if err := putSessionProgress(ctx, tx, sessionID, segment, *progress); err != nil {
+			return false, err
+		}
+	}
+	if !changed && progress == nil {
+		return false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	if changed {
+		s.revision.Add(1)
+	}
+	return changed, nil
+}
+
+func correctEventUsageInTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	eventID, sessionID string,
+	segment int64,
+	difference model.TokenUsage,
+) (bool, error) {
 	if eventID != "" {
 		var anchorSession string
 		var anchorSegment int64
-		err = tx.QueryRowContext(ctx, `SELECT session_id,segment FROM usage_events
+		err := tx.QueryRowContext(ctx, `SELECT session_id,segment FROM usage_events
 			WHERE id=? AND provenance='session_jsonl'`, eventID).Scan(&anchorSession, &anchorSegment)
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
@@ -680,10 +733,6 @@ func (s *Store) CorrectEventUsage(
 	if !changed {
 		return false, nil
 	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	s.revision.Add(1)
 	return true, nil
 }
 
@@ -866,11 +915,25 @@ func (s *Store) GetSessionProgress(ctx context.Context, sessionID string) (model
 }
 
 func (s *Store) PutSessionProgress(ctx context.Context, sessionID string, segment int64, usage model.TokenUsage) error {
+	return putSessionProgress(ctx, s.db, sessionID, segment, usage)
+}
+
+type contextExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func putSessionProgress(
+	ctx context.Context,
+	execer contextExecer,
+	sessionID string,
+	segment int64,
+	usage model.TokenUsage,
+) error {
 	if sessionID == "" || usage.IsZero() {
 		return nil
 	}
 	raw, _ := json.Marshal(usage)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO session_cursors(
+	_, err := execer.ExecContext(ctx, `INSERT INTO session_cursors(
 		session_id,segment,cumulative_json,updated_at) VALUES(?,?,?,?)
 		ON CONFLICT(session_id) DO UPDATE SET segment=excluded.segment,
 		cumulative_json=excluded.cumulative_json,updated_at=excluded.updated_at`,

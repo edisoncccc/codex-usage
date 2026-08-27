@@ -391,6 +391,69 @@ func TestSessionMetadataAdvancesRevisionOnlyWhenChanged(t *testing.T) {
 	}
 }
 
+func TestCorrectEventUsageWithSessionProgressRollsBackTogether(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	initial := model.TokenUsage{Input: 80, CachedInput: 10, Output: 20, ReasoningOutput: 2, Total: 100}
+	corrected := model.TokenUsage{Input: 80, CachedInput: 12, Output: 20, ReasoningOutput: 3, Total: 100}
+	if _, err := st.InsertEvent(ctx, model.UsageEvent{
+		ID: "atomic-correction", Timestamp: time.Now(), SessionID: "session", Usage: initial,
+		Provenance: model.ProvenanceSessionJSONL, Confidence: model.ConfidenceExact,
+	}, "fixture.jsonl"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutSessionProgress(ctx, "session", 0, initial); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`CREATE TRIGGER fail_session_progress BEFORE INSERT ON session_cursors
+		BEGIN SELECT RAISE(ABORT, 'forced session progress failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := st.CorrectEventUsageWithSessionProgress(
+		ctx, "atomic-correction", "session", 0, corrected.Sub(initial), corrected,
+	)
+	if err == nil || changed {
+		t.Fatalf("atomic correction did not fail as a unit: changed=%v err=%v", changed, err)
+	}
+	summary, err := st.Summary(ctx, model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	progress, segment, ok, err := st.GetSessionProgress(ctx, "session")
+	if err != nil || !ok || segment != 0 {
+		t.Fatalf("read rolled-back session progress: ok=%v segment=%d err=%v", ok, segment, err)
+	}
+	if summary.Usage != initial || summary.GrandTotal != initial.Total || progress != initial {
+		t.Fatalf("atomic correction partially committed: summary=%+v progress=%+v", summary, progress)
+	}
+
+	if _, err := st.db.Exec(`DROP TRIGGER fail_session_progress`); err != nil {
+		t.Fatal(err)
+	}
+	changed, err = st.CorrectEventUsageWithSessionProgress(
+		ctx, "atomic-correction", "session", 0, corrected.Sub(initial), corrected,
+	)
+	if err != nil || !changed {
+		t.Fatalf("atomic correction retry failed: changed=%v err=%v", changed, err)
+	}
+	summary, err = st.Summary(ctx, model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	progress, segment, ok, err = st.GetSessionProgress(ctx, "session")
+	if err != nil || !ok || segment != 0 {
+		t.Fatalf("read committed session progress: ok=%v segment=%d err=%v", ok, segment, err)
+	}
+	if summary.Usage != corrected || summary.GrandTotal != corrected.Total || progress != corrected {
+		t.Fatalf("atomic correction did not commit together: summary=%+v progress=%+v", summary, progress)
+	}
+}
+
 func TestWarningsAreGroupedByKindAndPath(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(filepath.Join(t.TempDir(), "usage.sqlite"))

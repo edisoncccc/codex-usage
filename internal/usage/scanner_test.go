@@ -801,6 +801,86 @@ func TestSameTotalClassificationCorrectionPersists(t *testing.T) {
 	}
 }
 
+func TestSameTotalClassificationCorrectionAndSessionProgressAreAtomic(t *testing.T) {
+	initial := model.TokenUsage{Input: 80, CachedInput: 10, Output: 20, ReasoningOutput: 2, Total: 100}
+	corrected := model.TokenUsage{Input: 80, CachedInput: 12, Output: 20, ReasoningOutput: 3, Total: 100}
+	root, home, path := writeScannerRollout(t,
+		`{"timestamp":"2026-07-30T01:00:00Z","type":"session_meta","payload":{"id":"atomic-correction","cwd":"/p","originator":"codex_cli_rs"}}`,
+		tokenLine("2026-07-30T01:00:01Z", usage(80, 10, 0, 20, 2, 100), usage(80, 10, 0, 20, 2, 100)),
+	)
+	databasePath := filepath.Join(root, "usage.sqlite")
+	st, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	scanner := &Scanner{Store: st}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := file.WriteString(tokenLine(
+		"2026-07-30T01:00:02Z",
+		usage(80, 12, 0, 20, 3, 100),
+		usage(0, 2, 0, 0, 1, 0),
+	) + "\n")
+	closeErr := file.Close()
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	installScannerAbortTrigger(t, databasePath, "session_cursors", "forced session progress failure")
+
+	failed, err := scanner.Scan(context.Background(), []string{home}, false)
+	if err == nil || !strings.Contains(err.Error(), "forced session progress failure") {
+		t.Fatalf("session progress failure was not propagated: scan=%+v err=%v", failed, err)
+	}
+	afterFailure, err := st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFailure.Usage != initial || afterFailure.GrandTotal != initial.Total {
+		t.Fatalf("classification correction committed without session progress: %+v", afterFailure)
+	}
+	failedCursor, ok, err := st.GetCursor(context.Background(), path)
+	if err != nil || !ok || failedCursor.Cumulative != initial {
+		t.Fatalf("file cursor advanced after failed correction: ok=%v cursor=%+v err=%v", ok, failedCursor, err)
+	}
+	failedProgress, failedSegment, ok, err := st.GetSessionProgress(context.Background(), "atomic-correction")
+	if err != nil || !ok || failedProgress != initial || failedSegment != failedCursor.Segment {
+		t.Fatalf("session progress drifted after rollback: ok=%v segment=%d progress=%+v cursor=%+v err=%v",
+			ok, failedSegment, failedProgress, failedCursor, err)
+	}
+
+	removeScannerAbortTrigger(t, databasePath, "session_cursors")
+	retried, err := scanner.Scan(context.Background(), []string{home}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalSummary, err := st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.Corrections != 1 || finalSummary.Usage != corrected || finalSummary.GrandTotal != corrected.Total {
+		t.Fatalf("classification correction was not applied exactly once: scan=%+v summary=%+v", retried, finalSummary)
+	}
+	finalCursor, ok, err := st.GetCursor(context.Background(), path)
+	if err != nil || !ok || finalCursor.Cumulative != corrected {
+		t.Fatalf("file cursor did not commit corrected cumulative: ok=%v cursor=%+v err=%v", ok, finalCursor, err)
+	}
+	finalProgress, finalSegment, ok, err := st.GetSessionProgress(context.Background(), "atomic-correction")
+	if err != nil || !ok || finalProgress != corrected || finalSegment != finalCursor.Segment {
+		t.Fatalf("session progress and file cursor differ: ok=%v segment=%d progress=%+v cursor=%+v err=%v",
+			ok, finalSegment, finalProgress, finalCursor, err)
+	}
+}
+
 func TestSameTotalClassificationCorrectionCanReachEarlierEvents(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, ".codex")
@@ -1084,6 +1164,18 @@ func installScannerAbortTrigger(t *testing.T, databasePath, table, message strin
 	statement := fmt.Sprintf(`CREATE TRIGGER fail_%s BEFORE INSERT ON %s
 		BEGIN SELECT RAISE(ABORT, %q); END`, table, table, message)
 	if _, err := db.Exec(statement); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func removeScannerAbortTrigger(t *testing.T, databasePath, table string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("DROP TRIGGER fail_" + table); err != nil {
 		t.Fatal(err)
 	}
 }

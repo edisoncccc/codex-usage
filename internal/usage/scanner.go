@@ -628,8 +628,8 @@ func (s *Scanner) processRecord(
 		}
 		if current.Total > 0 && current.Total == cursor.Cumulative.Total {
 			difference := current.Sub(cursor.Cumulative)
-			corrected, err := s.Store.CorrectEventUsage(
-				ctx, cursor.LastEventID, cursor.SessionID, cursor.Segment, difference,
+			corrected, err := s.Store.CorrectEventUsageWithSessionProgress(
+				ctx, cursor.LastEventID, cursor.SessionID, cursor.Segment, difference, current,
 			)
 			if err != nil {
 				return err
@@ -639,9 +639,6 @@ func (s *Scanner) processRecord(
 				result.Corrections++
 			} else {
 				result.Duplicates++
-			}
-			if cursor.SessionID != "" {
-				return s.Store.PutSessionProgress(ctx, cursor.SessionID, cursor.Segment, current)
 			}
 			return nil
 		}
