@@ -37,35 +37,19 @@
 | Cache utilization | Shows Input, Cached Input, Cache Write, Output, and Cached Rate separately. `Input` includes cache-related input; Regular Input is `max(Input - Cached Input - Cache Write, 0)`. Cached Rate is `Cached Input / Input`, or `—` when Input is zero |
 | Standard API-equivalent cost | Applies separate rates to Regular Input, Cached Input, Cache Write, and Output, then shows pricing coverage. This is a public-price equivalent for local tokens—not an OpenAI bill, ChatGPT subscription allowance, or account quota |
 
-## Start from source
+## Installation
 
-This repository is currently a source-only distribution. Go 1.26+ is required (see [`go.mod`](go.mod)); no prebuilt Release or EXE is provided or linked.
+> [!IMPORTANT]
+> This repository is currently **source-only**: the trusted binary channel is disabled, with no prebuilt Release or EXE. Read the machine policy before installation; do not download a same-named program from upstream, a mirror, or a third-party page.
 
-Windows PowerShell:
+| Installation path | Authoritative entry point |
+|---|---|
+| **Install with AI** | Give the canonical repository URL to a local AI and have it follow [Install with AI](INSTALL.en.md), including one confirmation, source build, JSON Lines receipt, and health check |
+| **Manual installation** | Follow [Manual installation](INSTALL.en.md) with the same Go CLI; Windows/Linux commands, paths, uninstall behavior, and failure handling are on that page |
 
-```powershell
-go test ./...
-$env:CGO_ENABLED = "0"
-go build -trimpath -o codex-usage.exe ./cmd/codex-usage
-.\codex-usage.exe install
-```
+The machine-readable repository, platform, trust, and current-user boundaries are in [`install-policy.json`](install-policy.json). See [INSTALL.en.md](INSTALL.en.md) / [INSTALL.md](INSTALL.md) for the complete bilingual guide and [CODE_SIGNING.en.md](CODE_SIGNING.en.md) for current signing status and future release gates.
 
-Linux bash:
-
-```bash
-go test ./...
-CGO_ENABLED=0 go build -trimpath -o codex-usage ./cmd/codex-usage
-./codex-usage install
-```
-
-Installation discovers existing Codex usage on this computer and keeps it updated incrementally in the background. From the source directory, run `.\codex-usage.exe` on Windows or `./codex-usage` on Linux to open the Dashboard. Use bare `codex-usage` only when the installation directory is already on `PATH`. For English CLI output, run the current build as follows:
-
-```text
-.\codex-usage.exe --lang en install
-./codex-usage --lang en install
-```
-
-On a headless Linux server, Codex Usage prints an SSH tunnel command. Run it from your own computer, then open `http://127.0.0.1:43189`.
+While the channel is disabled, an AI must explain the Go 1.26+ source-build prerequisite and obtain confirmation first. If future prebuilt verification fails, it must not silently fall back to source. Humans and AI use no remote pipeline installer, request no elevated privileges, and verify the local service identity with `doctor --json` after installation.
 
 ## Capabilities and boundaries
 
@@ -182,33 +166,44 @@ The loopback API exposes `GET /api/v1/cost-estimate`, `GET /api/v1/pricing`, and
 
 ## Common commands
 
-The examples below assume the installation directory is already on `PATH`.
+The bare commands below assume the resolved installation directory is on `PATH`. Otherwise, invoke the absolute `result.install_path` from the installation JSON terminal receipt. When `CODEX_USAGE_HOME` is set, the executable is no longer at the default installation path.
 
 ```text
 codex-usage                         Open the Dashboard
+codex-usage version --json          Print build identity
+codex-usage install                 Install after human confirmation
+codex-usage install --yes --json    Machine install after confirmation
 codex-usage summary --since 7d     Show a 7-day summary
 codex-usage summary --since 30d --json
 codex-usage summary --since all --csv
 codex-usage scan                    Incremental historical scan
+codex-usage scan --json             Scan with continuous JSON Lines progress
 codex-usage scan --rebuild          Rebuild historical scan data
 codex-usage doctor                  Check paths, JSONL sources, and service
+codex-usage doctor --json           Machine-readable health check
 codex-usage config add-home PATH    Add another CODEX_HOME
-codex-usage uninstall               Remove the app, keep the database
-codex-usage uninstall --purge       Remove the app and local data
+codex-usage update --check --json   Currently returns release_channel_disabled
+codex-usage update --yes --json     Currently makes no request or modification
+codex-usage uninstall --yes --json  Remove the app, keep database and config
+codex-usage uninstall --purge --yes --json  Purge the canonical state after explicit confirmation
 ```
 
 The Dashboard supports `?lang=en|zh-CN` and its header language button. The URL wins over the saved locale, followed by the browser locale. The CLI supports global `--lang` and `CODEX_USAGE_LANG`, for example `codex-usage --lang en doctor`. `--json` and `--csv` fields never change with language.
 
 ## Local data paths
 
-| Data | Windows | Linux |
+| Data (without `CODEX_USAGE_HOME`) | Windows | Linux |
 |---|---|---|
 | Codex Home | `%USERPROFILE%\.codex` | `~/.codex` |
 | codex-usage state | `%LOCALAPPDATA%\codex-usage` | `${XDG_DATA_HOME:-~/.local/share}/codex-usage` |
 | Installed binary | `%LOCALAPPDATA%\Programs\codex-usage\codex-usage.exe` | `~/.local/bin/codex-usage` |
 | SQLite | `...\codex-usage\usage.sqlite` | `.../codex-usage/usage.sqlite` |
+| Config | `%LOCALAPPDATA%\codex-usage\config.json` | `${XDG_DATA_HOME:-~/.local/share}/codex-usage/config.json` |
+| Install record | `%LOCALAPPDATA%\codex-usage\install.json` | `${XDG_DATA_HOME:-~/.local/share}/codex-usage/install.json` |
 
-`CODEX_USAGE_HOME` overrides the app state directory. Do not synchronize this directory between machines, or the per-machine boundary becomes unreliable.
+`CODEX_USAGE_HOME=<ABS>` overrides both the program and state layout, not only the database location: the state root is `<ABS>`, the Windows executable is `<ABS>/bin/codex-usage.exe`, the Linux executable is `<ABS>/bin/codex-usage`, config is `<ABS>/config.json`, the database is `<ABS>/usage.sqlite`, the install record is `<ABS>/install.json`, and backups are stored in `<ABS>/backups`. `<ABS>` must be a dedicated absolute directory writable by the current user; actual separators follow the operating system. Subsequent commands can invoke `result.install_path` from the receipt directly.
+
+`CODEX_HOME` and `CODEX_USAGE_HOME` are different: the former selects Codex data sources to scan, while the latter controls both this project's program and state layout. Do not synchronize the active state root between machines, or per-machine attribution becomes unreliable.
 
 `usage.sqlite` is created automatically when installation, service startup, scanning, or a query first opens the store, then persists in the state directory above. The embedded pure-Go SQLite driver requires no separately installed SQLite server, Python, Docker, or CGO. The current user only needs write access to the state directory and sufficient disk space. Prefer a local disk; do not place the active database on cloud-sync folders, network shares, or a directory written by multiple machines.
 
@@ -226,7 +221,7 @@ Full local project paths and thread titles are retained for attribution, so JSON
 
 ## Development and validation
 
-The source workflow near the top covers local testing, building, and installation. Maintainers can also run the repository scripts to build every target:
+See [INSTALL.en.md](INSTALL.en.md) for complete source testing, building, installation, and Smart App Control failure handling. Maintainers can also run the repository scripts to build every target:
 
 ```powershell
 # Windows

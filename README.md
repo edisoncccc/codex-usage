@@ -37,35 +37,19 @@
 | 缓存利用 | 分别展示 Input、Cached Input、Cache Write、Output 与 Cached Rate。`Input` 包含缓存相关输入，普通 Input 按 `max(Input - Cached Input - Cache Write, 0)` 计算；Cached Rate 为 `Cached Input / Input`，Input 为 0 时显示 `—` |
 | Standard API 等价成本 | 使用普通 Input、Cached Input、Cache Write 和 Output 各自单价计算，并同时展示定价覆盖率；这是本机 Token 按公开价格的等价值，不是 OpenAI 账单、ChatGPT 订阅额度或账号配额 |
 
-## 从源码开始使用
+## 安装
 
-当前仓库是 source-only 发布。需要 Go 1.26+（以 [`go.mod`](go.mod) 为准）；不提供或链接任何预编译 Release / EXE。
+> [!IMPORTANT]
+> 当前仓库是 **source-only**：可信二进制渠道关闭，没有预编译 Release 或 EXE。安装前请先阅读机器策略；不要从上游、镜像或第三方页面下载同名程序。
 
-Windows PowerShell：
+| 安装方式 | 权威入口 |
+|---|---|
+| **让 AI 安装** | 把规范仓库链接交给本地 AI，并让它按照 [让 AI 安装](INSTALL.md) 的一次确认、源码构建、JSON Lines 回执和健康检查流程执行 |
+| **手动安装** | 按 [手动安装](INSTALL.md) 使用同一个 Go CLI；Windows 与 Linux 命令、路径、卸载和故障处理都在同一页 |
 
-```powershell
-go test ./...
-$env:CGO_ENABLED = "0"
-go build -trimpath -o codex-usage.exe ./cmd/codex-usage
-.\codex-usage.exe install
-```
+机器可读的仓库、平台、信任和当前用户安装边界见 [`install-policy.json`](install-policy.json)。完整中英文规范见 [INSTALL.md](INSTALL.md) / [INSTALL.en.md](INSTALL.en.md)，当前签名状态与未来发布门禁见 [CODE_SIGNING.md](CODE_SIGNING.md)。
 
-Linux bash：
-
-```bash
-go test ./...
-CGO_ENABLED=0 go build -trimpath -o codex-usage ./cmd/codex-usage
-./codex-usage install
-```
-
-安装会整理这台电脑已有的 Codex 使用记录，并在后台持续增量更新。在源码目录中，Windows 运行 `.\codex-usage.exe`、Linux 运行 `./codex-usage` 即可打开 Dashboard；只有安装目录已加入 `PATH` 时，才可直接使用 `codex-usage`。需要英文 CLI 输出时，对当前构建产物使用：
-
-```text
-.\codex-usage.exe --lang en install
-./codex-usage --lang en install
-```
-
-Linux 服务器没有桌面环境时，程序会打印 SSH 隧道命令。在自己的电脑执行命令后访问 `http://127.0.0.1:43189`。
+AI 在当前渠道关闭时必须先说明 Go 1.26+ 源码构建前提并取得确认；未来若预编译验证失败，也不得静默改走源码。人工与 AI 都不使用远程管道脚本，不请求管理员权限，并在安装后通过 `doctor --json` 验证本机服务身份。
 
 ## 能力与边界
 
@@ -182,33 +166,44 @@ GPT-5.6 的 Cache Write 使用官方“普通 Input 的 1.25 倍”规则。本�
 
 ## 常用命令
 
-以下示例假设安装目录已加入 `PATH`。
+以下裸命令示例假设实际安装目录已加入 `PATH`。否则请使用安装 JSON 终态回执中的绝对 `result.install_path`；设置 `CODEX_USAGE_HOME` 后，程序路径不再是默认安装路径。
 
 ```text
 codex-usage                         打开 Dashboard
+codex-usage version --json          输出构建身份
+codex-usage install                 人工确认后安装
+codex-usage install --yes --json    已取得确认后的机器安装
 codex-usage summary --since 7d     查看近 7 日摘要
 codex-usage summary --since 30d --json
 codex-usage summary --since all --csv
 codex-usage scan                    增量扫描
+codex-usage scan --json             扫描并持续输出 JSON Lines 进度
 codex-usage scan --rebuild          重建历史扫描数据
 codex-usage doctor                  检查路径、JSONL 来源和服务
+codex-usage doctor --json           机器可读健康检查
 codex-usage config add-home PATH    添加额外 CODEX_HOME
-codex-usage uninstall               卸载程序，保留统计库
-codex-usage uninstall --purge       卸载并删除统计数据
+codex-usage update --check --json   当前返回 release_channel_disabled
+codex-usage update --yes --json     当前不联网、不下载、不修改
+codex-usage uninstall --yes --json  卸载程序，保留数据库和配置
+codex-usage uninstall --purge --yes --json  明确确认后清除规范状态目录
 ```
 
 Dashboard 支持 `?lang=en|zh-CN` 和页头语言按钮；URL 参数优先于已保存语言，其次跟随浏览器。CLI 支持全局 `--lang` 和 `CODEX_USAGE_LANG`，例如 `codex-usage --lang en doctor`。`--json` 与 `--csv` 字段不随语言改变。
 
 ## 数据存在哪里
 
-| 内容 | Windows | Linux |
+| 内容（未设置 `CODEX_USAGE_HOME`） | Windows | Linux |
 |---|---|---|
 | Codex Home | `%USERPROFILE%\.codex` | `~/.codex` |
 | codex-usage 状态 | `%LOCALAPPDATA%\codex-usage` | `${XDG_DATA_HOME:-~/.local/share}/codex-usage` |
 | 安装后的程序 | `%LOCALAPPDATA%\Programs\codex-usage\codex-usage.exe` | `~/.local/bin/codex-usage` |
 | SQLite | `...\codex-usage\usage.sqlite` | `.../codex-usage/usage.sqlite` |
+| 配置 | `%LOCALAPPDATA%\codex-usage\config.json` | `${XDG_DATA_HOME:-~/.local/share}/codex-usage/config.json` |
+| 安装记录 | `%LOCALAPPDATA%\codex-usage\install.json` | `${XDG_DATA_HOME:-~/.local/share}/codex-usage/install.json` |
 
-设置 `CODEX_USAGE_HOME` 可以覆盖工具自己的状态目录。不要在多台电脑之间同步这个目录，否则逐电脑边界会失真。
+`CODEX_USAGE_HOME=<ABS>` 会同时覆盖程序与状态布局，而不只是更换数据库目录：状态根是 `<ABS>`，Windows 程序为 `<ABS>/bin/codex-usage.exe`，Linux 程序为 `<ABS>/bin/codex-usage`，配置为 `<ABS>/config.json`，数据库为 `<ABS>/usage.sqlite`，安装记录为 `<ABS>/install.json`，备份目录为 `<ABS>/backups`。`<ABS>` 必须是当前用户可写的专用绝对目录；实际路径分隔符遵循操作系统。后续命令可直接使用回执中的 `result.install_path`。
+
+`CODEX_HOME` 与 `CODEX_USAGE_HOME` 含义不同：前者选择要扫描的 Codex 数据源，后者同时决定本项目的程序和状态布局。不要在多台电脑之间同步活动状态根，否则逐电脑边界会失真。
 
 `usage.sqlite` 会在首次安装、启动服务、扫描或查询需要打开状态库时自动创建，并持续保存在上述状态目录。程序使用内嵌的纯 Go SQLite 驱动，不要求预装 SQLite、数据库服务、Python、Docker 或 CGO；只需要当前用户对状态目录有读写权限，并有足够磁盘空间。应优先使用本机磁盘，不建议把活动数据库放在网盘、网络共享或多台电脑共同写入的同步目录。
 
@@ -228,7 +223,7 @@ Dashboard 支持 `?lang=en|zh-CN` 和页头语言按钮；URL 参数优先于已
 
 ## 开发与验证
 
-首页的源码流程用于本机测试、构建和安装。维护者还可以运行仓库脚本构建全部目标：
+完整的源码测试、构建、安装和 Smart App Control 失败处理见 [INSTALL.md](INSTALL.md)。维护者还可以运行仓库脚本构建全部目标：
 
 ```powershell
 # Windows

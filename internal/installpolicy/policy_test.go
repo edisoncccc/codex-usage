@@ -13,6 +13,13 @@ import (
 
 const stableTagPattern = `^v[0-9]+\.[0-9]+\.[0-9]+$`
 
+var unsafeInstallationPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)releases/latest/download`),
+	regexp.MustCompile(`(?i)(?:zjay26|edisoncccc)/codex-usage/releases/(?:download|latest)`),
+	regexp.MustCompile(`(?i)(?:^|[^a-z0-9_])(?:curl|wget)\b[^\r\n|]*\|\s*(?:sh|bash|zsh)\b`),
+	regexp.MustCompile(`(?i)(?:^|[^a-z0-9_])(?:irm|invoke-restmethod|iwr|invoke-webrequest)\b[^\r\n|]*\|\s*(?:iex|invoke-expression)\b`),
+}
+
 func TestRepositoryPolicyIsSourceOnly(t *testing.T) {
 	policy := loadRepositoryPolicy(t)
 
@@ -164,6 +171,358 @@ func TestSourceOnlyWorkflowValidatorRejectsPublishingBypasses(t *testing.T) {
 			}
 			if err := validateSourceOnlyWorkflow(test.workflow); err == nil {
 				t.Fatal("validator accepted a publishing bypass")
+			}
+		})
+	}
+}
+
+func TestInstallationDocumentsMatchPolicyState(t *testing.T) {
+	policy := loadRepositoryPolicy(t)
+	if policy.BinaryReleaseEnabled || BinaryReleaseEnabled {
+		t.Fatal("installation document contract requires the binary release channel to remain disabled")
+	}
+
+	readmeLinks := map[string][]string{
+		"README.md": {
+			"[让 AI 安装](INSTALL.md)",
+			"[手动安装](INSTALL.md)",
+			"[`install-policy.json`](install-policy.json)",
+		},
+		"README.en.md": {
+			"[Install with AI](INSTALL.en.md)",
+			"[Manual installation](INSTALL.en.md)",
+			"[`install-policy.json`](install-policy.json)",
+		},
+	}
+	for name, requiredLinks := range readmeLinks {
+		document := readRepositoryDocument(t, name)
+		for _, link := range requiredLinks {
+			if !strings.Contains(document, link) {
+				t.Errorf("%s does not expose %q", name, link)
+			}
+		}
+	}
+
+	for _, name := range []string{
+		"README.md",
+		"README.en.md",
+		"INSTALL.md",
+		"INSTALL.en.md",
+		"CODE_SIGNING.md",
+		"CODE_SIGNING.en.md",
+		"CONTRIBUTING.md",
+		"SECURITY.md",
+	} {
+		document := strings.ToLower(readRepositoryDocument(t, name))
+		if !strings.Contains(document, "source-only") {
+			t.Errorf("%s does not state the source-only policy", name)
+		}
+	}
+
+	defaultPaths := []string{
+		policy.Installation.Windows.ProgramPath,
+		policy.Installation.Windows.StatePath,
+		policy.Installation.Linux.ProgramPath,
+		policy.Installation.Linux.StatePath,
+	}
+	for _, name := range []string{"README.md", "README.en.md", "INSTALL.md", "INSTALL.en.md"} {
+		document := readRepositoryDocument(t, name)
+		for _, path := range defaultPaths {
+			if !strings.Contains(document, path) {
+				t.Errorf("%s does not document policy path %q", name, path)
+			}
+		}
+	}
+
+	overrideContracts := map[string][]string{
+		"README.md": {
+			"`CODEX_USAGE_HOME=<ABS>`", "状态根是 `<ABS>`", "`<ABS>/bin/codex-usage.exe`",
+			"`<ABS>/bin/codex-usage`", "`<ABS>/config.json`", "`<ABS>/usage.sqlite`",
+			"`<ABS>/install.json`", "`<ABS>/backups`", "`result.install_path`",
+		},
+		"INSTALL.md": {
+			"`CODEX_USAGE_HOME=<ABS>`", "状态根是 `<ABS>`", "`<ABS>/bin/codex-usage.exe`",
+			"`<ABS>/bin/codex-usage`", "`<ABS>/config.json`", "`<ABS>/usage.sqlite`",
+			"`<ABS>/install.json`", "`result.install_path`",
+		},
+		"README.en.md": {
+			"`CODEX_USAGE_HOME=<ABS>`", "state root is `<ABS>`", "`<ABS>/bin/codex-usage.exe`",
+			"`<ABS>/bin/codex-usage`", "`<ABS>/config.json`", "`<ABS>/usage.sqlite`",
+			"`<ABS>/install.json`", "`<ABS>/backups`", "`result.install_path`",
+		},
+		"INSTALL.en.md": {
+			"`CODEX_USAGE_HOME=<ABS>`", "state root is `<ABS>`", "`<ABS>/bin/codex-usage.exe`",
+			"`<ABS>/bin/codex-usage`", "`<ABS>/config.json`", "`<ABS>/usage.sqlite`",
+			"`<ABS>/install.json`", "`result.install_path`",
+		},
+	}
+	for name, fragments := range overrideContracts {
+		document := readRepositoryDocument(t, name)
+		for _, fragment := range fragments {
+			if !strings.Contains(document, fragment) {
+				t.Errorf("%s does not document override contract %q", name, fragment)
+			}
+		}
+	}
+}
+
+func TestInstallationDocumentsRequireGitForSourceAcquisition(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		required  string
+		forbidden string
+	}{
+		{name: "INSTALL.md", required: "获取源码必须使用 Git；Git 不可用时停止", forbidden: "源码归档"},
+		{name: "INSTALL.en.md", required: "Git is required to obtain source; stop if Git is unavailable", forbidden: "source archive"},
+	} {
+		document := readRepositoryDocument(t, test.name)
+		if !strings.Contains(document, test.required) {
+			t.Errorf("%s does not require the verified Git source path %q", test.name, test.required)
+		}
+		if strings.Contains(strings.ToLower(document), strings.ToLower(test.forbidden)) {
+			t.Errorf("%s still offers the unverified alternative %q", test.name, test.forbidden)
+		}
+	}
+}
+
+func TestInstallationCommandBlocksFailFastAndVerifySource(t *testing.T) {
+	powerShellSourceOrder := []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^\$Repository\s*=\s*["']https://github\.com/edisoncccc/codex-usage["']\s*$`),
+		regexp.MustCompile(`(?m)^\$SourceDir\s*=`),
+		regexp.MustCompile(`(?m)^if\s*\(\s*Test-Path\b[^\r\n]*\$SourceDir[^\r\n]*\)`),
+		regexp.MustCompile(`(?m)^\s*throw\b`),
+		regexp.MustCompile(`(?m)^git\s+clone\b[^\r\n]*\$Repository[^\r\n]*\$SourceDir\s*$`),
+		regexp.MustCompile(`(?m)^Set-Location\b[^\r\n]*\$SourceDir`),
+		regexp.MustCompile(`(?m)^\$Origin\s*=\s*git\s+remote\s+get-url\s+origin\s*$`),
+		regexp.MustCompile(`(?m)^if\s*\(\s*\$Origin\s+-c?ne\s+\$Repository\s*\)`),
+		regexp.MustCompile(`(?m)^\$Commit\s*=\s*git\s+rev-parse\b[^\r\n]*\bHEAD\s*$`),
+		regexp.MustCompile(`(?m)^Write-Output\b[^\r\n]*\$Commit`),
+		regexp.MustCompile(`(?m)^Get-Content\b[^\r\n]*install-policy\.json\s*$`),
+		regexp.MustCompile(`(?m)^go\s+version\s*$`),
+		regexp.MustCompile(`(?m)^go\s+test\s+\.\/\.\.\.\s*$`),
+		regexp.MustCompile(`(?m)^go\s+build\b`),
+		regexp.MustCompile(`(?m)^&\s+\.\\codex-usage\.exe\s+version\s+--json\s*$`),
+		regexp.MustCompile(`(?m)^&\s+\.\\codex-usage\.exe\s+install\s*$`),
+		regexp.MustCompile(`(?m)^&\s+\.\\codex-usage\.exe\s+doctor\s+--json\s*$`),
+	}
+	bashSourceOrder := []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^repository=['"]https://github\.com/edisoncccc/codex-usage['"]\s*$`),
+		regexp.MustCompile(`(?m)^source_dir=`),
+		regexp.MustCompile(`(?m)^if\s+\[\[\s+-e\s+"\$source_dir"\s+\]\]`),
+		regexp.MustCompile(`(?m)^\s*exit\s+1\s*$`),
+		regexp.MustCompile(`(?m)^git\s+clone\b[^\r\n]*"\$repository"[^\r\n]*"\$source_dir"\s*$`),
+		regexp.MustCompile(`(?m)^cd\s+[^\r\n]*"\$source_dir"\s*$`),
+		regexp.MustCompile(`(?m)^origin="\$\(git\s+remote\s+get-url\s+origin\)"\s*$`),
+		regexp.MustCompile(`(?m)^if\s+\[\[\s+"\$origin"\s+!=\s+"\$repository"\s+\]\]`),
+		regexp.MustCompile(`(?m)^commit="\$\(git\s+rev-parse\b[^\r\n]*\bHEAD\)"\s*$`),
+		regexp.MustCompile(`(?m)^printf\b[^\r\n]*"\$commit"`),
+		regexp.MustCompile(`(?m)^cat\b[^\r\n]*install-policy\.json\s*$`),
+		regexp.MustCompile(`(?m)^go\s+version\s*$`),
+		regexp.MustCompile(`(?m)^go\s+test\s+\.\/\.\.\.\s*$`),
+		regexp.MustCompile(`(?m)^CGO_ENABLED=0\s+go\s+build\b`),
+		regexp.MustCompile(`(?m)^\.\/codex-usage\s+version\s+--json\s*$`),
+		regexp.MustCompile(`(?m)^\.\/codex-usage\s+install\s*$`),
+		regexp.MustCompile(`(?m)^\.\/codex-usage\s+doctor\s+--json\s*$`),
+	}
+
+	for _, name := range []string{"INSTALL.md", "INSTALL.en.md"} {
+		document := readRepositoryDocument(t, name)
+		for index, block := range fencedCodeBlocks(document, "powershell") {
+			t.Run(fmt.Sprintf("%s PowerShell block %d", name, index+1), func(t *testing.T) {
+				if !regexp.MustCompile(`^\$ErrorActionPreference\s*=\s*["']Stop["']`).MatchString(strings.TrimSpace(block)) {
+					t.Error("PowerShell block does not enable terminating cmdlet errors")
+				}
+				assertPowerShellNativeCommandsCheckExit(t, block)
+				assertCommandBlockHasNoDeletionOrElevation(t, block)
+			})
+		}
+		for index, block := range fencedCodeBlocks(document, "bash") {
+			t.Run(fmt.Sprintf("%s bash block %d", name, index+1), func(t *testing.T) {
+				if !strings.HasPrefix(strings.TrimSpace(block), "set -euo pipefail\n") {
+					t.Error("bash block does not begin with set -euo pipefail")
+				}
+				assertCommandBlockHasNoDeletionOrElevation(t, block)
+			})
+		}
+		assertPatternsInOrder(t,
+			fencedCodeBlockAfterHeading(t, document, "### 4.1 Windows PowerShell", "powershell"),
+			powerShellSourceOrder,
+		)
+		assertPatternsInOrder(t,
+			fencedCodeBlockAfterHeading(t, document, "### 4.2 Linux bash", "bash"),
+			bashSourceOrder,
+		)
+	}
+}
+
+func TestCodeSigningDocumentsKeepPostUploadVerificationOrder(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		heading  string
+		patterns []*regexp.Regexp
+	}{
+		{
+			name:    "CODE_SIGNING.md",
+			heading: "## 5. 签名、哈希与 Attestation 顺序",
+			patterns: []*regexp.Regexp{
+				regexp.MustCompile(`GitHub Actions.*构建.*Windows/Linux`),
+				regexp.MustCompile(`SignPath.*签署.*Windows EXE`),
+				regexp.MustCompile(`重新计算 SHA256`),
+				regexp.MustCompile(`生成 GitHub Artifact Attestation`),
+				regexp.MustCompile(`创建 Draft Release`),
+				regexp.MustCompile(`上传.*最终资产`),
+				regexp.MustCompile(`Release API asset digest.*完整资产清单.*签名.*Attestation.*版本说明`),
+				regexp.MustCompile(`发布审批者.*Immutable Release`),
+			},
+		},
+		{
+			name:    "CODE_SIGNING.en.md",
+			heading: "## 5. Signing, digest, and Attestation order",
+			patterns: []*regexp.Regexp{
+				regexp.MustCompile(`GitHub Actions.*builds.*Windows/Linux`),
+				regexp.MustCompile(`SignPath.*signs.*Windows executables`),
+				regexp.MustCompile(`recompute SHA256`),
+				regexp.MustCompile(`generate GitHub Artifact Attestations`),
+				regexp.MustCompile(`create the Draft Release`),
+				regexp.MustCompile(`upload.*final assets`),
+				regexp.MustCompile(`Release API asset digests.*complete asset list.*signatures.*Attestations.*release notes`),
+				regexp.MustCompile(`release approvers.*Immutable Release`),
+			},
+		},
+	} {
+		block := fencedCodeBlockAfterHeading(t, readRepositoryDocument(t, test.name), test.heading, "text")
+		assertPatternsInOrder(t, block, test.patterns)
+	}
+}
+
+func TestUnsafeInstallationPatternsRejectRemoteExecutionPipelines(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		command string
+	}{
+		{name: "curl short flags to sh", command: "curl -fsSL https://example.invalid/install.sh | sh"},
+		{name: "curl long flags mixed case to bash", command: "CURL --fail --silent --show-error --location https://example.invalid/install.sh\t|  BASH"},
+		{name: "wget short flags to zsh", command: "wget -qO- https://example.invalid/install.sh|zsh"},
+		{name: "wget long flags to bash", command: "WGET --quiet --output-document=- https://example.invalid/install.sh | bash"},
+		{name: "curl with newline whitespace to zsh", command: "curl -fsSL https://example.invalid/install.sh |\n  zsh"},
+		{name: "irm to iex", command: "irm https://example.invalid/install.ps1 | iex"},
+		{name: "Invoke-RestMethod to Invoke-Expression", command: "Invoke-RestMethod -Uri https://example.invalid/install.ps1\t| Invoke-Expression"},
+		{name: "iwr mixed case to iex", command: "IwR -UseBasicParsing https://example.invalid/install.ps1|IEX"},
+		{name: "Invoke-WebRequest to Invoke-Expression", command: "Invoke-WebRequest -Uri https://example.invalid/install.ps1 |  Invoke-Expression"},
+		{name: "Invoke-WebRequest with newline whitespace", command: "Invoke-WebRequest -Uri https://example.invalid/install.ps1 |\r\n  Invoke-Expression"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, pattern := range unsafeInstallationPatterns {
+				if pattern.MatchString(test.command) {
+					return
+				}
+			}
+			t.Fatalf("unsafe command was not rejected: %q", test.command)
+		})
+	}
+}
+
+func TestInstallationDocumentsDoNotOfferUnsafePipesOrBinaryDownloads(t *testing.T) {
+	for _, name := range []string{
+		"README.md", "README.en.md", "INSTALL.md", "INSTALL.en.md",
+		"CODE_SIGNING.md", "CODE_SIGNING.en.md",
+	} {
+		document := readRepositoryDocument(t, name)
+		for _, pattern := range unsafeInstallationPatterns {
+			if match := pattern.FindString(document); match != "" {
+				t.Errorf("%s contains unsafe installation pattern %q", name, match)
+			}
+		}
+	}
+}
+
+func TestBilingualInstallationDocumentsHaveMatchingHeadings(t *testing.T) {
+	for _, pair := range []struct {
+		name        string
+		chinese     string
+		english     string
+		chineseLink string
+		englishLink string
+		headings    []bilingualHeading
+	}{
+		{
+			name:        "installation guide",
+			chinese:     "INSTALL.md",
+			english:     "INSTALL.en.md",
+			chineseLink: "[English](INSTALL.en.md)",
+			englishLink: "[简体中文](INSTALL.md)",
+			headings: []bilingualHeading{
+				{level: "#", chinese: "Codex Usage Dashboard 安装指南", english: "Codex Usage Dashboard Installation Guide"},
+				{level: "##", chinese: "1. 当前状态", english: "1. Current status"},
+				{level: "##", chinese: "2. 支持范围与前置条件", english: "2. Supported platforms and prerequisites"},
+				{level: "##", chinese: "3. 让 AI 安装", english: "3. Install with AI"},
+				{level: "###", chinese: "3.1 唯一可信入口", english: "3.1 The only trusted entry point"},
+				{level: "###", chinese: "3.2 AI 执行协议", english: "3.2 AI execution protocol"},
+				{level: "###", chinese: "3.3 一次确认清单", english: "3.3 One-confirmation checklist"},
+				{level: "##", chinese: "4. 人工安装", english: "4. Manual installation"},
+				{level: "###", chinese: "4.1 Windows PowerShell", english: "4.1 Windows PowerShell"},
+				{level: "###", chinese: "4.2 Linux bash", english: "4.2 Linux bash"},
+				{level: "##", chinese: "5. 从源码构建", english: "5. Build from source"},
+				{level: "###", chinese: "5.1 Windows 构建", english: "5.1 Windows build"},
+				{level: "###", chinese: "5.2 Linux 构建", english: "5.2 Linux build"},
+				{level: "##", chinese: "6. 安装、进度与机器回执", english: "6. Installation, progress, and machine receipt"},
+				{level: "###", chinese: "6.1 人工交互", english: "6.1 Human interaction"},
+				{level: "###", chinese: "6.2 AI 或自动化调用", english: "6.2 AI or automation"},
+				{level: "###", chinese: "6.3 进度和终态", english: "6.3 Progress and terminal event"},
+				{level: "##", chinese: "7. 健康检查", english: "7. Health check"},
+				{level: "##", chinese: "8. 更新", english: "8. Updates"},
+				{level: "##", chinese: "9. 卸载与数据保留", english: "9. Uninstall and data retention"},
+				{level: "###", chinese: "9.1 默认保留数据", english: "9.1 Keep data by default"},
+				{level: "###", chinese: "9.2 明确清除数据", english: "9.2 Explicitly purge data"},
+				{level: "##", chinese: "10. 默认路径与 CODEX_USAGE_HOME 覆盖", english: "10. Default paths and CODEX_USAGE_HOME override"},
+				{level: "##", chinese: "11. 网络与隐私边界", english: "11. Network and privacy boundaries"},
+				{level: "##", chinese: "12. Windows Smart App Control", english: "12. Windows Smart App Control"},
+				{level: "##", chinese: "13. 失败处理与后续动作", english: "13. Failure handling and next action"},
+			},
+		},
+		{
+			name:        "code signing policy",
+			chinese:     "CODE_SIGNING.md",
+			english:     "CODE_SIGNING.en.md",
+			chineseLink: "[English](CODE_SIGNING.en.md)",
+			englishLink: "[简体中文](CODE_SIGNING.md)",
+			headings: []bilingualHeading{
+				{level: "#", chinese: "Codex Usage Dashboard 代码签名政策", english: "Codex Usage Dashboard Code-Signing Policy"},
+				{level: "##", chinese: "1. 当前状态", english: "1. Current status"},
+				{level: "##", chinese: "2. 适用范围与目标", english: "2. Scope and objective"},
+				{level: "##", chinese: "3. 信任与角色", english: "3. Trust and roles"},
+				{level: "###", chinese: "3.1 GitHub Actions", english: "3.1 GitHub Actions"},
+				{level: "###", chinese: "3.2 SignPath Foundation", english: "3.2 SignPath Foundation"},
+				{level: "###", chinese: "3.3 维护者", english: "3.3 Maintainers"},
+				{level: "###", chinese: "3.4 发布审批者", english: "3.4 Release approvers"},
+				{level: "##", chinese: "4. 未来发布门禁", english: "4. Future release gates"},
+				{level: "##", chinese: "5. 签名、哈希与 Attestation 顺序", english: "5. Signing, digest, and Attestation order"},
+				{level: "##", chinese: "6. 失败处理", english: "6. Failure handling"},
+				{level: "##", chinese: "7. 变更控制与安全报告", english: "7. Change control and security reporting"},
+			},
+		},
+	} {
+		t.Run(pair.name, func(t *testing.T) {
+			chinese := readRepositoryDocument(t, pair.chinese)
+			english := readRepositoryDocument(t, pair.english)
+			if !strings.Contains(documentHeader(chinese), pair.chineseLink) {
+				t.Errorf("%s does not link to %s at the top", pair.chinese, pair.english)
+			}
+			if !strings.Contains(documentHeader(english), pair.englishLink) {
+				t.Errorf("%s does not link to %s at the top", pair.english, pair.chinese)
+			}
+			chineseHeadings := markdownHeadings(chinese)
+			englishHeadings := markdownHeadings(english)
+			if len(chineseHeadings) != len(pair.headings) || len(englishHeadings) != len(pair.headings) {
+				t.Fatalf("heading count differs: %s=%d %s=%d expected=%d", pair.chinese, len(chineseHeadings), pair.english, len(englishHeadings), len(pair.headings))
+			}
+			for index, expected := range pair.headings {
+				if chineseHeadings[index].level != expected.level || chineseHeadings[index].text != expected.chinese {
+					t.Errorf("%s heading %d = %#v, want %s %q", pair.chinese, index+1, chineseHeadings[index], expected.level, expected.chinese)
+				}
+				if englishHeadings[index].level != expected.level || englishHeadings[index].text != expected.english {
+					t.Errorf("%s heading %d = %#v, want %s %q", pair.english, index+1, englishHeadings[index], expected.level, expected.english)
+				}
 			}
 		})
 	}
@@ -439,6 +798,118 @@ func readRepositoryPolicyJSON(t *testing.T) []byte {
 		t.Fatalf("read repository policy: %v", err)
 	}
 	return data
+}
+
+func readRepositoryDocument(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(repositoryFile(t, name))
+	if err != nil {
+		t.Fatalf("read repository document %s: %v", name, err)
+	}
+	return strings.ReplaceAll(string(data), "\r\n", "\n")
+}
+
+func documentHeader(document string) string {
+	if len(document) > 512 {
+		return document[:512]
+	}
+	return document
+}
+
+type bilingualHeading struct {
+	level   string
+	chinese string
+	english string
+}
+
+type markdownHeading struct {
+	level string
+	text  string
+}
+
+func markdownHeadings(document string) []markdownHeading {
+	heading := regexp.MustCompile(`^(#{1,6})\s+(.+?)\s*$`)
+	var headings []markdownHeading
+	for _, line := range strings.Split(document, "\n") {
+		if match := heading.FindStringSubmatch(line); match != nil {
+			headings = append(headings, markdownHeading{level: match[1], text: match[2]})
+		}
+	}
+	return headings
+}
+
+func fencedCodeBlockAfterHeading(t *testing.T, document, heading, language string) string {
+	t.Helper()
+	headingMarker := heading + "\n"
+	headingIndex := strings.Index(document, headingMarker)
+	if headingIndex < 0 {
+		t.Fatalf("document does not contain heading %q", heading)
+	}
+	afterHeading := document[headingIndex+len(headingMarker):]
+	fence := "```" + language + "\n"
+	fenceIndex := strings.Index(afterHeading, fence)
+	if fenceIndex < 0 {
+		t.Fatalf("section %q does not contain a %s code block", heading, language)
+	}
+	blockStart := fenceIndex + len(fence)
+	blockEnd := strings.Index(afterHeading[blockStart:], "\n```")
+	if blockEnd < 0 {
+		t.Fatalf("section %q has an unterminated %s code block", heading, language)
+	}
+	return afterHeading[blockStart : blockStart+blockEnd]
+}
+
+func fencedCodeBlocks(document, language string) []string {
+	pattern := regexp.MustCompile("(?s)```" + regexp.QuoteMeta(language) + "\\n(.*?)\\n```")
+	matches := pattern.FindAllStringSubmatch(document, -1)
+	blocks := make([]string, 0, len(matches))
+	for _, match := range matches {
+		blocks = append(blocks, match[1])
+	}
+	return blocks
+}
+
+func assertPatternsInOrder(t *testing.T, text string, patterns []*regexp.Regexp) {
+	t.Helper()
+	cursor := 0
+	for _, pattern := range patterns {
+		match := pattern.FindStringIndex(text[cursor:])
+		if match == nil {
+			t.Errorf("missing or out-of-order pattern %q", pattern)
+			return
+		}
+		cursor += match[1]
+	}
+}
+
+func assertPowerShellNativeCommandsCheckExit(t *testing.T, block string) {
+	t.Helper()
+	nativeCommand := regexp.MustCompile(`^(?:git|go)\s|^\$[A-Za-z][A-Za-z0-9_]*\s*=\s*git\s|^&\s+\.\\codex-usage\.exe\s`)
+	lastExitCheck := regexp.MustCompile(`^if\s*\(\s*\$LASTEXITCODE\s+-ne\s+0\s*\)`)
+	lines := strings.Split(block, "\n")
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !nativeCommand.MatchString(trimmed) {
+			continue
+		}
+		next := index + 1
+		for next < len(lines) && strings.TrimSpace(lines[next]) == "" {
+			next++
+		}
+		if next >= len(lines) || !lastExitCheck.MatchString(strings.TrimSpace(lines[next])) {
+			t.Errorf("PowerShell native command does not immediately check $LASTEXITCODE: %q", trimmed)
+		}
+	}
+}
+
+func assertCommandBlockHasNoDeletionOrElevation(t *testing.T, block string) {
+	t.Helper()
+	lower := strings.ToLower(block)
+	for _, forbidden := range []string{"remove-item", "rm -", "sudo", "runas", "-verb runas"} {
+		if strings.Contains(lower, forbidden) {
+			t.Errorf("command block contains forbidden deletion or elevation fragment %q", forbidden)
+		}
+	}
 }
 
 func removeJSONField(t *testing.T, data []byte, path string) []byte {
