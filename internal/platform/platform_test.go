@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -634,6 +636,73 @@ func TestLinuxInstallServiceManagerStateQueryFailureHasNoSideEffects(t *testing.
 	}
 	if _, statErr := os.Lstat(unitPath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("unit was written after manager state query failure: %v", statErr)
+	}
+}
+
+func TestLinuxInstallServiceUserBusUnavailableUsesDetachedFallbackWithoutUnitMutation(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux unavailable user bus fallback")
+	}
+	for _, existingUnit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing_unit_%t", existingUnit), func(t *testing.T) {
+			executable, stateDir, unitPath := linuxServiceFixture(t)
+			if existingUnit {
+				writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+			}
+			before, beforeErr := os.ReadFile(unitPath)
+			if !existingUnit && !errors.Is(beforeErr, os.ErrNotExist) {
+				t.Fatalf("unexpected unit precondition: %v", beforeErr)
+			}
+			queryErr := errors.New("exit status 1")
+			queryCalls, mutationCalls, startCalls, removeCalls, syncCalls := 0, 0, 0, 0, 0
+			originalSyncParent := syncServiceParent
+			syncServiceParent = func(string) error { syncCalls++; return nil }
+			t.Cleanup(func() { syncServiceParent = originalSyncParent })
+			ops := inertLinuxServiceOperations()
+			ops.LookPath = func(string) (string, error) { return "/fake/systemctl", nil }
+			ops.RunSystemctl = func(args ...string) ([]byte, error) {
+				if strings.Join(args, " ") == linuxSystemdSnapshotCommand {
+					queryCalls++
+					return []byte("Failed to connect to bus: No medium found\n"), queryErr
+				}
+				mutationCalls++
+				return nil, errors.New("unexpected systemctl mutation")
+			}
+			ops.StartDetached = func(got string, args ...string) error {
+				startCalls++
+				if got != executable || !reflect.DeepEqual(args, []string{"daemon"}) {
+					t.Fatalf("unexpected detached start: %s %v", got, args)
+				}
+				return nil
+			}
+			ops.RemoveUnit = func(path string) error { removeCalls++; return os.Remove(path) }
+			restore := replaceLinuxServiceOperations(ops)
+			t.Cleanup(restore)
+
+			result, err := InstallService(executable, stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Installed || !result.Started || result.Mode != ServiceModeDetachedFallback {
+				t.Fatalf("unexpected fallback result: %+v", result)
+			}
+			if !strings.Contains(result.Warning, "Failed to connect to bus: No medium found") ||
+				!strings.Contains(result.Warning, "未写入或修改 systemd unit") {
+				t.Fatalf("fallback warning does not preserve the real reason: %q", result.Warning)
+			}
+			if queryCalls != 1 || mutationCalls != 0 || startCalls != 1 || removeCalls != 0 || syncCalls != 0 {
+				t.Fatalf("fallback side effects query=%d mutation=%d start=%d remove=%d sync=%d",
+					queryCalls, mutationCalls, startCalls, removeCalls, syncCalls)
+			}
+			if existingUnit {
+				after, readErr := os.ReadFile(unitPath)
+				if readErr != nil || !bytes.Equal(after, before) {
+					t.Fatalf("owned unit changed during fallback: before=%q after=%q err=%v", before, after, readErr)
+				}
+			} else if _, statErr := os.Lstat(unitPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("unit was written during bus fallback: %v", statErr)
+			}
+		})
 	}
 }
 
@@ -1631,6 +1700,63 @@ func TestLinuxUninstallServiceAcceptsExactManagerSnapshot(t *testing.T) {
 	}
 }
 
+func TestLinuxUninstallServiceManagerOwnedPIDUsesSystemctlWithoutSignal(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux manager-owned PID uninstall")
+	}
+	executable, stateDir, unitPath := linuxServiceFixture(t)
+	writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+	pidPath := filepath.Join(stateDir, "codex-usage.pid")
+	writeLinuxPIDFixture(t, stateDir, 424242)
+	commands := make([]string, 0, 4)
+	stopped, signalCalls := false, 0
+	ops := inertLinuxServiceOperations()
+	ops.LookPath = func(string) (string, error) { return "/fake/systemctl", nil }
+	ops.RunSystemctl = func(args ...string) ([]byte, error) {
+		command := strings.Join(args, " ")
+		commands = append(commands, command)
+		switch command {
+		case linuxSystemdSnapshotCommand:
+			return linuxSystemdSnapshotOutput(unitPath, "loaded", "enabled", "active", "no"), nil
+		case "--user stop codex-usage.service":
+			stopped = true
+			return nil, nil
+		case "--user disable codex-usage.service", "--user daemon-reload":
+			return nil, nil
+		default:
+			t.Fatalf("unexpected systemctl command: %s", command)
+			return nil, nil
+		}
+	}
+	ops.ReadProcessExecutable = func(int) (string, error) {
+		if stopped {
+			return "", os.ErrNotExist
+		}
+		return executable, nil
+	}
+	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	restore := replaceLinuxServiceOperations(ops)
+	t.Cleanup(restore)
+
+	if err := UninstallService(executable, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	wantCommands := []string{
+		linuxSystemdSnapshotCommand,
+		"--user stop codex-usage.service",
+		"--user disable codex-usage.service",
+		"--user daemon-reload",
+	}
+	if !reflect.DeepEqual(commands, wantCommands) || signalCalls != 0 {
+		t.Fatalf("manager-owned uninstall commands=%v signal=%d want commands=%v signal=0", commands, signalCalls, wantCommands)
+	}
+	for _, path := range []string{unitPath, pidPath} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("owned metadata remains after uninstall: %s: %v", path, err)
+		}
+	}
+}
+
 func TestLinuxUninstallServiceRejectsLoadedManagerWhenLocalUnitIsMissing(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux uninstall missing local unit manager ownership")
@@ -1754,6 +1880,53 @@ func TestLinuxUninstallServiceWithoutSystemctlUsesValidatedPIDFallback(t *testin
 	}
 }
 
+func TestLinuxUninstallServiceUserBusUnavailableUsesValidatedPIDFallback(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux unavailable user bus uninstall fallback")
+	}
+	executable, stateDir, unitPath := linuxServiceFixture(t)
+	writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+	pidPath := filepath.Join(stateDir, "codex-usage.pid")
+	writeLinuxPIDFixture(t, stateDir, 424242)
+	queryCalls, mutationCalls, removeCalls, signalCalls := 0, 0, 0, 0
+	syncPaths := make([]string, 0, 2)
+	originalSyncParent := syncServiceParent
+	syncServiceParent = func(path string) error { syncPaths = append(syncPaths, path); return nil }
+	t.Cleanup(func() { syncServiceParent = originalSyncParent })
+	ops := inertLinuxServiceOperations()
+	ops.LookPath = func(string) (string, error) { return "/fake/systemctl", nil }
+	ops.RunSystemctl = func(args ...string) ([]byte, error) {
+		if strings.Join(args, " ") == linuxSystemdSnapshotCommand {
+			queryCalls++
+			return []byte("Failed to connect to bus: No such file or directory\n"), errors.New("exit status 1")
+		}
+		mutationCalls++
+		return nil, errors.New("unexpected systemctl mutation")
+	}
+	ops.RemoveUnit = func(path string) error { removeCalls++; return os.Remove(path) }
+	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
+	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	ops.ProcessAlive = func(int) (bool, error) { return false, nil }
+	restore := replaceLinuxServiceOperations(ops)
+	t.Cleanup(restore)
+
+	if err := UninstallService(executable, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	if queryCalls != 1 || mutationCalls != 0 || removeCalls != 1 || signalCalls != 1 {
+		t.Fatalf("bus fallback calls query=%d mutation=%d remove=%d signal=%d",
+			queryCalls, mutationCalls, removeCalls, signalCalls)
+	}
+	if !reflect.DeepEqual(syncPaths, []string{unitPath, pidPath}) {
+		t.Fatalf("bus fallback sync paths=%v want [%s %s]", syncPaths, unitPath, pidPath)
+	}
+	for _, path := range []string{unitPath, pidPath} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("owned metadata remains after bus fallback: %s: %v", path, err)
+		}
+	}
+}
+
 func TestLinuxUninstallServiceAbsentManagerStateUsesDetachedFallback(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux uninstall with absent manager state")
@@ -1797,6 +1970,165 @@ func TestLinuxUninstallServiceAbsentManagerStateUsesDetachedFallback(t *testing.
 	}
 	if !reflect.DeepEqual(syncPaths, []string{unitPath, pidPath}) {
 		t.Fatalf("absent manager sync paths=%v want [%s %s]", syncPaths, unitPath, pidPath)
+	}
+}
+
+func TestLinuxUninstallServiceInactiveOwnedUnitStopsDetachedPIDAfterSystemctlStop(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux inactive unit detached PID uninstall")
+	}
+	executable, stateDir, unitPath := linuxServiceFixture(t)
+	writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+	pidPath := filepath.Join(stateDir, "codex-usage.pid")
+	writeLinuxPIDFixture(t, stateDir, 424242)
+	commands := make([]string, 0, 4)
+	signalCalls := 0
+	ops := inertLinuxServiceOperations()
+	ops.LookPath = func(string) (string, error) { return "/fake/systemctl", nil }
+	ops.RunSystemctl = func(args ...string) ([]byte, error) {
+		command := strings.Join(args, " ")
+		commands = append(commands, command)
+		if command == linuxSystemdSnapshotCommand {
+			return linuxSystemdSnapshotOutput(unitPath, "loaded", "enabled", "inactive", "no"), nil
+		}
+		return nil, nil
+	}
+	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
+	ops.SignalProcess = func(pid int, signal os.Signal) error {
+		signalCalls++
+		if pid != 424242 || signal != syscall.SIGTERM {
+			t.Fatalf("unexpected signal target: pid=%d signal=%v", pid, signal)
+		}
+		return nil
+	}
+	ops.ProcessAlive = func(int) (bool, error) { return false, nil }
+	restore := replaceLinuxServiceOperations(ops)
+	t.Cleanup(restore)
+
+	if err := UninstallService(executable, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	wantCommands := []string{
+		linuxSystemdSnapshotCommand,
+		"--user stop codex-usage.service",
+		"--user disable codex-usage.service",
+		"--user daemon-reload",
+	}
+	if !reflect.DeepEqual(commands, wantCommands) || signalCalls != 1 {
+		t.Fatalf("uninstall commands=%v signal=%d want commands=%v signal=1", commands, signalCalls, wantCommands)
+	}
+	if _, err := os.Lstat(pidPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("detached PID metadata remains after uninstall: %v", err)
+	}
+}
+
+func TestLinuxStopServiceInactiveOwnedUnitStopsDetachedPIDAfterSystemctlStop(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux inactive unit detached PID stop")
+	}
+	executable, stateDir, unitPath := linuxServiceFixture(t)
+	writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+	writeLinuxPIDFixture(t, stateDir, 424242)
+	commands := make([]string, 0, 2)
+	signalCalls := 0
+	ops := inertLinuxServiceOperations()
+	ops.LookPath = func(string) (string, error) { return "/fake/systemctl", nil }
+	ops.RunSystemctl = func(args ...string) ([]byte, error) {
+		command := strings.Join(args, " ")
+		commands = append(commands, command)
+		if command == linuxSystemdSnapshotCommand {
+			return linuxSystemdSnapshotOutput(unitPath, "loaded", "enabled", "inactive", "no"), nil
+		}
+		return nil, nil
+	}
+	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
+	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	ops.ProcessAlive = func(int) (bool, error) { return false, nil }
+	restore := replaceLinuxServiceOperations(ops)
+	t.Cleanup(restore)
+
+	if err := StopService(executable, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	wantCommands := []string{linuxSystemdSnapshotCommand, "--user stop codex-usage.service"}
+	if !reflect.DeepEqual(commands, wantCommands) || signalCalls != 1 {
+		t.Fatalf("stop commands=%v signal=%d want commands=%v signal=1", commands, signalCalls, wantCommands)
+	}
+}
+
+func TestLinuxStopServiceManagerOwnedPIDUsesSystemctlWithoutSignal(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux manager-owned PID stop")
+	}
+	executable, stateDir, unitPath := linuxServiceFixture(t)
+	writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+	writeLinuxPIDFixture(t, stateDir, 424242)
+	commands := make([]string, 0, 2)
+	stopped, signalCalls := false, 0
+	ops := inertLinuxServiceOperations()
+	ops.LookPath = func(string) (string, error) { return "/fake/systemctl", nil }
+	ops.RunSystemctl = func(args ...string) ([]byte, error) {
+		command := strings.Join(args, " ")
+		commands = append(commands, command)
+		if command == linuxSystemdSnapshotCommand {
+			return linuxSystemdSnapshotOutput(unitPath, "loaded", "enabled", "active", "no"), nil
+		}
+		if command == "--user stop codex-usage.service" {
+			stopped = true
+			return nil, nil
+		}
+		t.Fatalf("unexpected systemctl command: %s", command)
+		return nil, nil
+	}
+	ops.ReadProcessExecutable = func(int) (string, error) {
+		if stopped {
+			return "", os.ErrNotExist
+		}
+		return executable, nil
+	}
+	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	restore := replaceLinuxServiceOperations(ops)
+	t.Cleanup(restore)
+
+	if err := StopService(executable, stateDir); err != nil {
+		t.Fatal(err)
+	}
+	wantCommands := []string{linuxSystemdSnapshotCommand, "--user stop codex-usage.service"}
+	if !reflect.DeepEqual(commands, wantCommands) || signalCalls != 0 {
+		t.Fatalf("manager-owned stop commands=%v signal=%d want commands=%v signal=0", commands, signalCalls, wantCommands)
+	}
+}
+
+func TestLinuxStopServiceRejectsForeignPIDBeforeSystemctlStop(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux foreign detached PID stop preflight")
+	}
+	executable, stateDir, unitPath := linuxServiceFixture(t)
+	writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+	writeLinuxPIDFixture(t, stateDir, 424242)
+	mutationCalls, signalCalls := 0, 0
+	ops := inertLinuxServiceOperations()
+	ops.LookPath = func(string) (string, error) { return "/fake/systemctl", nil }
+	ops.RunSystemctl = func(args ...string) ([]byte, error) {
+		if strings.Join(args, " ") == linuxSystemdSnapshotCommand {
+			return linuxSystemdSnapshotOutput(unitPath, "loaded", "enabled", "inactive", "no"), nil
+		}
+		mutationCalls++
+		return nil, nil
+	}
+	ops.ReadProcessExecutable = func(int) (string, error) {
+		return filepath.Join(filepath.Dir(stateDir), "foreign", "codex-usage"), nil
+	}
+	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	restore := replaceLinuxServiceOperations(ops)
+	t.Cleanup(restore)
+
+	err := StopService(executable, stateDir)
+	if err == nil || !strings.Contains(err.Error(), "existing_install_untrusted") {
+		t.Fatalf("foreign PID error=%v want existing_install_untrusted", err)
+	}
+	if mutationCalls != 0 || signalCalls != 0 {
+		t.Fatalf("foreign PID caused mutations=%d signals=%d", mutationCalls, signalCalls)
 	}
 }
 

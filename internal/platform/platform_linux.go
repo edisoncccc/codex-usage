@@ -76,6 +76,24 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 	}
 	snapshot, err := inspectCurrentLinuxSystemdSnapshot(ops)
 	if err != nil {
+		var unavailable *linuxSystemdSnapshotFailure
+		if errors.As(err, &unavailable) && unavailable.kind == linuxSystemdSnapshotUserBusUnavailable {
+			result := ServiceResult{
+				Installed: true,
+				Mode:      ServiceModeDetachedFallback,
+				Warning: fmt.Sprintf(
+					"systemd --user user bus 不可用（%s）；未写入或修改 systemd unit",
+					unavailable.diagnostic,
+				),
+			}
+			if startErr := ops.StartDetached(executable, "daemon"); startErr != nil {
+				result.Warning += "；后台启动失败: " + startErr.Error()
+				return result, nil
+			}
+			result.Started = true
+			result.Warning += "；本次已启动，但需在 user bus 可用后重试安装以启用登录自启"
+			return result, nil
+		}
 		return ServiceResult{}, err
 	}
 	if err := validateCurrentLinuxSystemdSnapshot(preflight, snapshot); err != nil {
@@ -151,6 +169,33 @@ type currentLinuxSystemdSnapshot struct {
 	transient     string
 }
 
+type linuxSystemdSnapshotFailureKind string
+
+const (
+	linuxSystemdSnapshotFailureUnknown     linuxSystemdSnapshotFailureKind = "unknown"
+	linuxSystemdSnapshotUserBusUnavailable linuxSystemdSnapshotFailureKind = "user_bus_unavailable"
+)
+
+type linuxSystemdSnapshotFailure struct {
+	kind       linuxSystemdSnapshotFailureKind
+	diagnostic string
+	err        error
+}
+
+func (e *linuxSystemdSnapshotFailure) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s: %v: %s", e.kind, e.err, e.diagnostic)
+}
+
+func (e *linuxSystemdSnapshotFailure) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
 func inspectCurrentLinuxSystemdSnapshot(ops linuxServiceOperations) (currentLinuxSystemdSnapshot, error) {
 	output, err := ops.RunSystemctl(
 		"--user", "show", "codex-usage.service",
@@ -164,12 +209,37 @@ func inspectCurrentLinuxSystemdSnapshot(ops linuxServiceOperations) (currentLinu
 	)
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
+		if classifyLinuxSystemdSnapshotFailure(detail) == linuxSystemdSnapshotUserBusUnavailable {
+			return currentLinuxSystemdSnapshot{}, &linuxSystemdSnapshotFailure{
+				kind:       linuxSystemdSnapshotUserBusUnavailable,
+				diagnostic: detail,
+				err:        err,
+			}
+		}
 		if detail != "" {
 			err = fmt.Errorf("%w: %s", err, detail)
 		}
 		return currentLinuxSystemdSnapshot{}, &PermissionError{Operation: "检查当前用户 systemd 服务状态", Err: err}
 	}
 	return parseCurrentLinuxSystemdSnapshot(output)
+}
+
+func classifyLinuxSystemdSnapshotFailure(diagnostic string) linuxSystemdSnapshotFailureKind {
+	normalized := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(diagnostic, "\r\n", "\n")))
+	for _, line := range strings.Split(normalized, "\n") {
+		line = strings.TrimSpace(line)
+		switch line {
+		case "failed to connect to bus: no medium found",
+			"failed to connect to bus: no such file or directory",
+			"failed to get d-bus connection: no such file or directory":
+			return linuxSystemdSnapshotUserBusUnavailable
+		}
+		const missingSessionEnvironment = "failed to connect to bus: $dbus_session_bus_address and $xdg_runtime_dir not defined"
+		if line == missingSessionEnvironment || strings.HasPrefix(line, missingSessionEnvironment+" (consider using --machine=") {
+			return linuxSystemdSnapshotUserBusUnavailable
+		}
+	}
+	return linuxSystemdSnapshotFailureUnknown
 }
 
 func parseCurrentLinuxSystemdSnapshot(output []byte) (currentLinuxSystemdSnapshot, error) {
@@ -462,10 +532,11 @@ type currentLinuxPIDInspection struct {
 }
 
 type currentLinuxUninstallInspection struct {
-	unit               currentLinuxUnitInspection
-	pid                currentLinuxPIDInspection
-	systemctlAvailable bool
-	managerOwned       bool
+	unit                currentLinuxUnitInspection
+	pid                 currentLinuxPIDInspection
+	systemctlAvailable  bool
+	managerOwned        bool
+	managerProcessOwned bool
 }
 
 func inspectCurrentLinuxUninstall(executable, stateDir string, ops linuxServiceOperations) (currentLinuxUninstallInspection, error) {
@@ -479,12 +550,18 @@ func inspectCurrentLinuxUninstall(executable, stateDir string, ops linuxServiceO
 		inspection.systemctlAvailable = true
 		snapshot, err := inspectCurrentLinuxSystemdSnapshot(ops)
 		if err != nil {
-			return inspection, err
+			var unavailable *linuxSystemdSnapshotFailure
+			if !errors.As(err, &unavailable) || unavailable.kind != linuxSystemdSnapshotUserBusUnavailable {
+				return inspection, err
+			}
+			inspection.systemctlAvailable = false
+		} else {
+			if err := validateCurrentLinuxSystemdSnapshot(unit, snapshot); err != nil {
+				return inspection, err
+			}
+			inspection.managerOwned = !snapshot.clearlyAbsent()
+			inspection.managerProcessOwned = inspection.managerOwned && snapshot.managerMayOwnProcess()
 		}
-		if err := validateCurrentLinuxSystemdSnapshot(unit, snapshot); err != nil {
-			return inspection, err
-		}
-		inspection.managerOwned = !snapshot.clearlyAbsent()
 	}
 	pid, err := inspectCurrentLinuxPIDFile(filepath.Join(stateDir, "codex-usage.pid"), executable, ops)
 	if err != nil {
@@ -492,6 +569,15 @@ func inspectCurrentLinuxUninstall(executable, stateDir string, ops linuxServiceO
 	}
 	inspection.pid = pid
 	return inspection, nil
+}
+
+func (snapshot currentLinuxSystemdSnapshot) managerMayOwnProcess() bool {
+	switch snapshot.activeState {
+	case "inactive", "failed":
+		return false
+	default:
+		return true
+	}
 }
 
 func inspectCurrentLinuxPIDFile(path, expectedExecutable string, ops linuxServiceOperations) (currentLinuxPIDInspection, error) {
@@ -581,37 +667,66 @@ func stopInspectedLinuxPIDFile(
 	if err := ops.SignalProcess(current.pid, syscall.SIGTERM); err != nil {
 		return false, fmt.Errorf("停止后台服务 PID %d: %w", current.pid, err)
 	}
+	if err := waitForLinuxPIDExit(current.pid, ops); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func waitForInspectedLinuxPIDFile(
+	preflight currentLinuxPIDInspection,
+	expectedExecutable string,
+	ops linuxServiceOperations,
+) (bool, error) {
+	current, err := revalidateCurrentLinuxPIDFile(preflight, expectedExecutable, ops)
+	if err != nil {
+		return false, err
+	}
+	if !current.exists || !current.processExists {
+		return false, nil
+	}
+	if err := waitForLinuxPIDExit(current.pid, ops); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func waitForLinuxPIDExit(pid int, ops linuxServiceOperations) error {
 	for attempt := 0; attempt < 20; attempt++ {
-		alive, err := ops.ProcessAlive(current.pid)
+		alive, err := ops.ProcessAlive(pid)
 		if err != nil {
-			return false, fmt.Errorf("确认后台服务 PID %d 退出: %w", current.pid, err)
+			return fmt.Errorf("确认后台服务 PID %d 退出: %w", pid, err)
 		}
 		if !alive {
-			return true, nil
+			return nil
 		}
 		if attempt < 19 {
 			ops.Sleep(50 * time.Millisecond)
 		}
 	}
-	return false, fmt.Errorf("等待后台服务 PID %d 退出超时", current.pid)
+	return fmt.Errorf("等待后台服务 PID %d 退出超时", pid)
 }
 
 func stopLinuxService(executable, stateDir string, ops linuxServiceOperations) error {
-	preflight, err := inspectCurrentLinuxUnit(executable, stateDir)
+	preflight, err := inspectCurrentLinuxUninstall(executable, stateDir, ops)
 	if err != nil {
 		return err
 	}
 	var systemdErr error
-	if preflight.exists {
-		if _, err := ops.LookPath("systemctl"); err == nil {
-			output, stopErr := ops.RunSystemctl("--user", "stop", "codex-usage.service")
-			if stopErr == nil {
-				return nil
-			}
+	if preflight.managerOwned {
+		if err := validateExactCurrentLinuxUnit(preflight.unit.path, preflight.unit.contents); err != nil {
+			return err
+		}
+		output, stopErr := ops.RunSystemctl("--user", "stop", "codex-usage.service")
+		if stopErr != nil {
 			systemdErr = fmt.Errorf("systemctl --user stop: %w: %s", stopErr, strings.TrimSpace(string(output)))
 		}
 	}
-	stopped, pidErr := stopLinuxPIDFile(filepath.Join(stateDir, "codex-usage.pid"), executable, ops)
+	if preflight.managerProcessOwned && systemdErr == nil {
+		_, waitErr := waitForInspectedLinuxPIDFile(preflight.pid, executable, ops)
+		return waitErr
+	}
+	stopped, pidErr := stopInspectedLinuxPIDFile(preflight.pid, executable, ops)
 	if pidErr != nil {
 		return pidErr
 	}
@@ -638,7 +753,11 @@ func UninstallService(executable, stateDir string) error {
 			systemdErr = fmt.Errorf("systemctl --user stop: %w: %s", stopErr, strings.TrimSpace(string(output)))
 		}
 	}
-	if !preflight.managerOwned || systemdErr != nil {
+	if preflight.managerProcessOwned && systemdErr == nil {
+		if _, waitErr := waitForInspectedLinuxPIDFile(preflight.pid, executable, ops); waitErr != nil {
+			return waitErr
+		}
+	} else {
 		stopped, pidErr := stopInspectedLinuxPIDFile(preflight.pid, executable, ops)
 		if pidErr != nil {
 			return pidErr
