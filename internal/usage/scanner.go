@@ -353,6 +353,11 @@ func (s *Scanner) scanFile(
 			return result, nil
 		}
 	}
+	if cursor.SessionID == "" && cursor.LastEventID != "" {
+		// Older cursors could persist an event and cumulative progress without
+		// the deterministic fallback identity used to write that event.
+		cursor.SessionID = "unknown-" + shortHash(path)
+	}
 	if cursor.SessionID != "" {
 		if err := s.inheritSessionProgress(ctx, &cursor); err != nil {
 			return result, err
@@ -687,6 +692,9 @@ func (s *Scanner) processRecord(
 			result.Warnings++
 		}
 		sessionID := firstNonEmpty(cursor.SessionID, meta.SessionID, "unknown-"+shortHash(path))
+		if cursor.SessionID == "" {
+			cursor.SessionID = sessionID
+		}
 		event := model.UsageEvent{
 			ID:          stableJSONLEventID(sessionID, cursor.Segment, current),
 			Timestamp:   timestamp,

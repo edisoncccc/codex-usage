@@ -881,6 +881,97 @@ func TestSameTotalClassificationCorrectionAndSessionProgressAreAtomic(t *testing
 	}
 }
 
+func TestAnonymousClassificationCorrectionRetryUsesPersistedSessionIdentity(t *testing.T) {
+	initial := model.TokenUsage{Input: 80, CachedInput: 10, Output: 20, ReasoningOutput: 2, Total: 100}
+	corrected := model.TokenUsage{Input: 80, CachedInput: 12, Output: 20, ReasoningOutput: 3, Total: 100}
+	root, home, path := writeScannerRollout(t,
+		`{"timestamp":"2026-07-30T01:00:00Z","type":"turn_context","payload":{"turn_id":"anonymous-turn","cwd":"/p","model":"gpt-test"}}`,
+		tokenLine("2026-07-30T01:00:01Z", usage(80, 10, 0, 20, 2, 100), usage(80, 10, 0, 20, 2, 100)),
+	)
+	databasePath := filepath.Join(root, "usage.sqlite")
+	st, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	scanner := &Scanner{Store: st}
+	if _, err := scanner.Scan(context.Background(), []string{home}, false); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.Usage != initial || baseline.GrandTotal != initial.Total {
+		t.Fatalf("anonymous baseline mismatch: %+v", baseline)
+	}
+	expectedSessionID := "unknown-" + shortHash(path)
+	initialCursor, ok, err := st.GetCursor(context.Background(), path)
+	if err != nil || !ok || initialCursor.SessionID != expectedSessionID || initialCursor.Cumulative != initial {
+		t.Fatalf("anonymous identity was not persisted on first scan: want=%q ok=%v cursor=%+v err=%v",
+			expectedSessionID, ok, initialCursor, err)
+	}
+	initialProgress, initialSegment, ok, err := st.GetSessionProgress(context.Background(), expectedSessionID)
+	if err != nil || !ok || initialProgress != initial || initialSegment != initialCursor.Segment {
+		t.Fatalf("anonymous initial progress mismatch: ok=%v segment=%d progress=%+v cursor=%+v err=%v",
+			ok, initialSegment, initialProgress, initialCursor, err)
+	}
+	clearScannerCursorSessionID(t, databasePath, path)
+
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := file.WriteString(tokenLine(
+		"2026-07-30T01:00:02Z",
+		usage(80, 12, 0, 20, 3, 100),
+		usage(0, 2, 0, 0, 1, 0),
+	) + "\n")
+	closeErr := file.Close()
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	installScannerAbortTrigger(t, databasePath, "file_cursors", "forced file cursor failure")
+
+	failed, err := scanner.Scan(context.Background(), []string{home}, false)
+	if err == nil || !strings.Contains(err.Error(), "forced file cursor failure") {
+		t.Fatalf("file cursor failure was not propagated: scan=%+v err=%v", failed, err)
+	}
+	afterFailure, err := st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterFailure.Usage != corrected || afterFailure.GrandTotal != corrected.Total {
+		t.Fatalf("first correction did not commit before file cursor failure: %+v", afterFailure)
+	}
+
+	removeScannerAbortTrigger(t, databasePath, "file_cursors")
+	retried, err := scanner.Scan(context.Background(), []string{home}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalSummary, err := st.Summary(context.Background(), model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalSummary.Usage != corrected || finalSummary.GrandTotal != corrected.Total {
+		t.Fatalf("anonymous correction was applied more than once: scan=%+v summary=%+v", retried, finalSummary)
+	}
+	cursor, ok, err := st.GetCursor(context.Background(), path)
+	if err != nil || !ok || cursor.SessionID != expectedSessionID || cursor.Cumulative != corrected {
+		t.Fatalf("anonymous file cursor identity mismatch: want=%q ok=%v cursor=%+v err=%v",
+			expectedSessionID, ok, cursor, err)
+	}
+	progress, segment, ok, err := st.GetSessionProgress(context.Background(), expectedSessionID)
+	if err != nil || !ok || progress != corrected || segment != cursor.Segment {
+		t.Fatalf("anonymous session progress mismatch: ok=%v segment=%d progress=%+v cursor=%+v err=%v",
+			ok, segment, progress, cursor, err)
+	}
+}
+
 func TestSameTotalClassificationCorrectionCanReachEarlierEvents(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, ".codex")
@@ -1176,6 +1267,18 @@ func removeScannerAbortTrigger(t *testing.T, databasePath, table string) {
 	}
 	defer db.Close()
 	if _, err := db.Exec("DROP TRIGGER fail_" + table); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func clearScannerCursorSessionID(t *testing.T, databasePath, path string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE file_cursors SET session_id='' WHERE path=?`, path); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -409,18 +409,31 @@ func TestCorrectEventUsageWithSessionProgressRollsBackTogether(t *testing.T) {
 	if err := st.PutSessionProgress(ctx, "session", 0, initial); err != nil {
 		t.Fatal(err)
 	}
+	changed, err := st.CorrectEventUsageWithSessionProgress(
+		ctx, "atomic-correction", "", 0, corrected.Sub(initial), corrected,
+	)
+	if err == nil || changed {
+		t.Fatalf("empty session id was accepted: changed=%v err=%v", changed, err)
+	}
+	summary, err := st.Summary(ctx, model.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Usage != initial || summary.GrandTotal != initial.Total {
+		t.Fatalf("empty session id changed event classification: %+v", summary)
+	}
 	if _, err := st.db.Exec(`CREATE TRIGGER fail_session_progress BEFORE INSERT ON session_cursors
 		BEGIN SELECT RAISE(ABORT, 'forced session progress failure'); END`); err != nil {
 		t.Fatal(err)
 	}
 
-	changed, err := st.CorrectEventUsageWithSessionProgress(
+	changed, err = st.CorrectEventUsageWithSessionProgress(
 		ctx, "atomic-correction", "session", 0, corrected.Sub(initial), corrected,
 	)
 	if err == nil || changed {
 		t.Fatalf("atomic correction did not fail as a unit: changed=%v err=%v", changed, err)
 	}
-	summary, err := st.Summary(ctx, model.Filter{})
+	summary, err = st.Summary(ctx, model.Filter{})
 	if err != nil {
 		t.Fatal(err)
 	}

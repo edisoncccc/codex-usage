@@ -598,6 +598,9 @@ func (s *Store) CorrectEventUsageWithSessionProgress(
 	segment int64,
 	difference, progress model.TokenUsage,
 ) (bool, error) {
+	if sessionID == "" {
+		return false, errors.New("classification correction session id is empty")
+	}
 	return s.correctEventUsage(ctx, eventID, sessionID, segment, difference, &progress)
 }
 
