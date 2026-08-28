@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -307,6 +308,19 @@ func realInstallLifecycleWithFakeOptions(
 		ops.UninstallService = func(string, string) error {
 			*calls = append(*calls, "uninstall_service")
 			return nil
+		}
+		installService := ops.InstallService
+		uninstallService := ops.UninstallService
+		ops.BeginServiceRepair = func(executable, stateDir string) (platform.ServiceResult, func() error, error) {
+			result, err := installService(executable, stateDir)
+			if err != nil {
+				return result, nil, err
+			}
+			return result, func() error {
+				uninstallErr := uninstallService(executable, stateDir)
+				_, installErr := installService(executable, stateDir)
+				return errors.Join(uninstallErr, installErr)
+			}, nil
 		}
 		ops.SuspendPrevious = func(platform.PreviousService) error {
 			*calls = append(*calls, "suspend_previous")

@@ -52,16 +52,17 @@ type lifecycleMarkerTransaction interface {
 }
 
 type lifecycleOps struct {
-	StopService      func(executable, stateDir string) error
-	InstallService   func(executable, stateDir string) (platform.ServiceResult, error)
-	UninstallService func(executable, stateDir string) error
-	SuspendPrevious  func(platform.PreviousService) error
-	ResumePrevious   func(platform.PreviousService) error
-	RemovePrevious   func(platform.PreviousService) error
-	ProbeIdentity    func(context.Context, string, buildIdentity) error
-	Scan             func(context.Context, usage.ProgressObserver) (installScanOutcome, error)
-	Now              func() time.Time
-	Marker           lifecycleMarkerTransaction
+	StopService        func(executable, stateDir string) error
+	InstallService     func(executable, stateDir string) (platform.ServiceResult, error)
+	UninstallService   func(executable, stateDir string) error
+	BeginServiceRepair func(executable, stateDir string) (platform.ServiceResult, func() error, error)
+	SuspendPrevious    func(platform.PreviousService) error
+	ResumePrevious     func(platform.PreviousService) error
+	RemovePrevious     func(platform.PreviousService) error
+	ProbeIdentity      func(context.Context, string, buildIdentity) error
+	Scan               func(context.Context, usage.ProgressObserver) (installScanOutcome, error)
+	Now                func() time.Time
+	Marker             lifecycleMarkerTransaction
 }
 
 type lifecycleProgress func(phase string, progress any)
@@ -346,25 +347,25 @@ func executeSameLifecycle(
 	marker lifecycleMarkerTransaction,
 ) (lifecycleResult, error) {
 	if err := ctx.Err(); err != nil {
-		return result, rollbackSameLifecycle(err, request, ops, marker, false)
+		return result, rollbackSameLifecycle(err, marker, nil)
 	}
 	reportLifecycle(report, "start_service", nil)
-	service, err := ops.InstallService(request.DestinationPath, request.StateDir)
+	service, rollbackService, err := ops.BeginServiceRepair(request.DestinationPath, request.StateDir)
 	if err != nil {
-		return result, rollbackSameLifecycle(fmt.Errorf("repair service: %w", err), request, ops, marker, false)
+		return result, rollbackSameLifecycle(fmt.Errorf("repair service: %w", err), marker, nil)
 	}
 	result.Service = service
 	reportLifecycle(report, "health_check", nil)
 	if err := ops.ProbeIdentity(ctx, request.ServiceURL, request.Candidate); err != nil {
-		return result, rollbackSameLifecycle(fmt.Errorf("identity health: %w", err), request, ops, marker, true)
+		return result, rollbackSameLifecycle(fmt.Errorf("identity health: %w", err), marker, rollbackService)
 	}
 	if err := ctx.Err(); err != nil {
-		return result, rollbackSameLifecycle(err, request, ops, marker, true)
+		return result, rollbackSameLifecycle(err, marker, rollbackService)
 	}
 	if err := marker.Commit(); err != nil {
 		return result, rollbackSameLifecycle(
 			&installConfigPersistenceError{err: fmt.Errorf("commit install state marker: %w", err)},
-			request, ops, marker, true,
+			marker, rollbackService,
 		)
 	}
 	result.DataPreserved = true
@@ -373,18 +374,13 @@ func executeSameLifecycle(
 
 func rollbackSameLifecycle(
 	primary error,
-	request lifecycleRequest,
-	ops lifecycleOps,
 	marker lifecycleMarkerTransaction,
-	restoreService bool,
+	rollbackService func() error,
 ) error {
 	var rollbackErrors []error
-	if restoreService {
-		if err := ops.UninstallService(request.DestinationPath, request.StateDir); err != nil {
-			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback uninstall service: %w", err))
-		}
-		if _, err := ops.InstallService(request.DestinationPath, request.StateDir); err != nil {
-			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback restore service: %w", err))
+	if rollbackService != nil {
+		if err := rollbackService(); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("rollback restore service state: %w", err))
 		}
 	}
 	if err := marker.Rollback(); err != nil {
@@ -394,6 +390,7 @@ func rollbackSameLifecycle(
 }
 
 func withLifecycleDefaults(ops lifecycleOps) lifecycleOps {
+	customServiceOps := ops.InstallService != nil || ops.UninstallService != nil
 	if ops.StopService == nil {
 		ops.StopService = platform.StopService
 	}
@@ -402,6 +399,25 @@ func withLifecycleDefaults(ops lifecycleOps) lifecycleOps {
 	}
 	if ops.UninstallService == nil {
 		ops.UninstallService = platform.UninstallService
+	}
+	if ops.BeginServiceRepair == nil {
+		if customServiceOps {
+			installService := ops.InstallService
+			uninstallService := ops.UninstallService
+			ops.BeginServiceRepair = func(executable, stateDir string) (platform.ServiceResult, func() error, error) {
+				result, err := installService(executable, stateDir)
+				if err != nil {
+					return result, nil, err
+				}
+				return result, func() error {
+					uninstallErr := uninstallService(executable, stateDir)
+					_, installErr := installService(executable, stateDir)
+					return errors.Join(uninstallErr, installErr)
+				}, nil
+			}
+		} else {
+			ops.BeginServiceRepair = platform.BeginServiceRepair
+		}
 	}
 	if ops.SuspendPrevious == nil {
 		ops.SuspendPrevious = platform.SuspendPreviousService

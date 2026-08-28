@@ -337,6 +337,70 @@ func TestInstallServiceCreatesOwnedLauncherAndRunEntryAfterPreflight(t *testing.
 	}
 }
 
+func TestBeginServiceRepairRollbackRestoresExactWindowsState(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		launcher  bool
+		autoStart bool
+		running   bool
+	}{
+		{name: "missing"},
+		{name: "stopped", launcher: true, autoStart: true},
+		{name: "running", launcher: true, autoStart: true, running: true},
+		{name: "manual running", running: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			executable, stateDir, launcher := windowsServiceFixture(t)
+			if test.launcher {
+				if err := os.WriteFile(launcher, []byte(windowsServiceLauncherContents(executable, stateDir)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runCommand := windowsServiceRunCommand(launcher)
+			autoStart := test.autoStart
+			running := test.running
+			restoreHooks := replaceCurrentWindowsServiceHooks(
+				func() (string, bool, error) { return runCommand, autoStart, nil },
+				func(value string) error {
+					if !strings.EqualFold(value, runCommand) {
+						t.Fatalf("unexpected Run command: %s", value)
+					}
+					autoStart = true
+					return nil
+				},
+				func() error { autoStart = false; return nil },
+				func(string, ...string) error { running = true; return nil },
+			)
+			t.Cleanup(restoreHooks)
+			originalStop := stopCurrentWindowsServiceProcess
+			originalRunning := currentWindowsServiceRunning
+			stopCurrentWindowsServiceProcess = func(string) error { running = false; return nil }
+			currentWindowsServiceRunning = func(string) (bool, error) { return running, nil }
+			t.Cleanup(func() {
+				stopCurrentWindowsServiceProcess = originalStop
+				currentWindowsServiceRunning = originalRunning
+			})
+
+			result, rollback, err := BeginServiceRepair(executable, stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Installed || !result.Started || rollback == nil || !autoStart || !running {
+				t.Fatalf("repair result=%+v rollback=%v autoStart=%v running=%v", result, rollback != nil, autoStart, running)
+			}
+			if err := rollback(); err != nil {
+				t.Fatal(err)
+			}
+			_, launcherErr := os.Lstat(launcher)
+			launcherExists := launcherErr == nil
+			if launcherExists != test.launcher || autoStart != test.autoStart || running != test.running {
+				t.Fatalf("restored launcher=%v autoStart=%v running=%v want launcher=%v autoStart=%v running=%v",
+					launcherExists, autoStart, running, test.launcher, test.autoStart, test.running)
+			}
+		})
+	}
+}
+
 func TestInstallServiceRegistryFailureRemovesLauncherCreatedByCall(t *testing.T) {
 	executable, stateDir, launcher := windowsServiceFixture(t)
 	registryErr := errors.New("registry write failed")

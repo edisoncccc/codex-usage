@@ -214,6 +214,123 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 	return result, nil
 }
 
+type currentLinuxServiceSnapshot struct {
+	executable         string
+	stateDir           string
+	unit               currentLinuxUnitInspection
+	systemctlAvailable bool
+	unitFileState      string
+	running            bool
+	ops                linuxServiceOperations
+	syncParent         func(string) error
+}
+
+func BeginServiceRepair(executable, stateDir string) (ServiceResult, func() error, error) {
+	ops := activeLinuxServiceOperations
+	snapshot, err := inspectCurrentLinuxServiceSnapshot(executable, stateDir, ops, syncServiceParent)
+	if err != nil {
+		return ServiceResult{}, nil, err
+	}
+	result, err := InstallService(executable, stateDir)
+	if err != nil {
+		return result, nil, err
+	}
+	return result, func() error { return restoreCurrentLinuxService(snapshot) }, nil
+}
+
+func inspectCurrentLinuxServiceSnapshot(
+	executable, stateDir string,
+	ops linuxServiceOperations,
+	syncParent func(string) error,
+) (currentLinuxServiceSnapshot, error) {
+	snapshot := currentLinuxServiceSnapshot{
+		executable: executable, stateDir: stateDir, ops: ops, syncParent: syncParent,
+	}
+	unit, err := inspectCurrentLinuxUnit(executable, stateDir)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.unit = unit
+	pid, err := inspectCurrentLinuxPIDFile(filepath.Join(stateDir, "codex-usage.pid"), executable, ops)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.running = pid.processExists
+	if _, err := ops.LookPath("systemctl"); err != nil {
+		if unit.exists {
+			return snapshot, untrustedPreviousService("cannot snapshot existing systemd unit without systemctl")
+		}
+		return snapshot, nil
+	}
+	manager, err := inspectCurrentLinuxSystemdSnapshot(ops)
+	if err != nil {
+		var unavailable *linuxSystemdSnapshotFailure
+		if errors.As(err, &unavailable) && unavailable.kind == linuxSystemdSnapshotUserBusUnavailable && !unit.exists {
+			return snapshot, nil
+		}
+		return snapshot, err
+	}
+	if err := validateCurrentLinuxSystemdSnapshot(unit, manager); err != nil {
+		return snapshot, err
+	}
+	snapshot.systemctlAvailable = true
+	if manager.clearlyAbsent() {
+		return snapshot, nil
+	}
+	switch manager.unitFileState {
+	case "enabled", "disabled":
+		snapshot.unitFileState = manager.unitFileState
+	default:
+		return snapshot, untrustedPreviousService("unsupported systemd unit file state for repair rollback: %s", manager.unitFileState)
+	}
+	switch manager.activeState {
+	case "active":
+		snapshot.running = true
+	case "inactive", "failed":
+	default:
+		return snapshot, untrustedPreviousService("systemd unit is changing state during repair preflight: %s", manager.activeState)
+	}
+	return snapshot, nil
+}
+
+func restoreCurrentLinuxService(snapshot currentLinuxServiceSnapshot) error {
+	if err := uninstallLinuxService(snapshot.executable, snapshot.stateDir, snapshot.ops, snapshot.syncParent); err != nil {
+		return err
+	}
+	if !snapshot.unit.exists {
+		if snapshot.running {
+			if err := snapshot.ops.StartDetached(snapshot.executable, "daemon"); err != nil {
+				return fmt.Errorf("restore detached service process: %w", err)
+			}
+		}
+		return nil
+	}
+	created, err := activateCurrentLinuxUnit(snapshot.unit.path, snapshot.unit.contents, snapshot.syncParent)
+	if err != nil {
+		return fmt.Errorf("restore systemd unit: %w", err)
+	}
+	if !created {
+		return errors.New("restore systemd unit did not create the captured definition")
+	}
+	if !snapshot.systemctlAvailable {
+		return errors.New("cannot restore captured systemd unit without systemctl")
+	}
+	if output, err := snapshot.ops.RunSystemctl("--user", "daemon-reload"); err != nil {
+		return fmt.Errorf("restore systemctl --user daemon-reload: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if snapshot.unitFileState == "enabled" {
+		if output, err := snapshot.ops.RunSystemctl("--user", "enable", "codex-usage.service"); err != nil {
+			return fmt.Errorf("restore systemctl --user enable: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	if snapshot.running {
+		if output, err := snapshot.ops.RunSystemctl("--user", "start", "codex-usage.service"); err != nil {
+			return fmt.Errorf("restore systemctl --user start: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	return nil
+}
+
 type currentLinuxUnitInspection struct {
 	path     string
 	contents string
@@ -815,8 +932,14 @@ func stopLinuxService(executable, stateDir string, ops linuxServiceOperations) e
 }
 
 func UninstallService(executable, stateDir string) error {
-	ops := activeLinuxServiceOperations
-	syncParent := syncServiceParent
+	return uninstallLinuxService(executable, stateDir, activeLinuxServiceOperations, syncServiceParent)
+}
+
+func uninstallLinuxService(
+	executable, stateDir string,
+	ops linuxServiceOperations,
+	syncParent func(string) error,
+) error {
 	preflight, err := inspectCurrentLinuxUninstall(executable, stateDir, ops)
 	if err != nil {
 		return err

@@ -71,6 +71,95 @@ func TestLinuxInstallServiceUnavailableBusFailsClosedForExistingUnitWithoutTrust
 	}
 }
 
+func TestBeginServiceRepairRollbackRestoresExactLinuxSystemdState(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		unitInstalled bool
+		enabled       bool
+		running       bool
+	}{
+		{name: "missing"},
+		{name: "disabled and stopped", unitInstalled: true},
+		{name: "enabled and stopped", unitInstalled: true, enabled: true},
+		{name: "enabled and running", unitInstalled: true, enabled: true, running: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			executable, stateDir, unitPath := linuxServiceFixture(t)
+			if test.unitInstalled {
+				writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+			}
+			managerLoaded := test.unitInstalled
+			unitFileState := "disabled"
+			if test.enabled {
+				unitFileState = "enabled"
+			}
+			activeState := "inactive"
+			if test.running {
+				activeState = "active"
+			}
+			ops := inertLinuxServiceOperations()
+			ops.LookPath = func(string) (string, error) { return "/fake/systemctl", nil }
+			ops.RunSystemctl = func(args ...string) ([]byte, error) {
+				command := strings.Join(args, " ")
+				switch command {
+				case linuxSystemdSnapshotCommand:
+					if !managerLoaded {
+						return absentLinuxSystemdSnapshotOutput(), nil
+					}
+					return linuxSystemdSnapshotOutput(unitPath, "loaded", unitFileState, activeState, "no"), nil
+				case "--user daemon-reload":
+					_, err := os.Lstat(unitPath)
+					managerLoaded = err == nil
+					if !managerLoaded {
+						unitFileState = ""
+						activeState = "inactive"
+					}
+					return nil, nil
+				case "--user enable --now codex-usage.service":
+					unitFileState = "enabled"
+					activeState = "active"
+					return nil, nil
+				case "--user stop codex-usage.service":
+					activeState = "inactive"
+					return nil, nil
+				case "--user disable codex-usage.service":
+					unitFileState = "disabled"
+					return nil, nil
+				case "--user enable codex-usage.service":
+					unitFileState = "enabled"
+					return nil, nil
+				case "--user start codex-usage.service":
+					activeState = "active"
+					return nil, nil
+				default:
+					return nil, errors.New("unexpected systemctl command: " + command)
+				}
+			}
+			restore := replaceLinuxServiceOperations(ops)
+			t.Cleanup(restore)
+
+			result, rollback, err := BeginServiceRepair(executable, stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Installed || !result.Started || rollback == nil {
+				t.Fatalf("repair result=%+v rollback=%v", result, rollback != nil)
+			}
+			if err := rollback(); err != nil {
+				t.Fatal(err)
+			}
+			_, unitErr := os.Lstat(unitPath)
+			unitInstalled := unitErr == nil
+			gotEnabled := unitFileState == "enabled"
+			gotRunning := activeState == "active"
+			if unitInstalled != test.unitInstalled || gotEnabled != test.enabled || gotRunning != test.running {
+				t.Fatalf("restored unit=%v enabled=%v running=%v want unit=%v enabled=%v running=%v",
+					unitInstalled, gotEnabled, gotRunning, test.unitInstalled, test.enabled, test.running)
+			}
+		})
+	}
+}
+
 func TestLinuxStopServiceSignalsBoundProcessHandle(t *testing.T) {
 	executable, stateDir, _ := linuxServiceFixture(t)
 	writeLinuxPIDFixture(t, stateDir, 424242)

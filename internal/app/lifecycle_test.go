@@ -302,6 +302,52 @@ func TestLifecycleSameBinaryHardServiceErrorDoesNotBlindlyUninstall(t *testing.T
 	}
 }
 
+func TestLifecycleSameBinaryFailureRestoresExactServiceState(t *testing.T) {
+	type serviceState struct {
+		persistent bool
+		running    bool
+	}
+	for _, test := range []struct {
+		name     string
+		original serviceState
+	}{
+		{name: "missing"},
+		{name: "stopped", original: serviceState{persistent: true}},
+		{name: "running", original: serviceState{persistent: true, running: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLifecycleFixture(t, "2.3.6", "same-bytes")
+			fixture.writeExisting("2.3.6", "same-bytes")
+			state := test.original
+			healthErr := errors.New("same binary health failed")
+			ops := fixture.defaultOps()
+			ops.BeginServiceRepair = func(string, string) (platform.ServiceResult, func() error, error) {
+				fixture.calls = append(fixture.calls, "repair")
+				before := state
+				state = serviceState{persistent: true, running: true}
+				return platform.ServiceResult{Installed: true, Started: true, Mode: platform.ServiceModePersistent}, func() error {
+					fixture.calls = append(fixture.calls, "rollback_service")
+					state = before
+					return nil
+				}, nil
+			}
+			ops.ProbeIdentity = func(context.Context, string, buildIdentity) error {
+				fixture.calls = append(fixture.calls, "health")
+				return healthErr
+			}
+
+			_, err := executeLifecycle(context.Background(), fixture.request(), ops, nil)
+			if !errors.Is(err, healthErr) {
+				t.Fatalf("health error=%v want %v", err, healthErr)
+			}
+			if state != test.original {
+				t.Fatalf("service state=%+v want original %+v", state, test.original)
+			}
+			assertLifecycleCalls(t, fixture.calls, []string{"repair", "health", "rollback_service"})
+		})
+	}
+}
+
 func TestLifecycleRejectsStateMarkerDriftBeforeSuccess(t *testing.T) {
 	for _, test := range []struct {
 		name        string

@@ -77,6 +77,60 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 	return result, nil
 }
 
+type currentWindowsServiceSnapshot struct {
+	executable     string
+	stateDir       string
+	launcherExists bool
+	runEntryExists bool
+	running        bool
+}
+
+func BeginServiceRepair(executable, stateDir string) (ServiceResult, func() error, error) {
+	preflight, err := inspectCurrentWindowsService(executable, stateDir)
+	if err != nil {
+		return ServiceResult{}, nil, err
+	}
+	running, err := currentWindowsServiceRunning(executable)
+	if err != nil {
+		return ServiceResult{}, nil, err
+	}
+	snapshot := currentWindowsServiceSnapshot{
+		executable: executable, stateDir: stateDir,
+		launcherExists: preflight.launcherExists,
+		runEntryExists: preflight.runEntryExists,
+		running:        running,
+	}
+	result, err := InstallService(executable, stateDir)
+	if err != nil {
+		return result, nil, err
+	}
+	return result, func() error { return restoreCurrentWindowsService(snapshot) }, nil
+}
+
+func restoreCurrentWindowsService(snapshot currentWindowsServiceSnapshot) error {
+	if err := UninstallService(snapshot.executable, snapshot.stateDir); err != nil {
+		return err
+	}
+	launcher := filepath.Join(snapshot.stateDir, "codex-usage-start.vbs")
+	if snapshot.launcherExists {
+		contents := windowsServiceLauncherContents(snapshot.executable, snapshot.stateDir)
+		if err := activateWindowsServiceLauncher(launcher, []byte(contents)); err != nil {
+			return fmt.Errorf("restore current service launcher: %w", err)
+		}
+	}
+	if snapshot.runEntryExists {
+		if err := writeCurrentWindowsRunValue(windowsServiceRunCommand(launcher)); err != nil {
+			return &PermissionError{Operation: "restore current user startup entry", Err: err}
+		}
+	}
+	if snapshot.running {
+		if err := startCurrentWindowsServiceProcess(snapshot.executable, "daemon"); err != nil {
+			return fmt.Errorf("restore current service process: %w", err)
+		}
+	}
+	return nil
+}
+
 func activateWindowsServiceLauncher(path string, contents []byte) error {
 	parent := filepath.Dir(path)
 	if err := validateSafePreviousDirectory(parent); err != nil {
@@ -416,6 +470,7 @@ var (
 	}
 	startCurrentWindowsServiceProcess = StartDetached
 	stopCurrentWindowsServiceProcess  = stopWindowsExecutable
+	currentWindowsServiceRunning      = windowsExecutableRunning
 	stopPreviousWindowsServiceProcess = stopWindowsExecutable
 	readPreviousWindowsRunValue       = func(name string) (string, bool, error) {
 		return readWindowsRunValue(name)
@@ -424,6 +479,42 @@ var (
 		return deleteWindowsRunValue(name)
 	}
 )
+
+func windowsExecutableRunning(executable string) (bool, error) {
+	target, err := filepath.Abs(executable)
+	if err != nil {
+		return false, fmt.Errorf("解析后台服务路径: %w", err)
+	}
+	target = filepath.Clean(target)
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return false, fmt.Errorf("枚举后台进程: %w", err)
+	}
+	defer windows.CloseHandle(snapshot)
+
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	if err := windows.Process32First(snapshot, &entry); err != nil {
+		if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+			return false, nil
+		}
+		return false, fmt.Errorf("读取后台进程列表: %w", err)
+	}
+	for {
+		pid := entry.ProcessID
+		if pid != 0 && pid != uint32(os.Getpid()) {
+			processPath, queryErr := windowsProcessExecutable(pid)
+			if queryErr == nil && strings.EqualFold(filepath.Clean(processPath), target) {
+				return true, nil
+			}
+		}
+		if err := windows.Process32Next(snapshot, &entry); err != nil {
+			if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+				return false, nil
+			}
+			return false, fmt.Errorf("读取后台进程列表: %w", err)
+		}
+	}
+}
 
 func readWindowsRunValue(name string) (string, bool, error) {
 	key, err := registry.OpenKey(registry.CURRENT_USER,

@@ -967,6 +967,23 @@ func (p *installConfigPersistence) Expect(preview installConfigPreview) {
 }
 
 func (p *installConfigPersistence) Wrap(ops lifecycleOps) lifecycleOps {
+	beginServiceRepair := ops.BeginServiceRepair
+	ops.BeginServiceRepair = func(executable, stateDir string) (platform.ServiceResult, func() error, error) {
+		if err := p.apply(); err != nil {
+			return platform.ServiceResult{}, nil, &installConfigPersistenceError{err: err}
+		}
+		result, rollbackService, err := beginServiceRepair(executable, stateDir)
+		if err != nil {
+			return result, nil, errors.Join(err, p.Restore())
+		}
+		return result, func() error {
+			var serviceErr error
+			if rollbackService != nil {
+				serviceErr = rollbackService()
+			}
+			return errors.Join(serviceErr, p.Restore())
+		}, nil
+	}
 	installService := ops.InstallService
 	ops.InstallService = func(executable, stateDir string) (platform.ServiceResult, error) {
 		if err := p.apply(); err != nil {
