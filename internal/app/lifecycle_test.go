@@ -436,6 +436,40 @@ func TestLifecycleUpgradeUsesStrictOrder(t *testing.T) {
 	}
 }
 
+func TestLifecyclePostCommitCleanupContinuesAfterIndependentFailures(t *testing.T) {
+	fixture := newLifecycleFixture(t, "2.3.6", "new-binary")
+	fixture.writeExisting("2.3.5", "old-binary")
+	plan, _, previous, previousService := fixture.addPreviousState()
+	request := fixture.request()
+	request.Migration = plan
+	request.PreviousService = previousService
+	previousCleanupErr := errors.New("previous service cleanup failed")
+	ops := fixture.defaultOps()
+	ops.ProbeIdentity = func(context.Context, string, buildIdentity) error {
+		fixture.calls = append(fixture.calls, "health")
+		return os.WriteFile(previous.MarkerPath, []byte("changed-marker\n"), 0o600)
+	}
+	ops.RemovePrevious = func(platform.PreviousService) error {
+		fixture.calls = append(fixture.calls, "remove_previous")
+		return previousCleanupErr
+	}
+
+	result, err := executeLifecycle(context.Background(), request, ops, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLifecycleCalls(t, fixture.calls, []string{"stop", "suspend", "scan", "install", "health", "remove_previous"})
+	joinedWarnings := strings.Join(result.ScanWarnings, "\n")
+	for _, want := range []string{"cleanup:migration_commit:", "cleanup:previous_service: " + previousCleanupErr.Error()} {
+		if !strings.Contains(joinedWarnings, want) {
+			t.Fatalf("cleanup warning %q missing from %q", want, joinedWarnings)
+		}
+	}
+	if _, statErr := os.Lstat(fixture.destinationPath + ".backup"); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("backup cleanup was skipped after independent failures: %v", statErr)
+	}
+}
+
 func TestLifecycleCopyFailureLeavesOldInstallUntouched(t *testing.T) {
 	fixture := newLifecycleFixture(t, "2.3.6", "new-binary")
 	oldRecord := fixture.writeExisting("2.3.5", "old-binary")

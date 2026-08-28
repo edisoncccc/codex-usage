@@ -315,12 +315,10 @@ func executeLifecycle(
 	}
 	if commitErr != nil {
 		result.ScanWarnings = append(result.ScanWarnings, "cleanup:migration_commit: "+commitErr.Error())
-		return result, nil
 	}
 	if hasPreviousService(request.PreviousService) {
 		if err := ops.RemovePrevious(request.PreviousService); err != nil {
 			result.ScanWarnings = append(result.ScanWarnings, "cleanup:previous_service: "+err.Error())
-			return result, nil
 		}
 	}
 	if state.backupCreated {
