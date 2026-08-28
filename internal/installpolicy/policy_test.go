@@ -304,6 +304,14 @@ func TestWindowsLifecycleDoesNotOverwritePowerShellHome(t *testing.T) {
 	}
 }
 
+func TestWindowsLifecycleTreatsMissingRunEntryAsExpected(t *testing.T) {
+	windows := readRepositoryDocument(t, filepath.Join("tests", "install-windows.ps1"))
+	const safeMissingRead = `Get-ItemProperty -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" -Name "CodexUsage" -ErrorAction SilentlyContinue`
+	if strings.Count(windows, safeMissingRead) != 2 || strings.Contains(windows, `Get-ItemPropertyValue -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" -Name "CodexUsage" -ErrorAction SilentlyContinue`) {
+		t.Fatal("Windows lifecycle must treat an absent HKCU Run property as the expected removed state")
+	}
+}
+
 func TestLifecycleScriptsUseExecutableMachineCommandProtocol(t *testing.T) {
 	windows := parsePowerShellMachineCalls(t, readRepositoryDocument(t, filepath.Join("tests", "install-windows.ps1")))
 	assertMachineCalls(t, "Windows", windows, []machineCommandCall{

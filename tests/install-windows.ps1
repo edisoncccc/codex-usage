@@ -270,8 +270,8 @@ function Assert-WindowsServiceRemoved {
         throw "Installed executable path is not canonical: $ExpectedExecutable"
     }
     $ExpectedExecutable = $CanonicalExecutable
-    $RunValue = Get-ItemPropertyValue -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" -Name "CodexUsage" -ErrorAction SilentlyContinue
-    if ($null -ne $RunValue) {
+    $RunEntry = Get-ItemProperty -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" -Name "CodexUsage" -ErrorAction SilentlyContinue
+    if ($null -ne $RunEntry) {
         throw "HKCU Run entry remained after uninstall"
     }
     foreach ($Path in @((Join-Path $StateRoot "codex-usage-start.vbs"), (Join-Path $StateRoot "codex-usage.pid"))) {
@@ -492,8 +492,8 @@ foreach ($Path in @(
         throw "Windows final removal left a path: $Path"
     }
 }
-$RunValue = Get-ItemPropertyValue -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" -Name "CodexUsage" -ErrorAction SilentlyContinue
-if ($null -ne $RunValue) {
+$RunEntry = Get-ItemProperty -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run" -Name "CodexUsage" -ErrorAction SilentlyContinue
+if ($null -ne $RunEntry) {
     throw "HKCU Run entry remained after purge"
 }
 
