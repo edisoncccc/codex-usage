@@ -19,10 +19,6 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    env:
-      TMPDIR: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
-      TEMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -30,6 +26,10 @@ jobs:
           go-version: "1.26.5"
           cache: true
       - run: go test ./...
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
       - run: go vet ./...
 
   lifecycle:

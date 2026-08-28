@@ -414,7 +414,6 @@ func TestCIWorkflowUsesHostedLifecycleMatrixWithoutPublishing(t *testing.T) {
 	for _, fragment := range []string{
 		"  unit:", "  lifecycle:", "  cross-build:", "  dashboard:",
 		"os: [ubuntu-latest, windows-latest]", "runs-on: ${{ matrix.os }}",
-		"TMPDIR: ${{ runner.temp }}", "TMP: ${{ runner.temp }}", "TEMP: ${{ runner.temp }}",
 		"pwsh ./tests/install-windows.ps1", "bash ./tests/install-linux.sh",
 		"node --check internal/web/static/app.js", "node --check internal/web/static/i18n.js",
 		"node --check tests/dashboard.spec.mjs", "node --check tests/demo.spec.mjs",
@@ -422,6 +421,14 @@ func TestCIWorkflowUsesHostedLifecycleMatrixWithoutPublishing(t *testing.T) {
 		if !strings.Contains(ci, fragment) {
 			t.Errorf("CI workflow is missing %q", fragment)
 		}
+	}
+	const unitTestTemp = `      - run: go test ./...
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}`
+	if !strings.Contains(ci, unitTestTemp) {
+		t.Fatal("CI unit test step must use the canonical runner temporary directory")
 	}
 	assertWorkflowHasNoPublishingCapability(t, "ci.yml", ci)
 }
