@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,6 +23,7 @@ type installScanOutcome struct {
 
 type lifecycleRequest struct {
 	CandidatePath     string
+	CandidateImage    *boundCandidateImage
 	DestinationPath   string
 	InstallRecordPath string
 	StateDir          string
@@ -130,9 +130,13 @@ func executeLifecycle(
 		return result, err
 	}
 
-	decision, err := install.Assess(request.InstallRecordPath, request.DestinationPath, install.Candidate{
+	observedCandidateSHA, err := request.CandidateImage.digestForPath(request.CandidatePath)
+	if err != nil {
+		return result, err
+	}
+	decision, err := install.AssessDigest(request.InstallRecordPath, request.DestinationPath, install.Candidate{
 		Version: request.Candidate.Version, ExecutablePath: request.CandidatePath,
-	})
+	}, observedCandidateSHA)
 	if err != nil {
 		return result, err
 	}
@@ -142,10 +146,6 @@ func executeLifecycle(
 	}
 
 	oldRecord, err := install.Load(request.InstallRecordPath)
-	if err != nil {
-		return result, err
-	}
-	observedCandidateSHA, err := install.FileSHA256(request.CandidatePath)
 	if err != nil {
 		return result, err
 	}
@@ -178,7 +178,7 @@ func executeLifecycle(
 	if err := rejectExistingRecoveryPoint(backupPath, "backup"); err != nil {
 		return result, rollbackLifecycle(err, state)
 	}
-	stagedSHA, err := stageLifecycleCandidate(request.CandidatePath, stagePath, syncParent)
+	stagedSHA, err := stageLifecycleCandidate(request.CandidateImage, stagePath, syncParent)
 	if err != nil {
 		return result, rollbackLifecycle(err, state)
 	}
@@ -453,6 +453,9 @@ func validateLifecycleRequest(request lifecycleRequest, installedAt time.Time) e
 			return fmt.Errorf("%s path must be absolute and clean: %q", name, path)
 		}
 	}
+	if _, err := request.CandidateImage.digestForPath(request.CandidatePath); err != nil {
+		return err
+	}
 	if !pathInsideLifecycleRoot(request.StateDir, request.InstallRecordPath) {
 		return fmt.Errorf("install record path must remain inside state directory")
 	}
@@ -525,28 +528,9 @@ func rejectExistingRecoveryPoint(path, kind string) error {
 	return nil
 }
 
-func stageLifecycleCandidate(source, stagePath string, syncParent func(string) error) (string, error) {
-	info, err := os.Lstat(source)
-	if err != nil {
-		return "", err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", fmt.Errorf("candidate is not a safe regular file: %s", source)
-	}
+func stageLifecycleCandidate(image *boundCandidateImage, stagePath string, syncParent func(string) error) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(stagePath), 0o700); err != nil {
 		return "", fmt.Errorf("create install directory: %w", err)
-	}
-	input, err := os.Open(source)
-	if err != nil {
-		return "", err
-	}
-	defer input.Close()
-	openedInfo, err := input.Stat()
-	if err != nil {
-		return "", err
-	}
-	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
-		return "", fmt.Errorf("candidate changed while opening: %s", source)
 	}
 	output, err := os.OpenFile(stagePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
 	if err != nil {
@@ -561,7 +545,8 @@ func stageLifecycleCandidate(source, stagePath string, syncParent func(string) e
 			}
 		}
 	}()
-	if _, err := io.Copy(output, input); err != nil {
+	digest, err := image.copyVerified(output)
+	if err != nil {
 		return "", fmt.Errorf("copy candidate to stage: %w", err)
 	}
 	if err := output.Chmod(0o700); err != nil {
@@ -576,12 +561,15 @@ func stageLifecycleCandidate(source, stagePath string, syncParent func(string) e
 	if err := syncParent(stagePath); err != nil {
 		return "", fmt.Errorf("sync staged candidate directory: %w", err)
 	}
-	digest, err := install.FileSHA256(stagePath)
+	stagedDigest, err := install.FileSHA256(stagePath)
 	if err != nil {
 		return "", err
 	}
+	if stagedDigest != digest {
+		return "", errors.New("staged executable digest differs from bound candidate")
+	}
 	owned = false
-	return digest, nil
+	return stagedDigest, nil
 }
 
 func rollbackLifecycle(primary error, state *lifecycleRollbackState) error {

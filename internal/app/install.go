@@ -59,6 +59,7 @@ type installReceipt struct {
 type installCommandDeps struct {
 	ResolvePaths    func() (config.Paths, error)
 	Executable      func() (string, error)
+	BindCandidate   func(string) (*boundCandidateImage, error)
 	PreflightPort   func(context.Context, string, *install.Record) error
 	InspectPrevious func(config.Paths) (config.MigrationPlan, config.MigrationResult, platform.PreviousService, error)
 	RunLifecycle    func(context.Context, lifecycleRequest, lifecycleOps, lifecycleProgress) (lifecycleResult, error)
@@ -140,6 +141,27 @@ func (c CLI) installCommand(args []string, emitter *eventEmitter) (commandResult
 	if err != nil {
 		return commandResult{}, installCommandFailure(err, "config_invalid")
 	}
+	candidatePath, err := deps.Executable()
+	if err != nil {
+		return commandResult{}, installCommandFailure(err, "source_build_blocked")
+	}
+	candidatePath, err = canonicalAbsolutePath(candidatePath)
+	if err != nil {
+		return commandResult{}, installCommandFailure(err, "source_build_blocked")
+	}
+	candidateImage, err := deps.BindCandidate(candidatePath)
+	if err != nil {
+		return commandResult{}, installCommandFailure(err, "source_build_blocked")
+	}
+	defer candidateImage.Close()
+	identity, err := currentBuildIdentity()
+	if err != nil {
+		return commandResult{}, err
+	}
+	candidateDigest, err := candidateImage.digestForPath(candidatePath)
+	if err != nil {
+		return commandResult{}, installCommandFailure(err, "source_build_blocked")
+	}
 	initial, err := inspectInstallStatePreview(deps, paths, explicitHome)
 	if err != nil {
 		return commandResult{}, installCommandFailure(err, "existing_install_untrusted")
@@ -187,25 +209,9 @@ func (c CLI) installCommand(args []string, emitter *eventEmitter) (commandResult
 		}
 	}
 
-	candidatePath, err := deps.Executable()
-	if err != nil {
-		return commandResult{}, installCommandFailure(err, "source_build_blocked")
-	}
-	candidatePath, err = canonicalAbsolutePath(candidatePath)
-	if err != nil {
-		return commandResult{}, installCommandFailure(err, "source_build_blocked")
-	}
-	identity, err := currentBuildIdentity()
-	if err != nil {
-		return commandResult{}, err
-	}
-	candidateDigest, err := install.FileSHA256(candidatePath)
-	if err != nil {
-		return commandResult{}, installCommandFailure(err, "source_build_blocked")
-	}
-	decision, err := install.Assess(paths.InstallRecord, paths.InstalledEXE, install.Candidate{
+	decision, err := install.AssessDigest(paths.InstallRecord, paths.InstalledEXE, install.Candidate{
 		Version: identity.Version, ExecutablePath: candidatePath,
-	})
+	}, candidateDigest)
 	if err != nil {
 		return commandResult{}, installCommandFailure(err, "existing_install_untrusted")
 	}
@@ -262,7 +268,7 @@ func (c CLI) installCommand(args []string, emitter *eventEmitter) (commandResult
 		}
 	}
 	request := lifecycleRequest{
-		CandidatePath: candidatePath, DestinationPath: paths.InstalledEXE,
+		CandidatePath: candidatePath, CandidateImage: candidateImage, DestinationPath: paths.InstalledEXE,
 		InstallRecordPath: paths.InstallRecord, StateDir: paths.StateDir,
 		ServiceURL: serviceURL, Candidate: identity, Source: install.SourceBuild,
 		SkipScan: *skipScan, Migration: migration, PreviousService: previousService,
@@ -1600,6 +1606,7 @@ func (c CLI) resolvedInstallDependencies() installCommandDeps {
 	deps := installCommandDeps{
 		ResolvePaths:    config.ResolvePaths,
 		Executable:      os.Executable,
+		BindCandidate:   bindCurrentCandidateImage,
 		PreflightPort:   defaultInstallPreflightPort,
 		InspectPrevious: defaultInspectPreviousState,
 		RunLifecycle:    executeLifecycle,
@@ -1612,6 +1619,9 @@ func (c CLI) resolvedInstallDependencies() installCommandDeps {
 	}
 	if c.installDeps.Executable != nil {
 		deps.Executable = c.installDeps.Executable
+	}
+	if c.installDeps.BindCandidate != nil {
+		deps.BindCandidate = c.installDeps.BindCandidate
 	}
 	if c.installDeps.PreflightPort != nil {
 		deps.PreflightPort = c.installDeps.PreflightPort

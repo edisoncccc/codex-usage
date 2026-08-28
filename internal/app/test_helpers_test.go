@@ -73,8 +73,9 @@ func newInstallCommandFixture(t *testing.T) *installCommandFixture {
 		},
 	}
 	fixture.deps = installCommandDeps{
-		ResolvePaths: func() (config.Paths, error) { return fixture.paths, nil },
-		Executable:   func() (string, error) { return fixture.candidatePath, nil },
+		ResolvePaths:  func() (config.Paths, error) { return fixture.paths, nil },
+		Executable:    func() (string, error) { return fixture.candidatePath, nil },
+		BindCandidate: bindCandidateImageAtPath,
 		PreflightPort: func(context.Context, string, *install.Record) error {
 			return nil
 		},
@@ -109,7 +110,7 @@ func (f *installCommandFixture) successfulLifecycle(
 	if err := os.MkdirAll(filepath.Dir(request.DestinationPath), 0o700); err != nil {
 		return lifecycleResult{}, err
 	}
-	candidate, err := os.ReadFile(request.CandidatePath)
+	candidate, err := readBoundCandidate(request.CandidateImage)
 	if err != nil {
 		return lifecycleResult{}, err
 	}
@@ -148,6 +149,14 @@ func runInstallJSON(t *testing.T, fixture *installCommandFixture, args ...string
 	var stdout, stderr bytes.Buffer
 	code := fixture.cli(&stdout, &stderr, strings.NewReader("")).Run(args)
 	return code, stdout.String(), stderr.String()
+}
+
+func readBoundCandidate(image *boundCandidateImage) ([]byte, error) {
+	var output bytes.Buffer
+	if _, err := image.copyVerified(&output); err != nil {
+		return nil, err
+	}
+	return output.Bytes(), nil
 }
 
 func installTerminalEvent(t *testing.T, output string) map[string]any {
@@ -222,6 +231,29 @@ type countedReader struct {
 	mu    sync.Mutex
 	reads int
 	data  *strings.Reader
+}
+
+type confirmationHookReader struct {
+	once   sync.Once
+	hook   func() error
+	reader *strings.Reader
+	err    error
+}
+
+func newConfirmationHookReader(value string, hook func() error) *confirmationHookReader {
+	return &confirmationHookReader{hook: hook, reader: strings.NewReader(value)}
+}
+
+func (r *confirmationHookReader) Read(target []byte) (int, error) {
+	r.once.Do(func() {
+		if r.hook != nil {
+			r.err = r.hook()
+		}
+	})
+	if r.err != nil {
+		return 0, r.err
+	}
+	return r.reader.Read(target)
 }
 
 func newCountedReader(value string) *countedReader {

@@ -32,6 +32,43 @@ func TestAssessFreshInstall(t *testing.T) {
 	}
 }
 
+func TestAssessDigestUsesAlreadyBoundCandidateBytes(t *testing.T) {
+	root := t.TempDir()
+	candidatePath := writeFixture(t, root, "candidate", "bound candidate")
+	boundDigest := mustFileSHA256(t, candidatePath)
+	if err := os.WriteFile(candidatePath, []byte("later path contents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	decision, err := AssessDigest(
+		filepath.Join(root, "state", "install.json"),
+		filepath.Join(root, "bin", executableName()),
+		Candidate{Version: "2.3.6", ExecutablePath: candidatePath},
+		boundDigest,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision != DecisionFresh {
+		t.Fatalf("decision=%q want=%q", decision, DecisionFresh)
+	}
+}
+
+func TestAssessDigestRejectsInvalidBoundDigest(t *testing.T) {
+	root := t.TempDir()
+	candidatePath := filepath.Join(root, "candidate")
+	for _, digest := range []string{"", strings.Repeat("0", 64), strings.Repeat("A", 64), "not-a-digest"} {
+		if _, err := AssessDigest(
+			filepath.Join(root, "state", "install.json"),
+			filepath.Join(root, "bin", executableName()),
+			Candidate{Version: "2.3.6", ExecutablePath: candidatePath},
+			digest,
+		); err == nil {
+			t.Fatalf("digest=%q was accepted", digest)
+		}
+	}
+}
+
 func TestAssessSameBinaryIsIdempotent(t *testing.T) {
 	root := t.TempDir()
 	destination := writeFixture(t, filepath.Join(root, "bin"), executableName(), "same binary")

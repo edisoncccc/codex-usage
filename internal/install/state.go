@@ -119,12 +119,9 @@ func Save(path string, record Record) error {
 }
 
 func Assess(recordPath, executablePath string, candidate Candidate) (Decision, error) {
-	candidateVersion, err := parseVersion(candidate.Version)
+	candidateVersion, err := validateCandidate(candidate)
 	if err != nil {
-		return "", fmt.Errorf("invalid candidate version %q: %w", candidate.Version, err)
-	}
-	if candidate.ExecutablePath == "" || !filepath.IsAbs(candidate.ExecutablePath) || filepath.Clean(candidate.ExecutablePath) != candidate.ExecutablePath {
-		return "", fmt.Errorf("candidate executable must be an absolute clean path: %q", candidate.ExecutablePath)
+		return "", err
 	}
 	candidateInfo, err := os.Lstat(candidate.ExecutablePath)
 	if err != nil {
@@ -137,6 +134,21 @@ func Assess(recordPath, executablePath string, candidate Candidate) (Decision, e
 	if err != nil {
 		return "", err
 	}
+	return assessDigest(recordPath, executablePath, candidateVersion, candidateDigest)
+}
+
+func AssessDigest(recordPath, executablePath string, candidate Candidate, candidateDigest string) (Decision, error) {
+	candidateVersion, err := validateCandidate(candidate)
+	if err != nil {
+		return "", err
+	}
+	if !validNonZeroLowerHex(candidateDigest, sha256.Size*2) {
+		return "", fmt.Errorf("invalid candidate executable sha256 %q", candidateDigest)
+	}
+	return assessDigest(recordPath, executablePath, candidateVersion, candidateDigest)
+}
+
+func assessDigest(recordPath, executablePath string, candidateVersion numericVersion, candidateDigest string) (Decision, error) {
 	record, err := Load(recordPath)
 	if err != nil {
 		return "", err
@@ -179,6 +191,17 @@ func Assess(recordPath, executablePath string, candidate Candidate) (Decision, e
 		}
 		return DecisionSame, nil
 	}
+}
+
+func validateCandidate(candidate Candidate) (numericVersion, error) {
+	version, err := parseVersion(candidate.Version)
+	if err != nil {
+		return numericVersion{}, fmt.Errorf("invalid candidate version %q: %w", candidate.Version, err)
+	}
+	if candidate.ExecutablePath == "" || !filepath.IsAbs(candidate.ExecutablePath) || filepath.Clean(candidate.ExecutablePath) != candidate.ExecutablePath {
+		return numericVersion{}, fmt.Errorf("candidate executable must be an absolute clean path: %q", candidate.ExecutablePath)
+	}
+	return version, nil
 }
 
 func FileSHA256(path string) (string, error) {

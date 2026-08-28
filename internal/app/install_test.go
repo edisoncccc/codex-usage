@@ -135,7 +135,7 @@ func TestInstallJSONHeartbeatWhileScanBlocks(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(request.DestinationPath), 0o700); err != nil {
 			return lifecycleResult{}, err
 		}
-		candidate, err := os.ReadFile(request.CandidatePath)
+		candidate, err := readBoundCandidate(request.CandidateImage)
 		if err != nil {
 			return lifecycleResult{}, err
 		}
@@ -190,7 +190,7 @@ func TestInstallJSONSameBinaryIsIdempotent(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(request.DestinationPath), 0o700); err != nil {
 			return lifecycleResult{}, err
 		}
-		candidate, err := os.ReadFile(request.CandidatePath)
+		candidate, err := readBoundCandidate(request.CandidateImage)
 		if err != nil {
 			return lifecycleResult{}, err
 		}
@@ -357,6 +357,74 @@ func TestHumanInstallPromptsAndRemainsLocalized(t *testing.T) {
 				t.Fatalf("human output leaked another locale or JSON: %q", stdout.String())
 			}
 		})
+	}
+}
+
+func TestInstallConfirmationPathReplacementCannotSubstituteRunningCandidate(t *testing.T) {
+	fixture := newInstallCommandFixture(t)
+	original, err := os.ReadFile(fixture.candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := []byte("substituted-after-confirmation")
+	boundOriginalPath := fixture.candidatePath + ".bound-original"
+	executedContent := ""
+	var calls []string
+	fixture.deps.RunLifecycle = realInstallLifecycleWithFakeOptions(&calls, installLifecycleFakeOptions{
+		beforeInstallService: func() {
+			executedContent = readFileContent(t, fixture.paths.InstalledEXE)
+		},
+	})
+	stdin := newConfirmationHookReader("yes\n", func() error {
+		if err := os.Rename(fixture.candidatePath, boundOriginalPath); err != nil {
+			return err
+		}
+		return os.WriteFile(fixture.candidatePath, replacement, 0o700)
+	})
+	var stdout, stderr bytes.Buffer
+	exitCode := fixture.cli(&stdout, &stderr, stdin).Run([]string{"--lang", "en", "install", "--skip-scan"})
+	if exitCode != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit=%d stderr=%q stdout=%q calls=%v", exitCode, stderr.String(), stdout.String(), calls)
+	}
+	if executedContent != string(original) {
+		t.Fatalf("service received substituted bytes %q want bound candidate %q", executedContent, original)
+	}
+	installed, err := os.ReadFile(fixture.paths.InstalledEXE)
+	if err != nil || !bytes.Equal(installed, original) {
+		t.Fatalf("installed bytes=%q err=%v want bound candidate %q", installed, err, original)
+	}
+	currentPath, err := os.ReadFile(fixture.candidatePath)
+	if err != nil || !bytes.Equal(currentPath, replacement) {
+		t.Fatalf("replacement proof missing: path=%q err=%v", currentPath, err)
+	}
+	boundOriginal, err := os.ReadFile(boundOriginalPath)
+	if err != nil || !bytes.Equal(boundOriginal, original) {
+		t.Fatalf("renamed original=%q err=%v", boundOriginal, err)
+	}
+}
+
+func TestInstallConfirmationInPlaceMutationCannotChangeBoundCandidate(t *testing.T) {
+	fixture := newInstallCommandFixture(t)
+	mutated := []byte("mutated-after-confirmation")
+	var calls []string
+	fixture.deps.RunLifecycle = realInstallLifecycleWithFakeOptions(&calls, installLifecycleFakeOptions{})
+	stdin := newConfirmationHookReader("yes\n", func() error {
+		return os.WriteFile(fixture.candidatePath, mutated, 0o700)
+	})
+	var stdout, stderr bytes.Buffer
+	exitCode := fixture.cli(&stdout, &stderr, stdin).Run([]string{"--lang", "en", "install", "--skip-scan"})
+	if exitCode == 0 {
+		t.Fatalf("in-place candidate mutation completed install: stdout=%q stderr=%q calls=%v", stdout.String(), stderr.String(), calls)
+	}
+	if !strings.Contains(stderr.String(), "changed after confirmation") {
+		t.Fatalf("stderr=%q want bound-image mutation rejection", stderr.String())
+	}
+	if _, err := os.Lstat(fixture.paths.InstalledEXE); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mutated candidate was installed: %v", err)
+	}
+	current, err := os.ReadFile(fixture.candidatePath)
+	if err != nil || !bytes.Equal(current, mutated) {
+		t.Fatalf("mutation proof missing: current=%q err=%v", current, err)
 	}
 }
 

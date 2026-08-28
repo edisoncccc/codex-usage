@@ -59,8 +59,14 @@ func newLifecycleFixture(t *testing.T, version, content string) *lifecycleFixtur
 }
 
 func (f *lifecycleFixture) request() lifecycleRequest {
+	image, err := bindCandidateImageAtPath(f.candidatePath)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.t.Cleanup(func() { _ = image.Close() })
 	return lifecycleRequest{
 		CandidatePath:     f.candidatePath,
+		CandidateImage:    image,
 		DestinationPath:   f.destinationPath,
 		InstallRecordPath: f.installRecord,
 		StateDir:          f.stateDir,
