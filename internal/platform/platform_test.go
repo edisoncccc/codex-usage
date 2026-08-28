@@ -851,6 +851,66 @@ func TestLinuxInstallServiceReusesExactUnitAfterPreflight(t *testing.T) {
 	}
 }
 
+func TestLinuxInstallServiceStartsDetachedWhenReloadStillLeavesExactUnitAbsentFromManager(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux unloaded exact unit fallback")
+	}
+	executable, stateDir, unitPath := linuxServiceFixture(t)
+	writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+
+	calls := make([]string, 0, 4)
+	startCalls := 0
+	ops := inertLinuxServiceOperations()
+	ops.LookPath = func(name string) (string, error) {
+		calls = append(calls, "look:"+name)
+		return "/fake/systemctl", nil
+	}
+	ops.RunSystemctl = func(args ...string) ([]byte, error) {
+		command := strings.Join(args, " ")
+		calls = append(calls, command)
+		switch command {
+		case linuxSystemdSnapshotCommand:
+			return absentLinuxSystemdSnapshotOutput(), nil
+		case "--user daemon-reload":
+			return nil, nil
+		case "--user enable --now codex-usage.service":
+			return []byte("Failed to enable unit: Unit file codex-usage.service does not exist."), errors.New("exit status 1")
+		default:
+			t.Fatalf("unexpected systemctl call: %s", command)
+			return nil, nil
+		}
+	}
+	ops.StartDetached = func(got string, args ...string) error {
+		startCalls++
+		if got != executable || !reflect.DeepEqual(args, []string{"daemon"}) {
+			t.Fatalf("unexpected detached start: %s %v", got, args)
+		}
+		return nil
+	}
+	restore := replaceLinuxServiceOperations(ops)
+	t.Cleanup(restore)
+
+	result, err := InstallService(executable, stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Installed || !result.Started || result.Mode != ServiceModeDetachedFallback {
+		t.Fatalf("unexpected fallback result: %+v", result)
+	}
+	if startCalls != 1 {
+		t.Fatalf("detached starts=%d want 1", startCalls)
+	}
+	wantCalls := []string{
+		"look:systemctl",
+		linuxSystemdSnapshotCommand,
+		"--user daemon-reload",
+		linuxSystemdSnapshotCommand,
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("service calls=%v want %v", calls, wantCalls)
+	}
+}
+
 func TestLinuxInstallServiceHardFailureRemovesUnitCreatedByCall(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux service installation rollback")

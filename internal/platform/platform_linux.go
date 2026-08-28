@@ -188,6 +188,29 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 			Warning: warning,
 		}, nil
 	}
+	if snapshot.clearlyAbsent() && preflight.exists {
+		reloaded, reloadErr := inspectCurrentLinuxSystemdSnapshot(ops)
+		if reloadErr != nil {
+			return failInstall(fmt.Errorf("检查 daemon-reload 后的 systemd 状态: %w", reloadErr), true, false)
+		}
+		if reloaded.clearlyAbsent() {
+			started, reused, startErr := startOrReuseLinuxDetachedService(executable, stateDir, false, ops)
+			if startErr != nil {
+				return failInstall(fmt.Errorf("systemd manager 未加载当前 unit；后台启动也失败: %w", startErr), true, false)
+			}
+			warning := "systemd --user daemon-reload 后仍未加载当前 unit；本次已后台启动，登录自启需在 user bus 可用后重试"
+			if reused {
+				warning = "systemd --user daemon-reload 后仍未加载当前 unit；检测到受信后台进程，未重复启动；登录自启需在 user bus 可用后重试"
+			}
+			return ServiceResult{
+				Installed: true, Started: started || reused, Mode: ServiceModeDetachedFallback, Detail: preflight.path,
+				Warning: warning,
+			}, nil
+		}
+		if err := validateCurrentLinuxSystemdSnapshot(preflight, reloaded); err != nil {
+			return failInstall(fmt.Errorf("验证 daemon-reload 后的 systemd 状态: %w", err), true, false)
+		}
+	}
 	output, err := ops.RunSystemctl("--user", "enable", "--now", "codex-usage.service")
 	if err != nil {
 		started, reused, startErr := startOrReuseLinuxDetachedService(executable, stateDir, preflight.exists, ops)

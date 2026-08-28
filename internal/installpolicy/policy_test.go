@@ -289,6 +289,14 @@ func TestLifecycleScriptsIsolateHomesAndLockJSONLContract(t *testing.T) {
 	}
 }
 
+func TestWindowsLifecycleKeepsMachineTimestampAsJSONString(t *testing.T) {
+	windows := readRepositoryDocument(t, filepath.Join("tests", "install-windows.ps1"))
+	const conversion = `$Event = $Line | ConvertFrom-Json -Depth 100 -DateKind String`
+	if !strings.Contains(windows, conversion) {
+		t.Fatalf("Windows lifecycle must preserve JSON timestamp strings with %q", conversion)
+	}
+}
+
 func TestLifecycleScriptsUseExecutableMachineCommandProtocol(t *testing.T) {
 	windows := parsePowerShellMachineCalls(t, readRepositoryDocument(t, filepath.Join("tests", "install-windows.ps1")))
 	assertMachineCalls(t, "Windows", windows, []machineCommandCall{
@@ -406,6 +414,7 @@ func TestCIWorkflowUsesHostedLifecycleMatrixWithoutPublishing(t *testing.T) {
 	for _, fragment := range []string{
 		"  unit:", "  lifecycle:", "  cross-build:", "  dashboard:",
 		"os: [ubuntu-latest, windows-latest]", "runs-on: ${{ matrix.os }}",
+		"TMPDIR: ${{ runner.temp }}", "TMP: ${{ runner.temp }}", "TEMP: ${{ runner.temp }}",
 		"pwsh ./tests/install-windows.ps1", "bash ./tests/install-linux.sh",
 		"node --check internal/web/static/app.js", "node --check internal/web/static/i18n.js",
 		"node --check tests/dashboard.spec.mjs", "node --check tests/demo.spec.mjs",

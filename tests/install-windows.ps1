@@ -103,7 +103,7 @@ function Invoke-JsonLinesCommand {
             continue
         }
         try {
-            $Event = $Line | ConvertFrom-Json -Depth 100
+            $Event = $Line | ConvertFrom-Json -Depth 100 -DateKind String
         } catch {
             throw "Non-JSON line in machine output: $Line"
         }
