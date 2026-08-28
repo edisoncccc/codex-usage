@@ -203,6 +203,15 @@ func (c CLI) installCommand(args []string, emitter *eventEmitter) (commandResult
 	if err != nil {
 		return commandResult{}, installCommandFailure(err, "source_build_blocked")
 	}
+	decision, err := install.Assess(paths.InstallRecord, paths.InstalledEXE, install.Candidate{
+		Version: identity.Version, ExecutablePath: candidatePath,
+	})
+	if err != nil {
+		return commandResult{}, installCommandFailure(err, "existing_install_untrusted")
+	}
+	if err := rejectUnsafeInstallDecision(decision); err != nil {
+		return commandResult{}, installCommandFailure(err, "existing_install_untrusted")
+	}
 	record, err := install.Load(paths.InstallRecord)
 	if err != nil {
 		return commandResult{}, installCommandFailure(err, "existing_install_untrusted")

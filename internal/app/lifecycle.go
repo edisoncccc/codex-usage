@@ -136,11 +136,8 @@ func executeLifecycle(
 		return result, err
 	}
 	result.Decision = decision
-	if decision == install.DecisionDowngrade {
-		return result, errors.New("downgrade is not allowed without an explicit trusted workflow")
-	}
-	if decision == install.DecisionUntrusted {
-		return result, errors.New("untrusted existing install cannot be replaced")
+	if err := rejectUnsafeInstallDecision(decision); err != nil {
+		return result, err
 	}
 
 	oldRecord, err := install.Load(request.InstallRecordPath)
@@ -327,6 +324,17 @@ func executeLifecycle(
 		}
 	}
 	return result, nil
+}
+
+func rejectUnsafeInstallDecision(decision install.Decision) error {
+	switch decision {
+	case install.DecisionDowngrade:
+		return errors.New("downgrade is not allowed without an explicit trusted workflow")
+	case install.DecisionUntrusted:
+		return errors.New("untrusted existing install cannot be replaced")
+	default:
+		return nil
+	}
 }
 
 func executeSameLifecycle(

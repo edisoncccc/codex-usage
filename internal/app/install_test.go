@@ -302,18 +302,20 @@ func TestInstallJSONFailureEmitsStableTerminalCode(t *testing.T) {
 }
 
 func TestInstallJSONStdoutContainsNoHumanProse(t *testing.T) {
-	fixture := newInstallCommandFixture(t)
 	for _, language := range []string{"zh-CN", "en"} {
-		exitCode, stdout, stderr := runInstallJSON(t, fixture, "--lang", language, "install", "--yes", "--json")
-		if exitCode != 0 || stderr != "" {
-			t.Fatalf("language=%s exit=%d stderr=%q stdout=%q", language, exitCode, stderr, stdout)
-		}
-		for _, line := range strings.Split(strings.TrimSuffix(stdout, "\n"), "\n") {
-			if !strings.HasPrefix(line, "{") || !strings.HasSuffix(line, "}") {
-				t.Fatalf("language=%s non-JSON prose line=%q output=%q", language, line, stdout)
+		t.Run(language, func(t *testing.T) {
+			fixture := newInstallCommandFixture(t)
+			exitCode, stdout, stderr := runInstallJSON(t, fixture, "--lang", language, "install", "--yes", "--json")
+			if exitCode != 0 || stderr != "" {
+				t.Fatalf("exit=%d stderr=%q stdout=%q", exitCode, stderr, stdout)
 			}
-		}
-		_ = decodeMachineEvents(t, stdout)
+			for _, line := range strings.Split(strings.TrimSuffix(stdout, "\n"), "\n") {
+				if !strings.HasPrefix(line, "{") || !strings.HasSuffix(line, "}") {
+					t.Fatalf("non-JSON prose line=%q output=%q", line, stdout)
+				}
+			}
+			_ = decodeMachineEvents(t, stdout)
+		})
 	}
 }
 
@@ -1508,6 +1510,82 @@ func TestInstallMigratedConfigRollbackPreservesOriginalFile(t *testing.T) {
 			}
 			if _, err := os.Lstat(fixture.paths.ConfigPath); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("current config remained after rollback: %v", err)
+			}
+		})
+	}
+}
+
+func TestInstallRejectsUnsafeExistingStateBeforeMigratedConfigWrite(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(*testing.T, *installCommandFixture)
+	}{
+		{
+			name: "downgrade",
+			setup: func(t *testing.T, fixture *installCommandFixture) {
+				writeExistingInstallFixture(t, fixture, "2.3.6", "newer-installed-binary")
+			},
+		},
+		{
+			name: "unknown executable",
+			setup: func(t *testing.T, fixture *installCommandFixture) {
+				if err := os.MkdirAll(filepath.Dir(fixture.paths.InstalledEXE), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(fixture.paths.InstalledEXE, []byte("unknown-installed-binary"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "installed digest mismatch",
+			setup: func(t *testing.T, fixture *installCommandFixture) {
+				writeExistingInstallFixture(t, fixture, "2.3.4", "recorded-installed-binary")
+				if err := os.WriteFile(fixture.paths.InstalledEXE, []byte("changed-installed-binary"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newInstallCommandFixture(t)
+			previous, original := seedPreviousInstallConfig(t, fixture)
+			originalInfo, err := os.Lstat(previous.ConfigPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.deps.InspectPrevious = defaultInspectPreviousState
+			test.setup(t, fixture)
+			lifecycleCalled := false
+			configWriteObserved := false
+			fixture.deps.RunLifecycle = func(context.Context, lifecycleRequest, lifecycleOps, lifecycleProgress) (lifecycleResult, error) {
+				lifecycleCalled = true
+				_, currentErr := os.Lstat(fixture.paths.ConfigPath)
+				configWriteObserved = currentErr == nil
+				return lifecycleResult{}, errors.New("unsafe state reached lifecycle")
+			}
+
+			exitCode, stdout, stderr := runInstallJSON(t, fixture, "install", "--yes", "--json", "--skip-scan")
+			if exitCode == 0 || stderr != "" {
+				t.Fatalf("exit=%d stderr=%q stdout=%q", exitCode, stderr, stdout)
+			}
+			terminal := installTerminalEvent(t, stdout)
+			if terminal["code"] != "existing_install_untrusted" {
+				t.Fatalf("terminal=%#v", terminal)
+			}
+			if lifecycleCalled || configWriteObserved {
+				t.Fatalf("unsafe preflight reached lifecycle=%v config_write_observed=%v", lifecycleCalled, configWriteObserved)
+			}
+			after, err := os.ReadFile(previous.ConfigPath)
+			if err != nil || !bytes.Equal(after, original) {
+				t.Fatalf("previous config changed: %q err=%v", after, err)
+			}
+			afterInfo, err := os.Lstat(previous.ConfigPath)
+			if err != nil || !os.SameFile(originalInfo, afterInfo) {
+				t.Fatalf("previous config inode changed: before=%v after=%v err=%v", originalInfo, afterInfo, err)
+			}
+			if _, err := os.Lstat(fixture.paths.ConfigPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("current config was written before trust rejection: %v", err)
 			}
 		})
 	}
