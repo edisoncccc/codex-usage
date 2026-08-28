@@ -290,7 +290,8 @@ func classifyLinuxSystemdSnapshotFailure(diagnostic string) linuxSystemdSnapshot
 		"failed to connect to bus: no such file or directory",
 		"failed to get d-bus connection: no such file or directory",
 		"failed to connect to bus: $dbus_session_bus_address and $xdg_runtime_dir not defined",
-		"failed to connect to bus: $dbus_session_bus_address and $xdg_runtime_dir not defined (consider using --machine=<user>@.host --user)":
+		"failed to connect to bus: $dbus_session_bus_address and $xdg_runtime_dir not defined (consider using --machine=<user>@.host --user to connect to bus of other user)",
+		"failed to connect to user scope bus via local transport: $dbus_session_bus_address and $xdg_runtime_dir not defined (consider using --machine=<user>@.host --user to connect to bus of other user)":
 		return linuxSystemdSnapshotUserBusUnavailable
 	}
 	return linuxSystemdSnapshotFailureUnknown

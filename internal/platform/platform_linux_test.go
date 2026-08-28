@@ -13,8 +13,16 @@ func TestClassifyLinuxSystemdSnapshotFailureOnlyAllowsKnownUnavailableBusDiagnos
 		{diagnostic: "Failed to connect to bus: No such file or directory", want: linuxSystemdSnapshotUserBusUnavailable},
 		{diagnostic: "Failed to get D-Bus connection: No such file or directory", want: linuxSystemdSnapshotUserBusUnavailable},
 		{
-			diagnostic: "Failed to connect to bus: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using --machine=<user>@.host --user)",
+			diagnostic: "Failed to connect to bus: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using --machine=<user>@.host --user to connect to bus of other user)",
 			want:       linuxSystemdSnapshotUserBusUnavailable,
+		},
+		{
+			diagnostic: "Failed to connect to user scope bus via local transport: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using --machine=<user>@.host --user to connect to bus of other user)",
+			want:       linuxSystemdSnapshotUserBusUnavailable,
+		},
+		{
+			diagnostic: "Failed to connect to bus: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using --machine=<user>@.host --user)",
+			want:       linuxSystemdSnapshotFailureUnknown,
 		},
 		{diagnostic: "Failed to connect to bus: Permission denied", want: linuxSystemdSnapshotFailureUnknown},
 		{diagnostic: "user bus permission denied", want: linuxSystemdSnapshotFailureUnknown},
