@@ -174,8 +174,8 @@ function Assert-DoctorHealthy {
     )) {
         Assert-PathUnderRunnerTemp -Path ([string]$Path)
     }
-    foreach ($Home in @($Doctor.Terminal.result.homes)) {
-        Assert-PathUnderRunnerTemp -Path ([string]$Home)
+    foreach ($HomePath in @($Doctor.Terminal.result.homes)) {
+        Assert-PathUnderRunnerTemp -Path ([string]$HomePath)
     }
 }
 

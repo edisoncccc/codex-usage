@@ -297,6 +297,13 @@ func TestWindowsLifecycleKeepsMachineTimestampAsJSONString(t *testing.T) {
 	}
 }
 
+func TestWindowsLifecycleDoesNotOverwritePowerShellHome(t *testing.T) {
+	windows := readRepositoryDocument(t, filepath.Join("tests", "install-windows.ps1"))
+	if strings.Contains(windows, `foreach ($Home in`) || !strings.Contains(windows, `foreach ($HomePath in`) {
+		t.Fatal("Windows lifecycle must not assign to PowerShell's read-only HOME variable")
+	}
+}
+
 func TestLifecycleScriptsUseExecutableMachineCommandProtocol(t *testing.T) {
 	windows := parsePowerShellMachineCalls(t, readRepositoryDocument(t, filepath.Join("tests", "install-windows.ps1")))
 	assertMachineCalls(t, "Windows", windows, []machineCommandCall{
