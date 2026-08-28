@@ -199,6 +199,17 @@ if ($artifactUnexpected.Count -ne 0 -or $artifactMissing.Count -ne 0) {
 
 ## GitHub 发布结果
 
+### 2026-08-28 最终补录
+
+- 公开仓库仍为 <https://github.com/edisoncccc/codex-usage>，实时核验结果为 `isFork=true`、`isPrivate=false`、父仓库 `zJay26/codex-usage`、默认分支 `main`，Description 仍为 **Codex Usage Dashboard** 的英文产品说明。
+- 已由用户在 GitHub Actions 页面显式启用 Fork workflow。启用后以空提交 `f32963d5cb46b562b29e833753af32e09a8b5af7` 触发首次托管验收，并根据真实日志修正 Windows 临时目录、PowerShell JSON 时间戳、Linux systemd 回退及 Windows 生命周期验证脚本。
+- 最终实现提交 `c67b952d843479c28ee75a4ff4e63368aeb23134` 对应的 CI run 为 <https://github.com/edisoncccc/codex-usage/actions/runs/33137453013>，`status=completed`、`conclusion=success`、head SHA 精确一致；Windows/Ubuntu 单测与 `go vet`、Windows/Linux 当前用户生命周期、交叉构建和 Dashboard 共 6/6 作业通过。
+- 失败过程未隐藏：run `33135758468` 暴露三项托管环境差异；run `33136759221` 暴露 job 级 `runner` 上下文不可用；run `33136931542` 暴露 PowerShell `$HOME` 只读变量冲突；run `33137126198` 暴露预期缺失注册表值的读取方式；每轮均在读取原始日志、补充红测和本地回归后以普通 fast-forward 修正。
+- 最终只读核验：Actions artifacts 为 `0`，GitHub Releases 为 `0`，`pages.yml` 与 `release.yml` 的 run 列表均为空；没有创建新标签、Release 或二进制资产。Fork 远端标签集合与上游完全相同，仅包含继承的 `v0.1.0` 至 `v2.3.5`。
+- `.github/workflows/ci.yml` 只构建和验证，不上传 artifacts；`.github/workflows/pages.yml` 与 `.github/workflows/release.yml` 仅允许手动触发，其中 Release workflow 是只读 source-only 策略哨兵，不能发布资产。
+
+以下条目保留首次发布当时的时间顺序；若其“尚待验证”描述与本补录冲突，以本补录的最终实时证据为准。
+
 - Task 7 的公开 Fork 创建、源码推送与 remote 配置已经完成；截至本次留痕提交前，显式启用后的 CI push 验证尚待下一次正常推送完成。
 - 公开仓库：<https://github.com/edisoncccc/codex-usage>，创建时间为 `2026-08-25T15:31:55Z`。
 - GitHub 已验证属性：`visibility=PUBLIC`、`isFork=true`、父仓库为 `zJay26/codex-usage`、默认分支为 `main`。
@@ -221,6 +232,6 @@ if ($artifactUnexpected.Count -ne 0 -or $artifactMissing.Count -ne 0) {
 
 ## 后续待办
 
-- 以本文件的正常 push 验证显式启用后的 `ci.yml`：等待 run 成功，确认 run head SHA 与推送提交一致，并再次核验 Pages/Release 无自动 run、Actions artifacts 为 0、Release 列表为空；随后将实际 run id、URL、head SHA 和 conclusion 补录到本文件。
+- 公开 Fork、Actions 启用、源码-only 发布边界和双平台托管验收均已完成，没有阻塞性发布待办。
 - 非阻塞测试增强：后续可为 Subagent 标题处理补充 malformed JSON、父链 cycle 和 JSON role fallback 等边界测试。
-- 若未来决定发布二进制，单独评估代码签名、可复现构建、SHA256 清单和 Release 流程；本次不预先承诺。
+- 若未来决定发布二进制，需另行申请免费开源签名资格、确认 publisher 身份并完成签名、SHA256、Attestation 和不可变 Release 演练；在此之前继续保持 source-only。
