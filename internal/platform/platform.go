@@ -103,8 +103,10 @@ type linuxServiceOperations struct {
 	StartDetached         func(string, ...string) error
 	RemoveUnit            func(string) error
 	ReadProcessExecutable func(int) (string, error)
-	SignalProcess         func(int, os.Signal) error
-	ProcessAlive          func(int) (bool, error)
+	OpenProcessHandle     func(int) (int, error)
+	SignalProcessHandle   func(int, os.Signal) error
+	ProcessHandleExited   func(int) (bool, error)
+	CloseProcessHandle    func(int) error
 	Sleep                 func(time.Duration)
 }
 

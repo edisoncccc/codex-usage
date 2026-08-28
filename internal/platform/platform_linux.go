@@ -19,7 +19,9 @@ func init() {
 	activeLinuxServiceOperations = linuxServiceOperations{
 		LookPath: exec.LookPath,
 		RunSystemctl: func(args ...string) ([]byte, error) {
-			return exec.Command("systemctl", args...).CombinedOutput()
+			command := exec.Command("systemctl", args...)
+			command.Env = linuxSystemctlEnvironment(os.Environ())
+			return command.CombinedOutput()
 		},
 		RunLoginctl: func(args ...string) ([]byte, error) {
 			return exec.Command("loginctl", args...).Output()
@@ -29,25 +31,64 @@ func init() {
 		ReadProcessExecutable: func(pid int) (string, error) {
 			return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 		},
-		SignalProcess: func(pid int, signal os.Signal) error {
-			process, err := os.FindProcess(pid)
-			if err != nil {
-				return err
-			}
-			return process.Signal(signal)
+		OpenProcessHandle: func(pid int) (int, error) {
+			return unix.PidfdOpen(pid, 0)
 		},
-		ProcessAlive: func(pid int) (bool, error) {
-			err := unix.Kill(pid, 0)
-			if err == nil || errors.Is(err, unix.EPERM) {
-				return true, nil
+		SignalProcessHandle: func(handle int, signal os.Signal) error {
+			native, ok := signal.(syscall.Signal)
+			if !ok {
+				return fmt.Errorf("unsupported process signal %v", signal)
 			}
-			if errors.Is(err, unix.ESRCH) {
+			return unix.PidfdSendSignal(handle, unix.Signal(native), nil, 0)
+		},
+		ProcessHandleExited: func(handle int) (bool, error) {
+			poll := []unix.PollFd{{Fd: int32(handle), Events: unix.POLLIN}}
+			ready, err := unix.Poll(poll, 0)
+			if err != nil {
+				return false, err
+			}
+			if ready == 0 {
 				return false, nil
 			}
-			return false, err
+			return poll[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0, nil
 		},
-		Sleep: time.Sleep,
+		CloseProcessHandle: unix.Close,
+		Sleep:              time.Sleep,
 	}
+}
+
+func linuxSystemctlEnvironment(base []string) []string {
+	environment := make([]string, 0, len(base)+1)
+	for _, entry := range base {
+		if strings.HasPrefix(entry, "LC_ALL=") {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	return append(environment, "LC_ALL=C")
+}
+
+func startOrReuseLinuxDetachedService(
+	executable, stateDir string,
+	managerMayOwnProcess bool,
+	ops linuxServiceOperations,
+) (started, reused bool, err error) {
+	pid, err := inspectCurrentLinuxPIDFile(filepath.Join(stateDir, "codex-usage.pid"), executable, ops)
+	if err != nil {
+		return false, false, err
+	}
+	if pid.processExists {
+		return false, true, nil
+	}
+	if managerMayOwnProcess {
+		return false, false, untrustedPreviousService(
+			"systemd manager is unavailable and no trusted running PID proves the existing unit is stopped",
+		)
+	}
+	if err := ops.StartDetached(executable, "daemon"); err != nil {
+		return false, false, err
+	}
+	return true, false, nil
 }
 
 func InstallService(executable, stateDir string) (ServiceResult, error) {
@@ -66,12 +107,16 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 			Mode:      ServiceModeDetachedFallback,
 			Warning:   "未检测到 systemctl；未检查 systemd manager 状态且未写入 systemd unit",
 		}
-		if startErr := ops.StartDetached(executable, "daemon"); startErr != nil {
-			result.Warning += "，后台启动失败: " + startErr.Error()
-			return result, nil
+		started, reused, startErr := startOrReuseLinuxDetachedService(executable, stateDir, preflight.exists, ops)
+		if startErr != nil {
+			return ServiceResult{}, fmt.Errorf("启动受信后台服务回退: %w", startErr)
 		}
-		result.Started = true
-		result.Warning += "；本次已启动，但需自行配置登录自启"
+		result.Started = started || reused
+		if reused {
+			result.Warning += "；检测到受信后台进程，未重复启动；需自行配置登录自启"
+		} else {
+			result.Warning += "；本次已启动，但需自行配置登录自启"
+		}
 		return result, nil
 	}
 	snapshot, err := inspectCurrentLinuxSystemdSnapshot(ops)
@@ -86,12 +131,16 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 					unavailable.diagnostic,
 				),
 			}
-			if startErr := ops.StartDetached(executable, "daemon"); startErr != nil {
-				result.Warning += "；后台启动失败: " + startErr.Error()
-				return result, nil
+			started, reused, startErr := startOrReuseLinuxDetachedService(executable, stateDir, preflight.exists, ops)
+			if startErr != nil {
+				return ServiceResult{}, startErr
 			}
-			result.Started = true
-			result.Warning += "；本次已启动，但需在 user bus 可用后重试安装以启用登录自启"
+			result.Started = started || reused
+			if reused {
+				result.Warning += "；检测到受信后台进程，未重复启动；需在 user bus 可用后重试安装以启用登录自启"
+			} else {
+				result.Warning += "；本次已启动，但需在 user bus 可用后重试安装以启用登录自启"
+			}
 			return result, nil
 		}
 		return ServiceResult{}, err
@@ -125,24 +174,34 @@ func InstallService(executable, stateDir string) (ServiceResult, error) {
 		return failInstall(err, false, false)
 	}
 	if output, err := ops.RunSystemctl("--user", "daemon-reload"); err != nil {
-		if startErr := ops.StartDetached(executable, "daemon"); startErr != nil {
+		started, reused, startErr := startOrReuseLinuxDetachedService(executable, stateDir, preflight.exists, ops)
+		if startErr != nil {
 			return failInstall(fmt.Errorf("systemctl --user daemon-reload: %w: %s；后台启动也失败: %v",
 				err, strings.TrimSpace(string(output)), startErr), true, false)
 		}
+		warning := "systemd --user 当前不可用；本次已后台启动，但登录自启需在 user bus 可用后执行 systemctl --user enable --now codex-usage"
+		if reused {
+			warning = "systemd --user 当前不可用；检测到受信后台进程，未重复启动；登录自启需在 user bus 可用后重试"
+		}
 		return ServiceResult{
-			Installed: true, Started: true, Mode: ServiceModeDetachedFallback, Detail: preflight.path,
-			Warning: "systemd --user 当前不可用；本次已后台启动，但登录自启需在 user bus 可用后执行 systemctl --user enable --now codex-usage",
+			Installed: true, Started: started || reused, Mode: ServiceModeDetachedFallback, Detail: preflight.path,
+			Warning: warning,
 		}, nil
 	}
 	output, err := ops.RunSystemctl("--user", "enable", "--now", "codex-usage.service")
 	if err != nil {
-		if startErr := ops.StartDetached(executable, "daemon"); startErr != nil {
+		started, reused, startErr := startOrReuseLinuxDetachedService(executable, stateDir, preflight.exists, ops)
+		if startErr != nil {
 			return failInstall(fmt.Errorf("systemctl --user enable --now: %w: %s；后台启动也失败: %v",
 				err, strings.TrimSpace(string(output)), startErr), true, true)
 		}
+		warning := "systemd unit 已写入但 enable --now 失败；本次已后台启动，请检查 user bus/linger 后重试"
+		if reused {
+			warning = "systemd unit 已写入但 enable --now 失败；检测到受信后台进程，未重复启动，请检查 user bus/linger 后重试"
+		}
 		return ServiceResult{
-			Installed: true, Started: true, Mode: ServiceModeDetachedFallback, Detail: preflight.path,
-			Warning: "systemd unit 已写入但 enable --now 失败；本次已后台启动，请检查 user bus/linger 后重试",
+			Installed: true, Started: started || reused, Mode: ServiceModeDetachedFallback, Detail: preflight.path,
+			Warning: warning,
 		}, nil
 	}
 	result := ServiceResult{Installed: true, Started: true, Mode: ServiceModePersistent, Detail: preflight.path}
@@ -226,18 +285,13 @@ func inspectCurrentLinuxSystemdSnapshot(ops linuxServiceOperations) (currentLinu
 
 func classifyLinuxSystemdSnapshotFailure(diagnostic string) linuxSystemdSnapshotFailureKind {
 	normalized := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(diagnostic, "\r\n", "\n")))
-	for _, line := range strings.Split(normalized, "\n") {
-		line = strings.TrimSpace(line)
-		switch line {
-		case "failed to connect to bus: no medium found",
-			"failed to connect to bus: no such file or directory",
-			"failed to get d-bus connection: no such file or directory":
-			return linuxSystemdSnapshotUserBusUnavailable
-		}
-		const missingSessionEnvironment = "failed to connect to bus: $dbus_session_bus_address and $xdg_runtime_dir not defined"
-		if line == missingSessionEnvironment || strings.HasPrefix(line, missingSessionEnvironment+" (consider using --machine=") {
-			return linuxSystemdSnapshotUserBusUnavailable
-		}
+	switch normalized {
+	case "failed to connect to bus: no medium found",
+		"failed to connect to bus: no such file or directory",
+		"failed to get d-bus connection: no such file or directory",
+		"failed to connect to bus: $dbus_session_bus_address and $xdg_runtime_dir not defined",
+		"failed to connect to bus: $dbus_session_bus_address and $xdg_runtime_dir not defined (consider using --machine=<user>@.host --user)":
+		return linuxSystemdSnapshotUserBusUnavailable
 	}
 	return linuxSystemdSnapshotFailureUnknown
 }
@@ -656,7 +710,7 @@ func stopInspectedLinuxPIDFile(
 	preflight currentLinuxPIDInspection,
 	expectedExecutable string,
 	ops linuxServiceOperations,
-) (bool, error) {
+) (stopped bool, resultErr error) {
 	current, err := revalidateCurrentLinuxPIDFile(preflight, expectedExecutable, ops)
 	if err != nil {
 		return false, err
@@ -664,10 +718,36 @@ func stopInspectedLinuxPIDFile(
 	if !current.exists || !current.processExists {
 		return false, nil
 	}
-	if err := ops.SignalProcess(current.pid, syscall.SIGTERM); err != nil {
+	handle, err := ops.OpenProcessHandle(current.pid)
+	if err != nil {
+		return false, fmt.Errorf("open process handle for PID %d: %w", current.pid, err)
+	}
+	defer func() {
+		if closeErr := ops.CloseProcessHandle(handle); closeErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close process handle for PID %d: %w", current.pid, closeErr))
+		}
+	}()
+	bound, err := revalidateCurrentLinuxPIDFile(current, expectedExecutable, ops)
+	if err != nil {
+		return false, err
+	}
+	if !bound.exists || !bound.processExists {
+		return false, nil
+	}
+	exited, err := ops.ProcessHandleExited(handle)
+	if err != nil {
+		return false, fmt.Errorf("inspect process handle for PID %d: %w", current.pid, err)
+	}
+	if exited {
+		return false, nil
+	}
+	if err := ops.SignalProcessHandle(handle, syscall.SIGTERM); err != nil {
+		if errors.Is(err, unix.ESRCH) {
+			return false, nil
+		}
 		return false, fmt.Errorf("停止后台服务 PID %d: %w", current.pid, err)
 	}
-	if err := waitForLinuxPIDExit(current.pid, ops); err != nil {
+	if err := waitForLinuxProcessHandleExit(handle, current.pid, ops); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -688,13 +768,13 @@ func stopResidualManagerOwnedLinuxPIDFile(
 	return stopInspectedLinuxPIDFile(current, expectedExecutable, ops)
 }
 
-func waitForLinuxPIDExit(pid int, ops linuxServiceOperations) error {
+func waitForLinuxProcessHandleExit(handle, pid int, ops linuxServiceOperations) error {
 	for attempt := 0; attempt < 20; attempt++ {
-		alive, err := ops.ProcessAlive(pid)
+		exited, err := ops.ProcessHandleExited(handle)
 		if err != nil {
 			return fmt.Errorf("确认后台服务 PID %d 退出: %w", pid, err)
 		}
-		if !alive {
+		if exited {
 			return nil
 		}
 		if attempt < 19 {

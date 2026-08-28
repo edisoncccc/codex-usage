@@ -445,8 +445,10 @@ func TestLinuxInstallServiceRejectsForeignUnitBeforeHooks(t *testing.T) {
 		RunLoginctl:           func(...string) ([]byte, error) { hookCalls++; return nil, nil },
 		StartDetached:         func(string, ...string) error { hookCalls++; return nil },
 		ReadProcessExecutable: func(int) (string, error) { hookCalls++; return "", nil },
-		SignalProcess:         func(int, os.Signal) error { hookCalls++; return nil },
-		ProcessAlive:          func(int) (bool, error) { hookCalls++; return false, nil },
+		OpenProcessHandle:     func(int) (int, error) { hookCalls++; return 0, nil },
+		SignalProcessHandle:   func(int, os.Signal) error { hookCalls++; return nil },
+		ProcessHandleExited:   func(int) (bool, error) { hookCalls++; return true, nil },
+		CloseProcessHandle:    func(int) error { hookCalls++; return nil },
 		Sleep:                 func(time.Duration) { hookCalls++ },
 	})
 	t.Cleanup(restore)
@@ -648,6 +650,7 @@ func TestLinuxInstallServiceUserBusUnavailableUsesDetachedFallbackWithoutUnitMut
 			executable, stateDir, unitPath := linuxServiceFixture(t)
 			if existingUnit {
 				writeExactLinuxUnitFixture(t, unitPath, executable, stateDir)
+				writeLinuxPIDFixture(t, stateDir, 424242)
 			}
 			before, beforeErr := os.ReadFile(unitPath)
 			if !existingUnit && !errors.Is(beforeErr, os.ErrNotExist) {
@@ -675,6 +678,7 @@ func TestLinuxInstallServiceUserBusUnavailableUsesDetachedFallbackWithoutUnitMut
 				}
 				return nil
 			}
+			ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
 			ops.RemoveUnit = func(path string) error { removeCalls++; return os.Remove(path) }
 			restore := replaceLinuxServiceOperations(ops)
 			t.Cleanup(restore)
@@ -690,7 +694,11 @@ func TestLinuxInstallServiceUserBusUnavailableUsesDetachedFallbackWithoutUnitMut
 				!strings.Contains(result.Warning, "未写入或修改 systemd unit") {
 				t.Fatalf("fallback warning does not preserve the real reason: %q", result.Warning)
 			}
-			if queryCalls != 1 || mutationCalls != 0 || startCalls != 1 || removeCalls != 0 || syncCalls != 0 {
+			wantStarts := 1
+			if existingUnit {
+				wantStarts = 0
+			}
+			if queryCalls != 1 || mutationCalls != 0 || startCalls != wantStarts || removeCalls != 0 || syncCalls != 0 {
 				t.Fatalf("fallback side effects query=%d mutation=%d start=%d remove=%d sync=%d",
 					queryCalls, mutationCalls, startCalls, removeCalls, syncCalls)
 			}
@@ -1519,7 +1527,7 @@ func TestLinuxUninstallServiceRejectsUntrustedManagerBeforeMutation(t *testing.T
 			}
 			ops.RemoveUnit = func(path string) error { removeCalls++; return os.Remove(path) }
 			ops.ReadProcessExecutable = func(int) (string, error) { t.Fatal("PID identity read before manager rejection"); return "", nil }
-			ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+			ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 			restore := replaceLinuxServiceOperations(ops)
 			t.Cleanup(restore)
 
@@ -1636,7 +1644,7 @@ func TestLinuxUninstallServiceRejectsUntrustedPIDBeforeMutation(t *testing.T) {
 				}
 				return executable, nil
 			}
-			ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+			ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 			restore := replaceLinuxServiceOperations(ops)
 			t.Cleanup(restore)
 
@@ -1734,7 +1742,7 @@ func TestLinuxUninstallServiceManagerOwnedPIDUsesSystemctlWithoutSignal(t *testi
 		}
 		return executable, nil
 	}
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -1788,7 +1796,7 @@ func TestLinuxUninstallServiceManagerOwnedPIDSignalsResidualAfterSystemctlStop(t
 		}
 		return executable, nil
 	}
-	ops.SignalProcess = func(pid int, signal os.Signal) error {
+	ops.SignalProcessHandle = func(pid int, signal os.Signal) error {
 		signalCalls++
 		if pid != 424242 || signal != syscall.SIGTERM {
 			t.Fatalf("unexpected signal target: pid=%d signal=%v", pid, signal)
@@ -1796,9 +1804,9 @@ func TestLinuxUninstallServiceManagerOwnedPIDSignalsResidualAfterSystemctlStop(t
 		signaled = true
 		return nil
 	}
-	ops.ProcessAlive = func(int) (bool, error) {
+	ops.ProcessHandleExited = func(int) (bool, error) {
 		processProbes++
-		return !signaled, nil
+		return signaled, nil
 	}
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
@@ -1847,7 +1855,7 @@ func TestLinuxUninstallServiceRejectsLoadedManagerWhenLocalUnitIsMissing(t *test
 		t.Fatal("PID identity read after missing metadata")
 		return "", nil
 	}
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -1890,8 +1898,7 @@ func TestLinuxUninstallServiceUnitMissingStopsValidatedPIDWhenManagerIsAbsent(t 
 		return nil, nil
 	}
 	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
-	ops.ProcessAlive = func(int) (bool, error) { return false, nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -1925,8 +1932,7 @@ func TestLinuxUninstallServiceWithoutSystemctlUsesValidatedPIDFallback(t *testin
 	ops.RunSystemctl = func(...string) ([]byte, error) { systemctlCalls++; return nil, errors.New("unexpected systemctl") }
 	ops.RemoveUnit = func(path string) error { removeCalls++; return os.Remove(path) }
 	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
-	ops.ProcessAlive = func(int) (bool, error) { return false, nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -1971,8 +1977,7 @@ func TestLinuxUninstallServiceUserBusUnavailableUsesValidatedPIDFallback(t *test
 	}
 	ops.RemoveUnit = func(path string) error { removeCalls++; return os.Remove(path) }
 	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
-	ops.ProcessAlive = func(int) (bool, error) { return false, nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -2022,8 +2027,7 @@ func TestLinuxUninstallServiceAbsentManagerStateUsesDetachedFallback(t *testing.
 	}
 	ops.RemoveUnit = func(path string) error { removeCalls++; return os.Remove(path) }
 	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
-	ops.ProcessAlive = func(int) (bool, error) { return false, nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -2060,14 +2064,13 @@ func TestLinuxUninstallServiceInactiveOwnedUnitStopsDetachedPIDAfterSystemctlSto
 		return nil, nil
 	}
 	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
-	ops.SignalProcess = func(pid int, signal os.Signal) error {
+	ops.SignalProcessHandle = func(pid int, signal os.Signal) error {
 		signalCalls++
 		if pid != 424242 || signal != syscall.SIGTERM {
 			t.Fatalf("unexpected signal target: pid=%d signal=%v", pid, signal)
 		}
 		return nil
 	}
-	ops.ProcessAlive = func(int) (bool, error) { return false, nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -2108,8 +2111,7 @@ func TestLinuxStopServiceInactiveOwnedUnitStopsDetachedPIDAfterSystemctlStop(t *
 		return nil, nil
 	}
 	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
-	ops.ProcessAlive = func(int) (bool, error) { return false, nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -2152,7 +2154,7 @@ func TestLinuxStopServiceManagerOwnedPIDUsesSystemctlWithoutSignal(t *testing.T)
 		}
 		return executable, nil
 	}
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -2188,7 +2190,7 @@ func TestLinuxStopServiceManagerOwnedPIDSignalsResidualAfterSystemctlStop(t *tes
 		return nil, nil
 	}
 	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
-	ops.SignalProcess = func(pid int, signal os.Signal) error {
+	ops.SignalProcessHandle = func(pid int, signal os.Signal) error {
 		signalCalls++
 		if pid != 424242 || signal != syscall.SIGTERM {
 			t.Fatalf("unexpected signal target: pid=%d signal=%v", pid, signal)
@@ -2196,9 +2198,9 @@ func TestLinuxStopServiceManagerOwnedPIDSignalsResidualAfterSystemctlStop(t *tes
 		signaled = true
 		return nil
 	}
-	ops.ProcessAlive = func(int) (bool, error) {
+	ops.ProcessHandleExited = func(int) (bool, error) {
 		processProbes++
-		return !signaled, nil
+		return signaled, nil
 	}
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
@@ -2241,7 +2243,7 @@ func TestLinuxStopServiceRejectsPostStopPIDReuseWithoutSignal(t *testing.T) {
 		}
 		return executable, nil
 	}
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -2274,7 +2276,7 @@ func TestLinuxStopServiceRejectsForeignPIDBeforeSystemctlStop(t *testing.T) {
 	ops.ReadProcessExecutable = func(int) (string, error) {
 		return filepath.Join(filepath.Dir(stateDir), "foreign", "codex-usage"), nil
 	}
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -2344,7 +2346,7 @@ func TestLinuxStopServiceRejectsPIDExecutableMismatchWithoutSignal(t *testing.T)
 	ops := inertLinuxServiceOperations()
 	ops.LookPath = func(string) (string, error) { return "", errors.New("missing") }
 	ops.ReadProcessExecutable = func(int) (string, error) { return filepath.Join(t.TempDir(), "codex-usage"), nil }
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -2367,7 +2369,7 @@ func TestLinuxStopServicePropagatesSignalFailure(t *testing.T) {
 	ops := inertLinuxServiceOperations()
 	ops.LookPath = func(string) (string, error) { return "", errors.New("missing") }
 	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
-	ops.SignalProcess = func(int, os.Signal) error { return wantErr }
+	ops.SignalProcessHandle = func(int, os.Signal) error { return wantErr }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -2386,8 +2388,8 @@ func TestLinuxStopServiceFailsWhenProcessRemainsAlive(t *testing.T) {
 	ops := inertLinuxServiceOperations()
 	ops.LookPath = func(string) (string, error) { return "", errors.New("missing") }
 	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
-	ops.SignalProcess = func(int, os.Signal) error { return nil }
-	ops.ProcessAlive = func(int) (bool, error) { return true, nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { return nil }
+	ops.ProcessHandleExited = func(int) (bool, error) { return false, nil }
 	ops.Sleep = func(time.Duration) { sleeps++ }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
@@ -2417,7 +2419,7 @@ func TestLinuxStopServiceRejectsSymlinkPIDWithoutSignal(t *testing.T) {
 	signalCalls := 0
 	ops := inertLinuxServiceOperations()
 	ops.LookPath = func(string) (string, error) { return "", errors.New("missing") }
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -2444,16 +2446,16 @@ func TestLinuxStopServiceSignalsExactPIDAndWaitsForExit(t *testing.T) {
 	ops := inertLinuxServiceOperations()
 	ops.LookPath = func(string) (string, error) { return "", errors.New("missing") }
 	ops.ReadProcessExecutable = func(int) (string, error) { return executable, nil }
-	ops.SignalProcess = func(pid int, signal os.Signal) error {
+	ops.SignalProcessHandle = func(pid int, signal os.Signal) error {
 		signals++
 		if pid != 424242 || fmt.Sprint(signal) != "terminated" {
 			t.Fatalf("unexpected signal target: pid=%d signal=%v", pid, signal)
 		}
 		return nil
 	}
-	ops.ProcessAlive = func(int) (bool, error) {
+	ops.ProcessHandleExited = func(int) (bool, error) {
 		probes++
-		return probes == 1, nil
+		return probes != 1, nil
 	}
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
@@ -2490,7 +2492,7 @@ func TestLinuxSuspendPreviousServiceRejectsPIDExecutableMismatchWithoutSignal(t 
 	ops := inertLinuxServiceOperations()
 	ops.LookPath = func(string) (string, error) { return "", errors.New("missing") }
 	ops.ReadProcessExecutable = func(int) (string, error) { return filepath.Join(root, "foreign", "codex-meter"), nil }
-	ops.SignalProcess = func(int, os.Signal) error { signalCalls++; return nil }
+	ops.SignalProcessHandle = func(int, os.Signal) error { signalCalls++; return nil }
 	restore := replaceLinuxServiceOperations(ops)
 	t.Cleanup(restore)
 
@@ -2538,6 +2540,7 @@ func writeExactLinuxUnitFixture(t *testing.T, unitPath, executable, stateDir str
 }
 
 func inertLinuxServiceOperations() linuxServiceOperations {
+	processHandleProbes := 0
 	return linuxServiceOperations{
 		LookPath:              func(string) (string, error) { return "", errors.New("not found") },
 		RunSystemctl:          func(...string) ([]byte, error) { return nil, errors.New("unexpected systemctl") },
@@ -2545,9 +2548,14 @@ func inertLinuxServiceOperations() linuxServiceOperations {
 		StartDetached:         func(string, ...string) error { return nil },
 		RemoveUnit:            os.Remove,
 		ReadProcessExecutable: func(int) (string, error) { return "", errors.New("unexpected process read") },
-		SignalProcess:         func(int, os.Signal) error { return errors.New("unexpected signal") },
-		ProcessAlive:          func(int) (bool, error) { return false, nil },
-		Sleep:                 func(time.Duration) {},
+		OpenProcessHandle:     func(pid int) (int, error) { return pid, nil },
+		SignalProcessHandle:   func(int, os.Signal) error { return errors.New("unexpected signal") },
+		ProcessHandleExited: func(int) (bool, error) {
+			processHandleProbes++
+			return processHandleProbes > 1, nil
+		},
+		CloseProcessHandle: func(int) error { return nil },
+		Sleep:              func(time.Duration) {},
 	}
 }
 
